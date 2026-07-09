@@ -19,6 +19,8 @@ final class ClientEntity implements ClientEntityInterface
      */
     private array $allowedScopes = [];
 
+    private bool $firstParty = false;
+
     public static function fromModel(OAuthClient $client): self
     {
         $entity = new self();
@@ -27,6 +29,7 @@ final class ClientEntity implements ClientEntityInterface
         $entity->redirectUri = $client->getRedirectUris();
         $entity->isConfidential = $client->isConfidential();
         $entity->allowedScopes = $client->getAllowedScopes();
+        $entity->firstParty = $client->isFirstParty();
 
         return $entity;
     }
@@ -37,5 +40,10 @@ final class ClientEntity implements ClientEntityInterface
     public function getAllowedScopes(): array
     {
         return $this->allowedScopes;
+    }
+
+    public function isFirstParty(): bool
+    {
+        return $this->firstParty;
     }
 }

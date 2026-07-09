@@ -8,6 +8,7 @@ use GuzzleHttp\Psr7\Response;
 use GuzzleHttp\Psr7\ServerRequest;
 use League\OAuth2\Server\Exception\OAuthServerException;
 use Medienreaktor\NeosApi\Security\OAuth\AuthorizationServerFactory;
+use Medienreaktor\NeosApi\Security\OAuth\Entity\ClientEntity;
 use Medienreaktor\NeosApi\Security\OAuth\Entity\UserEntity;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Security\Context as SecurityContext;
@@ -39,12 +40,6 @@ class AuthorizeController extends AbstractOAuthController
     {
         $account = $this->securityContext->getAccount();
         if ($account === null) {
-            // Trigger the Neos backend login via the WebRedirect entry point.
-            // The intercepted request is reverse-routed after login, which only
-            // preserves ROUTE arguments - so the OAuth parameters (which arrive
-            // as query string) must be copied onto the request as explicit
-            // arguments, otherwise they are lost and we bounce back here
-            // unauthorized in a loop.
             // Redirect to the Neos backend login via the WebRedirect entry
             // point; the intercepted request resumes here (with all OAuth
             // parameters, see appendExceedingArguments in Routes.yaml) after
@@ -60,6 +55,18 @@ class AuthorizeController extends AbstractOAuthController
         }
 
         $client = $authRequest->getClient();
+
+        // First-party clients (e.g. the Neos Studio UI) are trusted: skip the
+        // consent screen and grant immediately for the logged-in user. The
+        // grant is still bound to the account's roles and the requested scopes.
+        if ($client instanceof ClientEntity && $client->isFirstParty()) {
+            $authRequest->setUser(UserEntity::fromAccountIdentifier($account->getAccountIdentifier()));
+            $authRequest->setAuthorizationApproved(true);
+
+            return $this->applyPsr7Response(
+                $this->serverFactory->getAuthorizationServer()->completeAuthorizationRequest($authRequest, new Response())
+            );
+        }
         $scopeList = '';
         foreach ($authRequest->getScopes() as $scope) {
             $scopeList .= '<li><code>' . htmlspecialchars($scope->getIdentifier()) . '</code> &mdash; '

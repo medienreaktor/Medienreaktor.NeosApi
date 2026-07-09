@@ -43,6 +43,15 @@ class OAuthClient
     #[ORM\Column(type: 'json')]
     protected array $allowedScopes;
 
+    /**
+     * First-party clients (the Neos Studio UI etc.) are trusted: the consent
+     * screen is skipped and authorization is auto-approved once the user is
+     * logged in. Can only be set via CLI, never via dynamic client
+     * registration.
+     */
+    #[ORM\Column]
+    protected bool $firstParty = false;
+
     #[ORM\Column]
     protected \DateTimeImmutable $createdAt;
 
@@ -57,7 +66,8 @@ class OAuthClient
         ?string $secretHash,
         array $redirectUris,
         array $grantTypes,
-        array $allowedScopes
+        array $allowedScopes,
+        bool $firstParty = false
     ) {
         $this->identifier = $identifier;
         $this->name = $name;
@@ -65,6 +75,7 @@ class OAuthClient
         $this->redirectUris = $redirectUris;
         $this->grantTypes = $grantTypes;
         $this->allowedScopes = $allowedScopes;
+        $this->firstParty = $firstParty;
         $this->createdAt = new \DateTimeImmutable();
     }
 
@@ -115,6 +126,11 @@ class OAuthClient
     public function getAllowedScopes(): array
     {
         return $this->allowedScopes;
+    }
+
+    public function isFirstParty(): bool
+    {
+        return $this->firstParty;
     }
 
     public function getCreatedAt(): \DateTimeImmutable

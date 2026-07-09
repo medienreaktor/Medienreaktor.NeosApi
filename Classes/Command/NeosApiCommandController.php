@@ -48,6 +48,7 @@ class NeosApiCommandController extends CommandController
      * @param string $grantTypes Comma-separated grants (default: authorization_code,refresh_token; add client_credentials for machine clients)
      * @param string $scopes Comma-separated allowed scopes (default: all configured scopes)
      * @param bool $confidential Create a confidential client with a secret
+     * @param bool $firstParty Trusted client: skip the consent screen (auto-approve for logged-in users)
      */
     public function createClientCommand(
         string $identifier,
@@ -55,7 +56,8 @@ class NeosApiCommandController extends CommandController
         string $redirectUris = '',
         string $grantTypes = 'authorization_code,refresh_token',
         string $scopes = '',
-        bool $confidential = false
+        bool $confidential = false,
+        bool $firstParty = false
     ): void {
         if ($this->clientRepository->findOneByIdentifier($identifier) !== null) {
             $this->outputLine('<error>A client with identifier "%s" already exists.</error>', [$identifier]);
@@ -79,12 +81,16 @@ class NeosApiCommandController extends CommandController
             $secretHash,
             $redirectUris === '' ? [] : array_map('trim', explode(',', $redirectUris)),
             array_map('trim', explode(',', $grantTypes)),
-            $parsedScopes
+            $parsedScopes,
+            $firstParty
         );
         $this->clientRepository->add($client);
 
         $this->outputLine('<success>Client "%s" created.</success>', [$identifier]);
         $this->outputLine('Allowed scopes: %s', [implode(', ', $parsedScopes)]);
+        if ($firstParty) {
+            $this->outputLine('<b>First-party client: the consent screen will be skipped.</b>');
+        }
         if ($secret !== null) {
             $this->outputLine('');
             $this->outputLine('Client secret (shown only once, store it now):');
@@ -103,10 +109,11 @@ class NeosApiCommandController extends CommandController
                 $client->getIdentifier(),
                 $client->getName(),
                 $client->isConfidential() ? 'confidential' : 'public',
+                $client->isFirstParty() ? 'yes' : 'no',
                 implode(', ', $client->getGrantTypes()),
                 implode(', ', $client->getAllowedScopes()),
             ];
         }
-        $this->output->outputTable($rows, ['Identifier', 'Name', 'Type', 'Grants', 'Scopes']);
+        $this->output->outputTable($rows, ['Identifier', 'Name', 'Type', 'First-party', 'Grants', 'Scopes']);
     }
 }
