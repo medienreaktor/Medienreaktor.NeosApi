@@ -31,7 +31,7 @@ class SitesController extends AbstractApiController
         $dimensionsParam = $this->getStringQueryParam('dimensions');
         $dimensionSpacePoint = $dimensionsParam !== null
             ? DimensionSpacePoint::fromJsonString($dimensionsParam)
-            : ($contentRepository->getVariationGraph()->getRootGeneralizations()[0] ?? DimensionSpacePoint::createWithoutDimensions());
+            : (array_values($contentRepository->getVariationGraph()->getRootGeneralizations())[0] ?? DimensionSpacePoint::createWithoutDimensions());
 
         $subgraph = $this->getContentRepository()->getContentSubgraph($workspaceName, $dimensionSpacePoint);
         $sitesRootNode = $subgraph->findRootNodeByType(NodeTypeName::fromString('Neos.Neos:Sites'));

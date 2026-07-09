@@ -6,6 +6,7 @@ namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Medienreaktor\NeosApi\Service\CommandRegistry;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
+use Neos\Flow\Annotations as Flow;
 
 /**
  * The write API: execute whitelisted content repository commands.
@@ -23,6 +24,10 @@ use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
  */
 class CommandsController extends AbstractApiController
 {
+    /**
+     * Authenticated exclusively via sessionless bearer tokens - CSRF does not apply
+     */
+    #[Flow\SkipCsrfProtection]
     public function executeAction(): string
     {
         $this->requireScope('neos.write');
@@ -36,6 +41,7 @@ class CommandsController extends AbstractApiController
         return $this->json(['status' => 'ok', 'type' => $body['type']]);
     }
 
+    #[Flow\SkipCsrfProtection]
     public function batchAction(): string
     {
         $this->requireScope('neos.write');

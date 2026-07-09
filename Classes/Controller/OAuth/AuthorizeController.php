@@ -11,6 +11,7 @@ use Medienreaktor\NeosApi\Security\OAuth\AuthorizationServerFactory;
 use Medienreaktor\NeosApi\Security\OAuth\Entity\UserEntity;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Security\Context as SecurityContext;
+use Neos\Flow\Security\Exception\AuthenticationRequiredException;
 
 /**
  * The OAuth 2.1 authorization endpoint with a minimal consent screen.
@@ -38,13 +39,14 @@ class AuthorizeController extends AbstractOAuthController
     {
         $account = $this->securityContext->getAccount();
         if ($account === null) {
-            $this->response->setStatusCode(401);
-
-            return $this->renderPage(
-                'Login required',
-                '<p>You must be logged into the Neos backend to authorize an application.</p>'
-                . '<p><a href="' . htmlspecialchars($this->getBaseUri() . '/neos') . '">Log in to Neos</a> and then retry the authorization from the requesting application.</p>'
-            );
+            // Trigger the Neos backend login via the WebRedirect entry point.
+            // The intercepted request is reverse-routed after login, which only
+            // preserves ROUTE arguments - so the OAuth parameters (which arrive
+            // as query string) must be copied onto the request as explicit
+            // arguments, otherwise they are lost and we bounce back here
+            // unauthorized in a loop.
+            throw (new AuthenticationRequiredException('Login is required to authorize an application.', 1751980040))
+                ->attachInterceptedRequest($this->request);
         }
 
         try {

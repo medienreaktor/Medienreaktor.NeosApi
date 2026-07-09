@@ -15,6 +15,13 @@
 privilegeTargets:
   'Neos\Flow\Security\Authorization\Privilege\Method\MethodPrivilege':
 
+    # The OAuth protocol endpoints are public by design (Neos.Neos ships a
+    # global catch-all privilege over ALL controller actions, so public
+    # endpoints need an explicit grant to Everybody). The authorize endpoint
+    # additionally checks for a logged-in backend account itself.
+    'Medienreaktor.NeosApi:OAuth.PublicEndpoints':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\OAuth\TokenController->tokenAction()) || method(Medienreaktor\NeosApi\Controller\OAuth\RegistrationController->registerAction()) || method(Medienreaktor\NeosApi\Controller\OAuth\DiscoveryController->.*Action()) || method(Medienreaktor\NeosApi\Controller\OAuth\AuthorizeController->(authorize|approve)Action())'
+
     'Medienreaktor.NeosApi:Api.CatchAll':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\.*->.*Action())'
 
@@ -28,6 +35,12 @@ privilegeTargets:
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(publish|discard|rebase)Action())'
 
 roles:
+  'Neos.Flow:Everybody':
+    privileges:
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:OAuth.PublicEndpoints'
+        permission: GRANT
+
   'Neos.Neos:AbstractEditor':
     privileges:
       -

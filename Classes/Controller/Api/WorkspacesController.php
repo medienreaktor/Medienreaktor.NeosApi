@@ -73,6 +73,7 @@ class WorkspacesController extends AbstractApiController
         return $this->json($serialized);
     }
 
+    #[Flow\SkipCsrfProtection]
     public function publishAction(string $workspaceName): string
     {
         $this->requireScope('neos.publish');
@@ -91,6 +92,7 @@ class WorkspacesController extends AbstractApiController
         });
     }
 
+    #[Flow\SkipCsrfProtection]
     public function discardAction(string $workspaceName): string
     {
         $this->requireScope('neos.publish');
@@ -109,6 +111,7 @@ class WorkspacesController extends AbstractApiController
         });
     }
 
+    #[Flow\SkipCsrfProtection]
     public function rebaseAction(string $workspaceName): string
     {
         $this->requireScope('neos.publish');
