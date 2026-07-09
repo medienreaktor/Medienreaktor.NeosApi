@@ -45,6 +45,10 @@ class AuthorizeController extends AbstractOAuthController
             // as query string) must be copied onto the request as explicit
             // arguments, otherwise they are lost and we bounce back here
             // unauthorized in a loop.
+            // Redirect to the Neos backend login via the WebRedirect entry
+            // point; the intercepted request resumes here (with all OAuth
+            // parameters, see appendExceedingArguments in Routes.yaml) after
+            // a successful login.
             throw (new AuthenticationRequiredException('Login is required to authorize an application.', 1751980040))
                 ->attachInterceptedRequest($this->request);
         }

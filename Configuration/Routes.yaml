@@ -10,6 +10,12 @@
     '@action': 'authorize'
     '@format': 'html'
   httpMethods: ['GET']
+  # The OAuth parameters arrive as query string and thus become request
+  # arguments. When the Neos login resumes this intercepted request after
+  # authentication it reverse-routes it WITH those arguments, so the route
+  # must accept them as exceeding arguments - otherwise the resolve fails and
+  # the login POST falls through to a frontend 404.
+  appendExceedingArguments: true
 
 -
   name: 'OAuth: Authorization approval'
