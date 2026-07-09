@@ -1,0 +1,22 @@
+{
+    "name": "medienreaktor/neos-api",
+    "type": "neos-package",
+    "description": "Unified HTTP API for Neos 9: OAuth 2.1 authentication, ContentGraph read API and CR command write API",
+    "license": "GPL-3.0-or-later",
+    "require": {
+        "php": "^8.2",
+        "neos/neos": "^9.1",
+        "league/oauth2-server": "^8.5",
+        "guzzlehttp/psr7": "^2.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Medienreaktor\\NeosApi\\": "Classes/"
+        }
+    },
+    "extra": {
+        "neos": {
+            "package-key": "Medienreaktor.NeosApi"
+        }
+    }
+}

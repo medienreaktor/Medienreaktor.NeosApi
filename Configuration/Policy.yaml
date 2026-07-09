@@ -1,0 +1,47 @@
+#
+# Deny-by-default: the catch-all target below matches EVERY action in the
+# Controller\Api namespace. Flow denies any method matched by a privilege
+# target unless one matching target is granted to the current roles - so any
+# future endpoint added to this package is closed until explicitly granted.
+#
+# The Controller\OAuth namespace is deliberately NOT matched: token issuance,
+# discovery and dynamic client registration are public protocol endpoints.
+#
+# Node-level and workspace-level authorization is NOT handled here - it is
+# enforced structurally by the content repository (visibility constraints on
+# every read, ContentRepositoryAuthProvider::canExecuteCommand on every
+# command), based on the roles of the authenticated account.
+#
+privilegeTargets:
+  'Neos\Flow\Security\Authorization\Privilege\Method\MethodPrivilege':
+
+    'Medienreaktor.NeosApi:Api.CatchAll':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\.*->.*Action())'
+
+    'Medienreaktor.NeosApi:Api.Read':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\(MeController|NodesController|SitesController|NodeTypesController|DimensionsController)->.*Action()) || method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show)Action())'
+
+    'Medienreaktor.NeosApi:Api.Write':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\CommandsController->.*Action())'
+
+    'Medienreaktor.NeosApi:Api.Publish':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(publish|discard|rebase)Action())'
+
+roles:
+  'Neos.Neos:AbstractEditor':
+    privileges:
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Read'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Write'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Publish'
+        permission: GRANT
+
+  'Neos.Neos:Administrator':
+    privileges:
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.CatchAll'
+        permission: GRANT

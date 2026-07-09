@@ -1,0 +1,208 @@
+#
+# OAuth 2.1 protocol endpoints (public)
+#
+-
+  name: 'OAuth: Authorization endpoint'
+  uriPattern: 'oauth/authorize'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'OAuth\Authorize'
+    '@action': 'authorize'
+    '@format': 'html'
+  httpMethods: ['GET']
+
+-
+  name: 'OAuth: Authorization approval'
+  uriPattern: 'oauth/authorize'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'OAuth\Authorize'
+    '@action': 'approve'
+    '@format': 'html'
+  httpMethods: ['POST']
+
+-
+  name: 'OAuth: Token endpoint'
+  uriPattern: 'oauth/token'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'OAuth\Token'
+    '@action': 'token'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'OAuth: Dynamic client registration (RFC 7591)'
+  uriPattern: 'oauth/register'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'OAuth\Registration'
+    '@action': 'register'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'OAuth: Authorization server metadata (RFC 8414)'
+  uriPattern: '.well-known/oauth-authorization-server'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'OAuth\Discovery'
+    '@action': 'authorizationServer'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'OAuth: Protected resource metadata (RFC 9728)'
+  uriPattern: '.well-known/oauth-protected-resource'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'OAuth\Discovery'
+    '@action': 'protectedResource'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+#
+# Read API
+#
+-
+  name: 'API: Me'
+  uriPattern: 'api/me'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Me'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Node'
+  uriPattern: 'api/nodes/{nodeAddress}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Nodes'
+    '@action': 'show'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Node relation'
+  uriPattern: 'api/nodes/{nodeAddress}/{relation}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Nodes'
+    '@action': 'relation'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Sites'
+  uriPattern: 'api/sites'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Sites'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Workspaces'
+  uriPattern: 'api/workspaces'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Workspace'
+  uriPattern: 'api/workspaces/{workspaceName}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'show'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Workspace publish'
+  uriPattern: 'api/workspaces/{workspaceName}/publish'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'publish'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Workspace discard'
+  uriPattern: 'api/workspaces/{workspaceName}/discard'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'discard'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Workspace rebase'
+  uriPattern: 'api/workspaces/{workspaceName}/rebase'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'rebase'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: NodeTypes'
+  uriPattern: 'api/nodetypes'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\NodeTypes'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: NodeType'
+  uriPattern: 'api/nodetypes/{nodeTypeName}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\NodeTypes'
+    '@action': 'show'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Dimensions'
+  uriPattern: 'api/dimensions'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Dimensions'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+#
+# Write API
+#
+-
+  name: 'API: Command'
+  uriPattern: 'api/commands'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Commands'
+    '@action': 'execute'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Command batch'
+  uriPattern: 'api/commands/batch'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Commands'
+    '@action': 'batch'
+    '@format': 'json'
+  httpMethods: ['POST']

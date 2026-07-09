@@ -1,0 +1,72 @@
+Medienreaktor:
+  NeosApi:
+    # Content repository this API exposes
+    contentRepository: 'default'
+
+    oauth:
+      # Issuer identifier used in discovery metadata; falls back to the request base URI when empty
+      issuer: ''
+
+      # RSA key pair for signing access tokens (JWT) and the Defuse encryption key
+      # for auth codes / refresh tokens. Generate via: ./flow neosapi:generatekeys
+      privateKeyPath: '%FLOW_PATH_DATA%Persistent/Medienreaktor.NeosApi/oauth-private.key'
+      publicKeyPath: '%FLOW_PATH_DATA%Persistent/Medienreaktor.NeosApi/oauth-public.key'
+      encryptionKeyPath: '%FLOW_PATH_DATA%Persistent/Medienreaktor.NeosApi/oauth-encryption.key'
+
+      accessTokenTtl: 'PT1H'
+      refreshTokenTtl: 'P30D'
+      authCodeTtl: 'PT10M'
+
+      # OAuth 2.1 dynamic client registration (RFC 7591). Public clients only
+      # (MCP clients etc.); confidential clients are created via CLI.
+      dynamicClientRegistration:
+        enabled: true
+
+      # Scopes this authorization server hands out. Requested scopes are
+      # intersected with the client's allowed scopes; actual authorization is
+      # ALWAYS additionally bound to the Flow account's roles and the CR's
+      # own permission checks - scopes can only narrow, never widen access.
+      scopes:
+        'neos.read': 'Read nodes, workspaces, node types and dimensions'
+        'neos.write': 'Execute content repository commands'
+        'neos.publish': 'Publish, discard and rebase workspaces'
+
+      # For client_credentials tokens (no user): map client identifiers to
+      # Flow account identifiers whose roles the token acts with.
+      clientCredentialsAccounts: {}
+
+    # The authentication provider name whose accounts API users authenticate as
+    accountAuthenticationProviderName: 'Neos.Neos:Backend'
+
+Neos:
+  Flow:
+    mvc:
+      routes:
+        'Medienreaktor.NeosApi':
+          position: 'before Neos.Neos'
+
+    security:
+      authentication:
+        providers:
+          # Bearer-token authentication for all /api requests. Hydrates a full
+          # Flow account (-> roles -> policies) from a validated OAuth token,
+          # so token requests are policy-enforced identically to sessions.
+          'Medienreaktor.NeosApi:Bearer':
+            label: 'Neos API OAuth 2.1 Bearer'
+            provider: 'Medienreaktor\NeosApi\Security\Authentication\Provider\OAuthBearerProvider'
+            token: 'Medienreaktor\NeosApi\Security\Authentication\Token\ApiBearerToken'
+            requestPatterns:
+              'Medienreaktor.NeosApi:ApiControllers':
+                pattern: 'ControllerObjectName'
+                patternOptions:
+                  controllerObjectNamePattern: 'Medienreaktor\NeosApi\Controller\Api\.*'
+
+          # Make the Neos backend session visible on the OAuth authorize
+          # endpoint (patterns of the same type are OR-combined), so the
+          # consent screen can identify the logged-in editor.
+          'Neos.Neos:Backend':
+            requestPatterns:
+              'Medienreaktor.NeosApi:OAuthAuthorize':
+                pattern: 'ControllerObjectName'
+                patternOptions:
+                  controllerObjectNamePattern: 'Medienreaktor\NeosApi\Controller\OAuth\AuthorizeController'
