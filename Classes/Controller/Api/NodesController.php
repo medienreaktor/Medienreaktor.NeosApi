@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Medienreaktor\NeosApi\Service\NodeSerializer;
+use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
+use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindChildNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindDescendantNodesFilter;
@@ -64,6 +66,30 @@ class NodesController extends AbstractApiController
                 }
 
                 return $this->json($this->nodeSerializer->serializeNode($parent, $subgraph));
+            case 'variants':
+                // Aggregate-level view: in which dimension space points does
+                // this node exist? "occupied" = own variants (origins),
+                // "covered" = additionally reachable via specialization
+                // shine-through. A point outside "covered" needs a
+                // CreateNodeVariant command before the node appears there.
+                if ($subgraph->findNodeById($address->aggregateId) === null) {
+                    $this->throwJsonStatus(404, 'node_not_found', 'The node does not exist in this subgraph or is not visible for this account.');
+                }
+                $nodeAggregate = $this->getContentRepository()->getContentGraph($address->workspaceName)->findNodeAggregateById($address->aggregateId);
+                if ($nodeAggregate === null) {
+                    $this->throwJsonStatus(404, 'node_not_found', 'The node aggregate does not exist in this workspace.');
+                }
+
+                return $this->json([
+                    'occupiedDimensionSpacePoints' => array_map(
+                        static fn (OriginDimensionSpacePoint $point) => $point->coordinates,
+                        array_values(iterator_to_array($nodeAggregate->occupiedDimensionSpacePoints))
+                    ),
+                    'coveredDimensionSpacePoints' => array_map(
+                        static fn (DimensionSpacePoint $point) => $point->coordinates,
+                        array_values(iterator_to_array($nodeAggregate->coveredDimensionSpacePoints))
+                    ),
+                ]);
             case 'references':
                 $references = $subgraph->findReferences($address->aggregateId, FindReferencesFilter::create());
                 $items = [];
@@ -79,7 +105,7 @@ class NodesController extends AbstractApiController
 
                 return $this->json(['references' => $items]);
             default:
-                $this->throwJsonStatus(404, 'unknown_relation', sprintf('Unknown relation "%s". Supported: children, descendants, ancestors, parent, references.', $relation));
+                $this->throwJsonStatus(404, 'unknown_relation', sprintf('Unknown relation "%s". Supported: children, descendants, ancestors, parent, references, variants.', $relation));
         }
 
         return $this->json(['nodes' => $this->nodeSerializer->serializeNodes($nodes, $subgraph, $nodeTypes)]);
