@@ -35,7 +35,7 @@ class NodesController extends AbstractApiController
             $this->throwJsonStatus(404, 'node_not_found', 'The node does not exist in this subgraph or is not visible for this account.');
         }
 
-        return $this->json($this->nodeSerializer->serializeNode($node));
+        return $this->json($this->nodeSerializer->serializeNode($node, $subgraph));
     }
 
     public function relationAction(string $nodeAddress, string $relation): string
@@ -63,14 +63,14 @@ class NodesController extends AbstractApiController
                     $this->throwJsonStatus(404, 'node_not_found', 'The node has no visible parent in this subgraph.');
                 }
 
-                return $this->json($this->nodeSerializer->serializeNode($parent));
+                return $this->json($this->nodeSerializer->serializeNode($parent, $subgraph));
             case 'references':
                 $references = $subgraph->findReferences($address->aggregateId, FindReferencesFilter::create());
                 $items = [];
                 foreach ($references as $reference) {
                     $items[] = [
                         'referenceName' => $reference->name->value,
-                        'node' => $this->nodeSerializer->serializeNode($reference->node),
+                        'node' => $this->nodeSerializer->serializeNode($reference->node, $subgraph),
                         'properties' => $reference->properties === null
                             ? null
                             : json_decode(json_encode($reference->properties->serialized(), JSON_THROW_ON_ERROR), true),
@@ -82,7 +82,7 @@ class NodesController extends AbstractApiController
                 $this->throwJsonStatus(404, 'unknown_relation', sprintf('Unknown relation "%s". Supported: children, descendants, ancestors, parent, references.', $relation));
         }
 
-        return $this->json(['nodes' => $this->nodeSerializer->serializeNodes($nodes)]);
+        return $this->json(['nodes' => $this->nodeSerializer->serializeNodes($nodes, $subgraph, $nodeTypes)]);
     }
 
     private function wantsFrontendVisibility(): bool

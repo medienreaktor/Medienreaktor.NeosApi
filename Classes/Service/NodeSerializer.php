@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Medienreaktor\NeosApi\Service;
 
 use Neos\ContentRepository\Core\Feature\SubtreeTagging\Dto\SubtreeTag;
+use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\CountChildNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\Flow\Annotations as Flow;
 
@@ -19,9 +21,15 @@ use Neos\Flow\Annotations as Flow;
 class NodeSerializer
 {
     /**
+     * The $subgraph is used to determine `hasChildren`, evaluated against the
+     * node's visible children. When $childrenNodeTypes is given (typically the
+     * nodeTypes filter of the surrounding request), it constrains that check,
+     * so e.g. a document listing reports whether each document has DOCUMENT
+     * children - which is what tree UIs need to render expand affordances.
+     *
      * @return array<string, mixed>
      */
-    public function serializeNode(Node $node): array
+    public function serializeNode(Node $node, ContentSubgraphInterface $subgraph, ?string $childrenNodeTypes = null): array
     {
         return [
             'address' => NodeAddressCodec::encode(\Neos\ContentRepository\Core\SharedModel\Node\NodeAddress::fromNode($node)),
@@ -29,6 +37,7 @@ class NodeSerializer
             'nodeType' => $node->nodeTypeName->value,
             'name' => $node->name?->value,
             'classification' => $node->classification->value,
+            'hasChildren' => $subgraph->countChildNodes($node->aggregateId, CountChildNodesFilter::create(nodeTypes: $childrenNodeTypes)) > 0,
             'workspace' => $node->workspaceName->value,
             'dimensionSpacePoint' => $node->dimensionSpacePoint->coordinates,
             'originDimensionSpacePoint' => $node->originDimensionSpacePoint->coordinates,
@@ -50,11 +59,11 @@ class NodeSerializer
      * @param iterable<Node> $nodes
      * @return array<int, array<string, mixed>>
      */
-    public function serializeNodes(iterable $nodes): array
+    public function serializeNodes(iterable $nodes, ContentSubgraphInterface $subgraph, ?string $childrenNodeTypes = null): array
     {
         $result = [];
         foreach ($nodes as $node) {
-            $result[] = $this->serializeNode($node);
+            $result[] = $this->serializeNode($node, $subgraph, $childrenNodeTypes);
         }
 
         return $result;
