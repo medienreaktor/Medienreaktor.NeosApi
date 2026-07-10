@@ -26,7 +26,7 @@ privilegeTargets:
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\.*->.*Action())'
 
     'Medienreaktor.NeosApi:Api.Read':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\(MeController|NodesController|SitesController|NodeTypesController|DimensionsController)->.*Action()) || method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show)Action())'
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\(MeController|NodesController|SitesController|NodeTypesController|DimensionsController)->.*Action()) || method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show|changes)Action())'
 
     'Medienreaktor.NeosApi:Api.Write':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\CommandsController->.*Action())'

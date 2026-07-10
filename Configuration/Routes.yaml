@@ -131,6 +131,16 @@
   httpMethods: ['GET']
 
 -
+  name: 'API: Workspace pending changes'
+  uriPattern: 'api/workspaces/{workspaceName}/changes'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'changes'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
   name: 'API: Workspace publish'
   uriPattern: 'api/workspaces/{workspaceName}/publish'
   defaults:

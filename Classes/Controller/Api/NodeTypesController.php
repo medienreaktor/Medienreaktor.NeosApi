@@ -22,6 +22,11 @@ class NodeTypesController extends AbstractApiController
                 'name' => $nodeType->name->value,
                 'abstract' => $nodeType->isAbstract(),
                 'superTypes' => array_keys($nodeType->getDeclaredSuperTypes()),
+                // untranslated label id / icon name as configured (ui.icon is
+                // a Font Awesome name by Neos convention) - what tree UIs
+                // need without fetching the full configuration
+                'label' => $nodeType->getConfiguration('ui.label'),
+                'icon' => $nodeType->getConfiguration('ui.icon'),
             ];
         }
 

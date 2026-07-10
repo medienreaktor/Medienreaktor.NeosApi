@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\Workspace;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\Flow\Annotations as Flow;
 use Neos\Neos\Domain\Model\WorkspaceMetadata;
+use Neos\Neos\PendingChangesProjection\ChangeFinder;
 use Neos\Neos\Domain\Service\UserService;
 use Neos\Neos\Domain\Service\WorkspacePublishingService;
 use Neos\Neos\Domain\Service\WorkspaceService;
@@ -71,6 +73,68 @@ class WorkspacesController extends AbstractApiController
         );
 
         return $this->json($serialized);
+    }
+
+    /**
+     * The pending changes of a workspace relative to its base - which node
+     * aggregates were created/changed/moved/deleted. This is what tree UIs
+     * need to mark nodes as "dirty".
+     *
+     * Uses the PendingChangesProjection's ChangeFinder, which is @internal
+     * in Neos - the same dependency core's Workspace.Ui module has; revisit
+     * when neos/neos-development-collection#5493 lands a public API.
+     */
+    public function changesAction(string $workspaceName): string
+    {
+        $this->requireScope('neos.read');
+
+        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
+        if ($workspace === null) {
+            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
+        }
+        if ($this->serializeWorkspace($workspace) === null) {
+            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
+        }
+
+        $contentRepository = $this->getContentRepository();
+        $changeFinder = $contentRepository->projectionState(ChangeFinder::class);
+        $subgraphs = [];
+        $changes = [];
+        foreach ($changeFinder->findByContentStreamId($workspace->currentContentStreamId) as $change) {
+            // Resolve the containing document, so tree UIs can mark documents
+            // whose content (not just the document itself) has changes.
+            $documentAggregateId = null;
+            if ($change->originDimensionSpacePoint !== null) {
+                $dimensionSpacePoint = $change->originDimensionSpacePoint->toDimensionSpacePoint();
+                $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                    $workspace->workspaceName,
+                    $dimensionSpacePoint
+                );
+                $documentAggregateId = $subgraphs[$dimensionSpacePoint->hash]->findClosestNode(
+                    $change->nodeAggregateId,
+                    FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
+                )?->aggregateId->value;
+            }
+            // Deleted nodes no longer exist in the workspace subgraph; the
+            // change record remembers the closest document at removal time.
+            $documentAggregateId ??= $change->getLegacyRemovalAttachmentPoint()?->value;
+
+            $changes[] = [
+                'nodeAggregateId' => $change->nodeAggregateId->value,
+                'documentAggregateId' => $documentAggregateId,
+                'originDimensionSpacePoint' => $change->originDimensionSpacePoint?->coordinates,
+                'created' => $change->created,
+                'changed' => $change->changed,
+                'moved' => $change->moved,
+                'deleted' => $change->deleted,
+            ];
+        }
+
+        return $this->json([
+            'workspace' => $workspace->workspaceName->value,
+            'baseWorkspace' => $workspace->baseWorkspaceName?->value,
+            'changes' => $changes,
+        ]);
     }
 
     #[Flow\SkipCsrfProtection]
