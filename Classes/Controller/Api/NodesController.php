@@ -37,7 +37,14 @@ class NodesController extends AbstractApiController
             $this->throwJsonStatus(404, 'node_not_found', 'The node does not exist in this subgraph or is not visible for this account.');
         }
 
-        return $this->json($this->nodeSerializer->serializeNode($node, $subgraph));
+        // Optional, like the children/descendants relations: constrains
+        // hasChildren to the given node types, so a single-node refresh
+        // reports the same "has X children" semantics the caller's tree/list
+        // originally loaded it with, instead of silently widening to "has
+        // any children" on every refetch.
+        $nodeTypes = $this->getStringQueryParam('nodeTypes');
+
+        return $this->json($this->nodeSerializer->serializeNode($node, $subgraph, $nodeTypes));
     }
 
     public function relationAction(string $nodeAddress, string $relation): string
@@ -65,7 +72,7 @@ class NodesController extends AbstractApiController
                     $this->throwJsonStatus(404, 'node_not_found', 'The node has no visible parent in this subgraph.');
                 }
 
-                return $this->json($this->nodeSerializer->serializeNode($parent, $subgraph));
+                return $this->json($this->nodeSerializer->serializeNode($parent, $subgraph, $nodeTypes));
             case 'variants':
                 // Aggregate-level view: in which dimension space points does
                 // this node exist? "occupied" = own variants (origins),
