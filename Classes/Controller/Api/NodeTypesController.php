@@ -18,6 +18,16 @@ class NodeTypesController extends AbstractApiController
     protected IconNameMappingService $iconNameMappingService;
 
     /**
+     * The node type groups (general, structure, plugins + site-specific ones)
+     * that creation UIs group creatable node types by - each entry carries
+     * label, position and collapsed.
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    #[Flow\InjectConfiguration(package: 'Neos.Neos', path: 'nodeTypes.groups')]
+    protected array $nodeTypeGroups;
+
+    /**
      * Normalizes configured ui.icon values to modern Font Awesome classes.
      * Node types configure anything from FA3-era bare names ("picture") over
      * "icon-*" to full "fas fa-*" classes; Neos' own IconNameMappingService
@@ -50,10 +60,15 @@ class NodeTypesController extends AbstractApiController
                 // need without fetching the full configuration
                 'label' => $nodeType->getConfiguration('ui.label'),
                 'icon' => $this->normalizeIcon($nodeType->getConfiguration('ui.icon')),
+                // group + position drive creation UIs: only node types with a
+                // group are offered for creation (Neos convention), sorted by
+                // position within their group
+                'group' => $nodeType->getConfiguration('ui.group'),
+                'position' => $nodeType->getConfiguration('ui.position'),
             ];
         }
 
-        return $this->json(['nodeTypes' => $nodeTypes]);
+        return $this->json(['nodeTypes' => $nodeTypes, 'groups' => $this->nodeTypeGroups]);
     }
 
     public function showAction(string $nodeTypeName): string
