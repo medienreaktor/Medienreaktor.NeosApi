@@ -171,6 +171,16 @@
   httpMethods: ['POST']
 
 -
+  name: 'API: Workspace base workspace'
+  uriPattern: 'api/workspaces/{workspaceName}/base-workspace'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'changeBaseWorkspace'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
   name: 'API: NodeTypes'
   uriPattern: 'api/nodetypes'
   defaults:

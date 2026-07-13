@@ -32,7 +32,7 @@ privilegeTargets:
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\CommandsController->.*Action())'
 
     'Medienreaktor.NeosApi:Api.Publish':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(publish|discard|rebase)Action())'
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(publish|discard|rebase|changeBaseWorkspace)Action())'
 
 roles:
   'Neos.Flow:Everybody':

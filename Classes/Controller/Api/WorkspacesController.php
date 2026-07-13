@@ -6,11 +6,15 @@ namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
+use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceContainsPublishableChanges;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\Workspace;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\Flow\Annotations as Flow;
 use Neos\Neos\Domain\Model\WorkspaceMetadata;
+use Neos\Neos\Fusion\Cache\CacheFlushingStrategy;
+use Neos\Neos\Fusion\Cache\ContentCacheFlusher;
+use Neos\Neos\Fusion\Cache\FlushWorkspaceRequest;
 use Neos\Neos\PendingChangesProjection\ChangeFinder;
 use Neos\Neos\Domain\Service\UserService;
 use Neos\Neos\Domain\Service\WorkspacePublishingService;
@@ -39,6 +43,9 @@ class WorkspacesController extends AbstractApiController
 
     #[Flow\Inject]
     protected UserService $userService;
+
+    #[Flow\Inject]
+    protected ContentCacheFlusher $contentCacheFlusher;
 
     public function indexAction(): string
     {
@@ -189,6 +196,52 @@ class WorkspacesController extends AbstractApiController
 
             return ['rebased' => true];
         });
+    }
+
+    /**
+     * Rebase the workspace onto a different base workspace. This is what
+     * "switching the workspace" means in the classic UI: editing always
+     * happens in the personal workspace, this operation only retargets where
+     * its changes will be published. The content repository enforces manage
+     * permission on the workspace, read permission on the new base, and that
+     * the workspace has no publishable changes (surfaced as 409
+     * workspace_not_empty so clients can prompt to publish/discard first).
+     */
+    #[Flow\SkipCsrfProtection]
+    public function changeBaseWorkspaceAction(string $workspaceName): string
+    {
+        $this->requireScope('neos.publish');
+
+        $baseWorkspaceName = $this->getOperationFilter()['baseWorkspace'] ?? null;
+        if ($baseWorkspaceName === null) {
+            $this->throwJsonStatus(400, 'missing_base_workspace', 'The request body must contain a "baseWorkspace".');
+        }
+
+        $workspace = WorkspaceName::fromString($workspaceName);
+        try {
+            $this->workspacePublishingService->changeBaseWorkspace(
+                $this->getContentRepositoryId(),
+                $workspace,
+                WorkspaceName::fromString($baseWorkspaceName)
+            );
+        } catch (AccessDenied $exception) {
+            $this->throwJsonStatus(403, 'access_denied', $exception->getMessage());
+        } catch (WorkspaceContainsPublishableChanges) {
+            $this->throwJsonStatus(409, 'workspace_not_empty', 'The workspace still has publishable changes; publish or discard them before changing the base workspace.');
+        } catch (\Throwable $exception) {
+            $this->throwJsonStatus(409, 'operation_failed', $exception->getMessage());
+        }
+
+        // The workspace now renders the new base's content, but nothing
+        // flushes the Fusion content cache on WorkspaceBaseWorkspaceWasChanged
+        // (core's cache-flush hook only covers discard and rebase events), so
+        // fragments rendered against the old base would keep being served.
+        $this->contentCacheFlusher->flushWorkspace(
+            FlushWorkspaceRequest::create($this->getContentRepositoryId(), $workspace),
+            CacheFlushingStrategy::IMMEDIATE
+        );
+
+        return $this->json(['workspace' => $workspace->value, 'baseWorkspace' => $baseWorkspaceName]);
     }
 
     /**
