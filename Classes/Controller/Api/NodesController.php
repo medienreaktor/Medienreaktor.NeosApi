@@ -7,12 +7,14 @@ namespace Medienreaktor\NeosApi\Controller\Api;
 use Medienreaktor\NeosApi\Service\NodeSerializer;
 use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
+use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindChildNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindDescendantNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindReferencesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\Pagination\Pagination;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
+use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateClassification;
 use Neos\Flow\Annotations as Flow;
 
 /**
@@ -73,6 +75,16 @@ class NodesController extends AbstractApiController
                 }
 
                 return $this->json($this->nodeSerializer->serializeNode($parent, $subgraph, $nodeTypes));
+            case 'allowed-child-node-types':
+                // Which node types the content model permits as children of
+                // this node - a drag-and-drop / creation client validates a
+                // target against this instead of shipping a constraint engine.
+                $node = $subgraph->findNodeById($address->aggregateId);
+                if ($node === null) {
+                    $this->throwJsonStatus(404, 'node_not_found', 'The node does not exist in this subgraph or is not visible for this account.');
+                }
+
+                return $this->json(['nodeTypes' => $this->allowedChildNodeTypeNames($node, $subgraph)]);
             case 'variants':
                 // Aggregate-level view: in which dimension space points does
                 // this node exist? "occupied" = own variants (origins),
@@ -112,10 +124,48 @@ class NodesController extends AbstractApiController
 
                 return $this->json(['references' => $items]);
             default:
-                $this->throwJsonStatus(404, 'unknown_relation', sprintf('Unknown relation "%s". Supported: children, descendants, ancestors, parent, references, variants.', $relation));
+                $this->throwJsonStatus(404, 'unknown_relation', sprintf('Unknown relation "%s". Supported: children, descendants, ancestors, parent, references, variants, allowed-child-node-types.', $relation));
         }
 
         return $this->json(['nodes' => $this->nodeSerializer->serializeNodes($nodes, $subgraph, $nodeTypes)]);
+    }
+
+    /**
+     * Names of the non-abstract node types the content model allows as
+     * children of the given node - what a client needs to validate a move or
+     * a creation against the model without a constraint engine of its own.
+     * Mirrors the classic UI's semantics: for tethered nodes (autocreated
+     * collections) the constraints of the declaring parent's tethered-child
+     * definition apply, for regular nodes the node type's own constraints.
+     * Unlike the creation menu no ui.group filter is applied - a move is not
+     * limited to user-creatable types.
+     *
+     * @return array<int, string>
+     */
+    private function allowedChildNodeTypeNames(Node $node, ContentSubgraphInterface $subgraph): array
+    {
+        $nodeTypeManager = $this->getContentRepository()->getNodeTypeManager();
+        $nodeType = $nodeTypeManager->getNodeType($node->nodeTypeName);
+        if ($nodeType === null) {
+            return [];
+        }
+
+        $tetheredParentNodeTypeName = null;
+        if ($node->classification === NodeAggregateClassification::CLASSIFICATION_TETHERED && $node->name !== null) {
+            $tetheredParentNodeTypeName = $subgraph->findParentNode($node->aggregateId)?->nodeTypeName;
+        }
+
+        $allowed = [];
+        foreach ($nodeTypeManager->getNodeTypes(false) as $candidate) {
+            $isAllowed = $tetheredParentNodeTypeName !== null
+                ? $nodeTypeManager->isNodeTypeAllowedAsChildToTetheredNode($tetheredParentNodeTypeName, $node->name, $candidate->name)
+                : $nodeType->allowsChildNodeType($candidate);
+            if ($isAllowed) {
+                $allowed[] = $candidate->name->value;
+            }
+        }
+
+        return $allowed;
     }
 
     private function wantsFrontendVisibility(): bool
