@@ -30,6 +30,7 @@ Medienreaktor:
         'neos.read': 'Read nodes, workspaces, node types and dimensions'
         'neos.write': 'Execute content repository commands'
         'neos.publish': 'Publish, discard and rebase workspaces'
+        'neos.media': 'Browse, upload and manage media assets'
 
       # For client_credentials tokens (no user): map client identifiers to
       # Flow account identifiers whose roles the token acts with.

@@ -242,3 +242,220 @@
     '@action': 'batch'
     '@format': 'json'
   httpMethods: ['POST']
+
+#
+# Media API
+#
+# Order matters: literal-tail and static routes are declared before the
+# {assetIdentifier} wildcards so they win. Two-segment routes are additionally
+# disambiguated by HTTP method (GET show vs POST/DELETE mutations).
+#
+-
+  name: 'API: Media asset sources'
+  uriPattern: 'api/media/asset-sources'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\AssetSources'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Media assets list'
+  uriPattern: 'api/media/assets'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Media asset upload'
+  uriPattern: 'api/media/assets'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'create'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Media asset import'
+  uriPattern: 'api/media/assets/import'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'import'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Media asset replace resource'
+  uriPattern: 'api/media/assets/{assetIdentifier}/resource'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'replaceResource'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Media asset add tag'
+  uriPattern: 'api/media/assets/{assetIdentifier}/tags'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'tag'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Media asset remove tag'
+  uriPattern: 'api/media/assets/{assetIdentifier}/tags'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'untag'
+    '@format': 'json'
+  httpMethods: ['DELETE']
+
+-
+  name: 'API: Media asset add to collection'
+  uriPattern: 'api/media/assets/{assetIdentifier}/collections'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'addToCollection'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Media asset remove from collection'
+  uriPattern: 'api/media/assets/{assetIdentifier}/collections'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'removeFromCollection'
+    '@format': 'json'
+  httpMethods: ['DELETE']
+
+-
+  name: 'API: Media asset usage'
+  uriPattern: 'api/media/assets/{assetSource}/{assetIdentifier}/usage'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'usage'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Media asset show'
+  uriPattern: 'api/media/assets/{assetSource}/{assetIdentifier}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'show'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Media asset update'
+  uriPattern: 'api/media/assets/{assetIdentifier}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'update'
+    '@format': 'json'
+  httpMethods: ['PATCH', 'PUT']
+
+-
+  name: 'API: Media asset delete'
+  uriPattern: 'api/media/assets/{assetIdentifier}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'delete'
+    '@format': 'json'
+  httpMethods: ['DELETE']
+
+-
+  name: 'API: Media collections list'
+  uriPattern: 'api/media/collections'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Collections'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Media collection create'
+  uriPattern: 'api/media/collections'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Collections'
+    '@action': 'create'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Media collection update'
+  uriPattern: 'api/media/collections/{collectionIdentifier}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Collections'
+    '@action': 'update'
+    '@format': 'json'
+  httpMethods: ['PATCH', 'PUT']
+
+-
+  name: 'API: Media collection delete'
+  uriPattern: 'api/media/collections/{collectionIdentifier}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Collections'
+    '@action': 'delete'
+    '@format': 'json'
+  httpMethods: ['DELETE']
+
+-
+  name: 'API: Media tags tree'
+  uriPattern: 'api/media/tags'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Tags'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Media tag create'
+  uriPattern: 'api/media/tags'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Tags'
+    '@action': 'create'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Media tag update'
+  uriPattern: 'api/media/tags/{tagIdentifier}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Tags'
+    '@action': 'update'
+    '@format': 'json'
+  httpMethods: ['PATCH', 'PUT']
+
+-
+  name: 'API: Media tag delete'
+  uriPattern: 'api/media/tags/{tagIdentifier}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Tags'
+    '@action': 'delete'
+    '@format': 'json'
+  httpMethods: ['DELETE']

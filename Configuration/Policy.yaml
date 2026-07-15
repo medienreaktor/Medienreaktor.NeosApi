@@ -34,6 +34,12 @@ privilegeTargets:
     'Medienreaktor.NeosApi:Api.Publish':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(publish|discard|rebase|changeBaseWorkspace)Action())'
 
+    'Medienreaktor.NeosApi:Api.Media.Read':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\(AssetsController|AssetSourcesController|CollectionsController|TagsController)->(index|show|usage)Action())'
+
+    'Medienreaktor.NeosApi:Api.Media.Write':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\AssetsController->(create|update|delete|replaceResource|import|tag|untag|addToCollection|removeFromCollection)Action()) || method(Medienreaktor\NeosApi\Controller\Api\Media\(CollectionsController|TagsController)->(create|update|delete)Action())'
+
 roles:
   'Neos.Flow:Everybody':
     privileges:
@@ -51,6 +57,12 @@ roles:
         permission: GRANT
       -
         privilegeTarget: 'Medienreaktor.NeosApi:Api.Publish'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Media.Read'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Media.Write'
         permission: GRANT
 
   'Neos.Neos:Administrator':
