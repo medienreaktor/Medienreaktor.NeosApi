@@ -210,6 +210,16 @@
     '@format': 'json'
   httpMethods: ['GET']
 
+-
+  name: 'API: Users'
+  uriPattern: 'api/users'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Users'
+    '@action': 'index'
+    '@format': 'json'
+  httpMethods: ['GET']
+
 #
 # Write API
 #
