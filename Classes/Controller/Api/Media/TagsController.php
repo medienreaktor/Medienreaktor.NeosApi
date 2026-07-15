@@ -10,6 +10,7 @@ use Neos\Flow\Persistence\PersistenceManagerInterface;
 use Neos\Media\Domain\Model\Tag;
 use Neos\Media\Domain\Repository\AssetRepository;
 use Neos\Media\Domain\Repository\TagRepository;
+use Neos\Utility\ObjectAccess;
 
 /**
  * Tags as a nested tree with CRUD. Tags form a parent/child hierarchy; the
@@ -71,8 +72,18 @@ class TagsController extends AbstractApiController
             $tag->setLabel($label);
         }
         if ($parent !== null) {
-            // Empty string => move to root.
-            $tag->setParent($parent === '' ? null : $this->requireTag($parent));
+            if ($parent === '') {
+                // Move to root. Tag::setParent is non-nullable, so null the
+                // owning-side association directly. Deliberately NOT removing
+                // the tag from the old parent's children collection: that
+                // association has orphanRemoval=true, so removeElement() would
+                // DELETE the tag instead of just detaching it. Nulling the FK
+                // reparents it to the root; the inverse collection is rebuilt
+                // on the next read.
+                ObjectAccess::setProperty($tag, 'parent', null, true);
+            } else {
+                $tag->setParent($this->requireTag($parent));
+            }
         }
 
         $this->tagRepository->update($tag);
