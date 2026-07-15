@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Medienreaktor\NeosApi\Service\CommandRegistry;
+use Medienreaktor\NeosApi\Service\PropertyValueHydrator;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\Flow\Annotations as Flow;
 
@@ -24,6 +25,9 @@ use Neos\Flow\Annotations as Flow;
  */
 class CommandsController extends AbstractApiController
 {
+    #[Flow\Inject]
+    protected PropertyValueHydrator $propertyValueHydrator;
+
     /**
      * Authenticated exclusively via sessionless bearer tokens - CSRF does not apply
      */
@@ -80,6 +84,15 @@ class CommandsController extends AbstractApiController
         $payload = $envelope['payload'] ?? null;
         if (!is_string($type) || !is_array($payload)) {
             return ['error' => 'invalid_request', 'message' => 'Each command needs a string "type" and an object "payload".', 'statusCode' => 400];
+        }
+
+        // Object-typed property values (assets, images, ...) arrive as
+        // serialized references and must be resolved to real objects before the
+        // command's instanceof validation - see PropertyValueHydrator.
+        try {
+            $payload = (array)$this->propertyValueHydrator->hydrate($payload);
+        } catch (\Throwable $exception) {
+            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
         }
 
         try {
