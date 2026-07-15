@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
+use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\WorkspaceRebaseFailed;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
 use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceContainsPublishableChanges;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\Workspace;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\Flow\Annotations as Flow;
+use Neos\Flow\Mvc\Exception\StopActionException;
 use Neos\Neos\Domain\Model\WorkspaceMetadata;
 use Neos\Neos\Fusion\Cache\CacheFlushingStrategy;
 use Neos\Neos\Fusion\Cache\ContentCacheFlusher;
@@ -140,6 +142,10 @@ class WorkspacesController extends AbstractApiController
         return $this->json([
             'workspace' => $workspace->workspaceName->value,
             'baseWorkspace' => $workspace->baseWorkspaceName?->value,
+            // UP_TO_DATE or OUTDATED - piggybacked on the changes resource
+            // because clients poll it anyway, so "base has moved on" surfaces
+            // without an extra request.
+            'status' => $workspace->status->value,
             'changes' => $changes,
         ]);
     }
@@ -192,7 +198,11 @@ class WorkspacesController extends AbstractApiController
             $strategy = ($filter['strategy'] ?? '') === 'force'
                 ? RebaseErrorHandlingStrategy::STRATEGY_FORCE
                 : RebaseErrorHandlingStrategy::STRATEGY_FAIL;
-            $this->workspacePublishingService->rebaseWorkspace($this->getContentRepositoryId(), $workspace, $strategy);
+            try {
+                $this->workspacePublishingService->rebaseWorkspace($this->getContentRepositoryId(), $workspace, $strategy);
+            } catch (WorkspaceRebaseFailed) {
+                $this->throwJsonStatus(409, 'rebase_conflicts', 'Some changes in the workspace conflict with changes published to the base workspace. Retry with {"strategy": "force"} to drop the conflicting changes.');
+            }
 
             return ['rebased' => true];
         });
@@ -254,6 +264,9 @@ class WorkspacesController extends AbstractApiController
             $result = $operation($workspace);
         } catch (AccessDenied $exception) {
             $this->throwJsonStatus(403, 'access_denied', $exception->getMessage());
+        } catch (StopActionException $exception) {
+            // An operation already produced its own JSON status response.
+            throw $exception;
         } catch (\Throwable $exception) {
             $this->throwJsonStatus(409, 'operation_failed', $exception->getMessage());
         }
@@ -296,6 +309,7 @@ class WorkspacesController extends AbstractApiController
             'classification' => $metadata->classification->value,
             'owner' => $metadata->ownerUserId?->value,
             'hasPublishableChanges' => $workspace->hasPublishableChanges(),
+            'status' => $workspace->status->value,
             'permissions' => [
                 'read' => $permissions->read,
                 'write' => $permissions->write,
