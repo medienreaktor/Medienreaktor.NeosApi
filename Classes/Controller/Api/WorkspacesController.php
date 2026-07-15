@@ -49,6 +49,14 @@ class WorkspacesController extends AbstractApiController
     #[Flow\Inject]
     protected ContentCacheFlusher $contentCacheFlusher;
 
+    /**
+     * Base workspaces recur across the list (usually all point to live), so
+     * remember their write permission for the duration of the request.
+     *
+     * @var array<string, bool>
+     */
+    private array $writePermissionCache = [];
+
     public function indexAction(): string
     {
         $this->requireScope('neos.read');
@@ -284,6 +292,16 @@ class WorkspacesController extends AbstractApiController
         return is_array($body) ? array_filter($body, 'is_string') : [];
     }
 
+    private function canWriteToWorkspace(WorkspaceName $workspaceName): bool
+    {
+        return $this->writePermissionCache[$workspaceName->value] ??= $this->authorizationService->getWorkspacePermissions(
+            $this->getContentRepositoryId(),
+            $workspaceName,
+            $this->securityContext->getRoles(),
+            $this->userService->getCurrentUser()?->getId()
+        )->write;
+    }
+
     /**
      * @return array<string, mixed>|null null if the account may not read the workspace
      */
@@ -314,6 +332,11 @@ class WorkspacesController extends AbstractApiController
                 'read' => $permissions->read,
                 'write' => $permissions->write,
                 'manage' => $permissions->manage,
+                // Publishing means writing to the base workspace - the same
+                // check the content repository applies to PublishWorkspace.
+                // false for root workspaces (there is nothing to publish to).
+                'publish' => $workspace->baseWorkspaceName !== null
+                    && $this->canWriteToWorkspace($workspace->baseWorkspaceName),
             ],
         ];
     }

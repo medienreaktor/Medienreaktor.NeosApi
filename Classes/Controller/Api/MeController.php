@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Medienreaktor\NeosApi\Security\Authentication\Token\ApiBearerToken;
+use Neos\Flow\Annotations as Flow;
+use Neos\Flow\Security\Authorization\PrivilegeManagerInterface;
 use Neos\Flow\Security\Policy\Role;
 
 /**
@@ -13,6 +15,15 @@ use Neos\Flow\Security\Policy\Role;
  */
 class MeController extends AbstractApiController
 {
+    #[Flow\Inject]
+    protected PrivilegeManagerInterface $privilegeManager;
+
+    /**
+     * @var array<string, string> permission name => privilege target identifier
+     */
+    #[Flow\InjectConfiguration(package: 'Medienreaktor.NeosApi', path: 'accountPermissions')]
+    protected array $accountPermissions;
+
     public function indexAction(): string
     {
         $this->requireScope('neos.read');
@@ -33,6 +44,12 @@ class MeController extends AbstractApiController
             'scopes' => $scopes,
             'client' => $clientIdentifier,
             'contentRepository' => $this->contentRepositoryId,
+            // Same privilege-target checks the classic backend menu uses to
+            // show/hide modules (see accountPermissions in Settings.yaml).
+            'permissions' => array_map(
+                fn (string $privilegeTarget): bool => $this->privilegeManager->isPrivilegeTargetGranted($privilegeTarget),
+                $this->accountPermissions
+            ),
         ]);
     }
 }

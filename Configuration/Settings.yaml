@@ -38,6 +38,15 @@ Medienreaktor:
     # The authentication provider name whose accounts API users authenticate as
     accountAuthenticationProviderName: 'Neos.Neos:Backend'
 
+    # Capability flags reported by /api/me: name => Flow privilege target that
+    # must be granted to the account's roles. Uses the same checks the classic
+    # backend menu uses to show/hide modules, so clients can mirror the module
+    # visibility of the old UI. Extend or override per distribution.
+    accountPermissions:
+      media: 'Neos.Media.Browser:ManageAssets'
+      users: 'Neos.Neos:Backend.Module.Administration.Users'
+      administration: 'Neos.Neos:Backend.Module.Administration'
+
 Neos:
   Flow:
     mvc:
