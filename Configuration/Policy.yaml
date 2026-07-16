@@ -38,7 +38,7 @@ privilegeTargets:
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\(AssetsController|AssetSourcesController|CollectionsController|TagsController)->(index|show|usage)Action())'
 
     'Medienreaktor.NeosApi:Api.Media.Write':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\AssetsController->(create|update|delete|replaceResource|import|tag|untag|addToCollection|removeFromCollection)Action()) || method(Medienreaktor\NeosApi\Controller\Api\Media\(CollectionsController|TagsController)->(create|update|delete)Action())'
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\AssetsController->(create|createVariant|update|delete|replaceResource|import|tag|untag|addToCollection|removeFromCollection)Action()) || method(Medienreaktor\NeosApi\Controller\Api\Media\(CollectionsController|TagsController)->(create|update|delete)Action())'
 
 roles:
   'Neos.Flow:Everybody':

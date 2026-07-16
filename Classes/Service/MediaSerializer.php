@@ -14,8 +14,10 @@ use Neos\Media\Domain\Model\AssetSource\AssetProxy\SupportsIptcMetadataInterface
 use Neos\Media\Domain\Model\AssetSource\Neos\NeosAssetProxy;
 use Neos\Media\Domain\Model\Audio;
 use Neos\Media\Domain\Model\Document;
+use Neos\Media\Domain\Model\Adjustment\CropImageAdjustment;
 use Neos\Media\Domain\Model\Image;
 use Neos\Media\Domain\Model\ImageInterface;
+use Neos\Media\Domain\Model\ImageVariant;
 use Neos\Media\Domain\Model\Tag;
 use Neos\Media\Domain\Model\Video;
 
@@ -125,7 +127,38 @@ class MediaSerializer
             $detail['height'] = $asset->getHeight();
         }
 
+        // A cropped image is stored as an ImageVariant of an original Image.
+        // Surface the original's identifier and the current crop rectangle (in
+        // the original's pixel coordinates) so the crop editor can re-crop the
+        // original - never a variant of a variant - and prefill the last crop.
+        if ($asset instanceof ImageVariant) {
+            $detail['originalAssetIdentifier'] = $this->persistenceIdentifier($asset->getOriginalAsset());
+            $detail['crop'] = $this->cropRect($asset);
+        }
+
         return $detail;
+    }
+
+    /**
+     * The CropImageAdjustment of an image variant as {x, y, width, height} in
+     * original-image pixels, or null when the variant carries no crop.
+     *
+     * @return array<string, int>|null
+     */
+    private function cropRect(ImageVariant $variant): ?array
+    {
+        foreach ($variant->getAdjustments() as $adjustment) {
+            if ($adjustment instanceof CropImageAdjustment) {
+                return [
+                    'x' => (int)$adjustment->getX(),
+                    'y' => (int)$adjustment->getY(),
+                    'width' => (int)$adjustment->getWidth(),
+                    'height' => (int)$adjustment->getHeight(),
+                ];
+            }
+        }
+
+        return null;
     }
 
     /**

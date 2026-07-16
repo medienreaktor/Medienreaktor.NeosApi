@@ -301,6 +301,16 @@
   httpMethods: ['POST']
 
 -
+  name: 'API: Media asset create variant'
+  uriPattern: 'api/media/assets/{assetIdentifier}/variants'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\Assets'
+    '@action': 'createVariant'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
   name: 'API: Media asset add tag'
   uriPattern: 'api/media/assets/{assetIdentifier}/tags'
   defaults:

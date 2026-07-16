@@ -14,9 +14,12 @@ use Neos\Flow\Persistence\QueryInterface;
 use Doctrine\Common\Collections\ArrayCollection;
 use Neos\Flow\Property\TypeConverter\PersistentObjectConverter;
 use Neos\Flow\ResourceManagement\PersistentResource;
+use Neos\Media\Domain\Model\Adjustment\CropImageAdjustment;
 use Neos\Media\Domain\Model\Asset;
 use Neos\Media\Domain\Model\AssetCollection;
 use Neos\Media\Domain\Model\AssetInterface;
+use Neos\Media\Domain\Model\Image;
+use Neos\Media\Domain\Model\ImageVariant;
 use Neos\Media\Domain\Model\AssetSource\AssetProxyRepositoryInterface;
 use Neos\Media\Domain\Model\AssetSource\AssetTypeFilter;
 use Neos\Media\Domain\Model\AssetSource\SupportsCollectionsInterface;
@@ -312,6 +315,46 @@ class AssetsController extends AbstractApiController
         $this->persistenceManager->persistAll();
 
         return $this->json(['asset' => $this->mediaSerializer->serializeProxy($this->neosProxy($asset))]);
+    }
+
+    /**
+     * Create a cropped ImageVariant of a local image and return it as an asset.
+     *
+     * The variant wraps the original image with a CropImageAdjustment expressed
+     * in the original's pixel coordinates; the variant's own identifier is what
+     * the client stores as the image property reference. The client always
+     * passes the *original* image's identifier here (resolving it from the
+     * variant when re-cropping), so a variant of a variant is never produced.
+     *
+     * JSON body: { crop: { x, y, width, height } } - integer pixels.
+     */
+    #[Flow\SkipCsrfProtection]
+    public function createVariantAction(string $assetIdentifier, array $crop): string
+    {
+        $this->requireScope('neos.media');
+        $asset = $this->requireLocalAsset($assetIdentifier);
+        if (!$asset instanceof Image) {
+            $this->throwJsonStatus(400, 'not_an_image', 'Image variants can only be created from images.');
+        }
+
+        $width = (int)($crop['width'] ?? 0);
+        $height = (int)($crop['height'] ?? 0);
+        if ($width <= 0 || $height <= 0) {
+            $this->throwJsonStatus(400, 'invalid_crop', 'The crop must have a positive width and height.');
+        }
+
+        $variant = new ImageVariant($asset);
+        $variant->addAdjustment(new CropImageAdjustment([
+            'x' => (int)($crop['x'] ?? 0),
+            'y' => (int)($crop['y'] ?? 0),
+            'width' => $width,
+            'height' => $height,
+        ]));
+
+        $this->assetRepository->add($variant);
+        $this->persistenceManager->persistAll();
+
+        return $this->json(['asset' => $this->mediaSerializer->serializeProxy($this->neosProxy($variant))], 201);
     }
 
     /**
