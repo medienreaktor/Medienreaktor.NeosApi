@@ -141,6 +141,16 @@
   httpMethods: ['GET']
 
 -
+  name: 'API: Workspace document changes'
+  uriPattern: 'api/workspaces/{workspaceName}/document-changes'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'documentChanges'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
   name: 'API: Workspace publish'
   uriPattern: 'api/workspaces/{workspaceName}/publish'
   defaults:

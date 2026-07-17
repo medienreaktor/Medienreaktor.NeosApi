@@ -9,7 +9,10 @@ use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\ConflictingEvents;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\PartialWorkspaceRebaseFailed;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\WorkspaceRebaseFailed;
+use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceContainsPublishableChanges;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAddress;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
@@ -27,6 +30,7 @@ use Neos\Neos\PendingChangesProjection\ChangeFinder;
 use Neos\Neos\Domain\Service\UserService;
 use Neos\Neos\Domain\Service\WorkspacePublishingService;
 use Neos\Neos\Domain\Service\WorkspaceService;
+use Neos\Neos\Domain\SubtreeTagging\NeosSubtreeTag;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Dto\RebaseErrorHandlingStrategy;
 use Neos\Neos\Security\Authorization\ContentRepositoryAuthorizationService;
 
@@ -208,6 +212,145 @@ class WorkspacesController extends AbstractApiController
         ]);
     }
 
+    /**
+     * The pending changes of a workspace grouped by their containing document,
+     * enriched for a human-facing review UI: each entry carries the document's
+     * label, icon, breadcrumb, the kinds of change it contains, and how many
+     * pending changes it groups. This is what the Studio's "Review changes"
+     * dialog lists and lets an editor publish or discard per document.
+     *
+     * Granularity is deliberately the document: publish/discard scope to a
+     * document ({"documents": [...]}), which is the unit the content repository
+     * can separate cleanly - arbitrary per-node selections routinely collide
+     * with their own dependencies (partial publish conflicts). Mirrors the
+     * document grouping of the classic Workspace module's review table.
+     */
+    public function documentChangesAction(string $workspaceName): string
+    {
+        $this->requireScope('neos.read');
+
+        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
+        if ($workspace === null) {
+            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
+        }
+        if ($this->serializeWorkspace($workspace) === null) {
+            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
+        }
+
+        $contentRepository = $this->getContentRepository();
+        $nodeTypeManager = $contentRepository->getNodeTypeManager();
+        $changeFinder = $contentRepository->projectionState(ChangeFinder::class);
+        $subgraphs = [];
+        $baseSubgraphs = [];
+        // Accumulated per document aggregate id, in first-seen order.
+        $documents = [];
+        foreach ($changeFinder->findByContentStreamId($workspace->currentContentStreamId) as $change) {
+            $documentNode = null;
+            $siteNode = null;
+            $documentSubgraph = null;
+            if ($change->originDimensionSpacePoint !== null) {
+                $dimensionSpacePoint = $change->originDimensionSpacePoint->toDimensionSpacePoint();
+                $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                    $workspace->workspaceName,
+                    $dimensionSpacePoint
+                );
+                $documentNode = $subgraph->findClosestNode(
+                    $change->nodeAggregateId,
+                    FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
+                );
+                $siteNode = $subgraph->findClosestNode(
+                    $change->nodeAggregateId,
+                    FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
+                );
+                if ($documentNode !== null) {
+                    $documentSubgraph = $subgraph;
+                }
+                // A node removed in this workspace is gone from its subgraph, so
+                // resolve its document/site in the base workspace instead - the
+                // same fallback the changes resource uses - otherwise a deleted
+                // page would never appear in the review list. The base node is
+                // display-only (label/icon/breadcrumb); it is not offered for
+                // navigation.
+                if ($documentNode === null && $workspace->baseWorkspaceName !== null) {
+                    $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                        $workspace->baseWorkspaceName,
+                        $dimensionSpacePoint
+                    );
+                    $documentNode = $baseSubgraph->findClosestNode(
+                        $change->nodeAggregateId,
+                        FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
+                    );
+                    $siteNode ??= $baseSubgraph->findClosestNode(
+                        $change->nodeAggregateId,
+                        FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
+                    );
+                    // Left null on purpose: a base-resolved document is not
+                    // navigable in this workspace.
+                }
+            }
+
+            $documentId = $documentNode?->aggregateId->value
+                ?? $change->getLegacyRemovalAttachmentPoint()?->value;
+            // A change we cannot attribute to any document (no origin, no
+            // removal attachment point) - skip rather than invent a bucket.
+            if ($documentId === null) {
+                continue;
+            }
+
+            if (!isset($documents[$documentId])) {
+                $documents[$documentId] = [
+                    'documentAggregateId' => $documentId,
+                    // Only workspace-resolved documents are navigable; a deleted
+                    // (base-resolved) one gets a null address.
+                    'documentAddress' => $documentSubgraph !== null && $documentNode !== null
+                        ? NodeAddressCodec::encode(NodeAddress::fromNode($documentNode))
+                        : null,
+                    'siteAggregateId' => $siteNode?->aggregateId->value,
+                    'siteLabel' => $siteNode !== null
+                        ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($siteNode))
+                        : null,
+                    'label' => $documentNode !== null
+                        ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($documentNode))
+                        : $documentId,
+                    'nodeType' => $documentNode?->nodeTypeName->value,
+                    'icon' => $documentNode !== null
+                        ? ($nodeTypeManager->getNodeType($documentNode->nodeTypeName)?->getFullConfiguration()['ui']['icon'] ?? null)
+                        : null,
+                    'breadcrumb' => $documentNode !== null && $documentSubgraph !== null
+                        ? $this->documentBreadcrumb($documentNode, $documentSubgraph)
+                        : [],
+                    'hidden' => $documentNode?->tags->contain(NeosSubtreeTag::disabled()) ?? false,
+                    'created' => false,
+                    'changed' => false,
+                    'moved' => false,
+                    'deleted' => false,
+                    'changeCount' => 0,
+                ];
+            }
+
+            $documents[$documentId]['changeCount']++;
+            // The document node's own change gives the page-level verbs; any
+            // change on a descendant is content that changed within the page.
+            if ($documentNode !== null && $change->nodeAggregateId->equals($documentNode->aggregateId)) {
+                $documents[$documentId]['created'] = $change->created;
+                $documents[$documentId]['moved'] = $change->moved;
+                $documents[$documentId]['deleted'] = $change->deleted;
+                if ($change->changed) {
+                    $documents[$documentId]['changed'] = true;
+                }
+            } else {
+                $documents[$documentId]['changed'] = true;
+            }
+        }
+
+        return $this->json([
+            'workspace' => $workspace->workspaceName->value,
+            'baseWorkspace' => $workspace->baseWorkspaceName?->value,
+            'status' => $workspace->status->value,
+            'documents' => array_values($documents),
+        ]);
+    }
+
     #[Flow\SkipCsrfProtection]
     public function publishAction(string $workspaceName): string
     {
@@ -215,6 +358,18 @@ class WorkspacesController extends AbstractApiController
 
         return $this->executeWorkspaceOperation($workspaceName, function (WorkspaceName $workspace): array {
             $filter = $this->getOperationFilter();
+            $documents = $this->getOperationDocuments();
+            if ($documents !== []) {
+                // A selection of documents from the review dialog. Published one
+                // by one - the content repository has no multi-document publish
+                // - so a conflict on the Nth document leaves the earlier ones
+                // published (the same behaviour as the classic review module).
+                $publishedChanges = 0;
+                foreach ($documents as $documentId) {
+                    $publishedChanges += $this->workspacePublishingService->publishChangesInDocument($this->getContentRepositoryId(), $workspace, NodeAggregateId::fromString($documentId))->numberOfPublishedChanges;
+                }
+                return ['publishedChanges' => $publishedChanges];
+            }
             if (isset($filter['site'])) {
                 $result = $this->workspacePublishingService->publishChangesInSite($this->getContentRepositoryId(), $workspace, NodeAggregateId::fromString($filter['site']));
             } elseif (isset($filter['document'])) {
@@ -234,6 +389,16 @@ class WorkspacesController extends AbstractApiController
 
         return $this->executeWorkspaceOperation($workspaceName, function (WorkspaceName $workspace): array {
             $filter = $this->getOperationFilter();
+            $documents = $this->getOperationDocuments();
+            if ($documents !== []) {
+                // A selection of documents from the review dialog, discarded one
+                // by one (see publishAction for the per-document rationale).
+                $discardedChanges = 0;
+                foreach ($documents as $documentId) {
+                    $discardedChanges += $this->workspacePublishingService->discardChangesInDocument($this->getContentRepositoryId(), $workspace, NodeAggregateId::fromString($documentId))->numberOfDiscardedChanges;
+                }
+                return ['discardedChanges' => $discardedChanges];
+            }
             if (isset($filter['site'])) {
                 $result = $this->workspacePublishingService->discardChangesInSite($this->getContentRepositoryId(), $workspace, NodeAggregateId::fromString($filter['site']));
             } elseif (isset($filter['document'])) {
@@ -308,6 +473,30 @@ class WorkspacesController extends AbstractApiController
         );
 
         return $this->json(['workspace' => $workspace->value, 'baseWorkspace' => $baseWorkspaceName]);
+    }
+
+    /**
+     * The chain of document labels from the site down to (and including) the
+     * given document, e.g. ["Products", "Widgets", "Widget X"] - the path a
+     * reviewer reads to place a change. The site node is excluded (the review
+     * UI groups by site already); non-document ancestors are skipped.
+     *
+     * @return list<string>
+     */
+    private function documentBreadcrumb(Node $documentNode, ContentSubgraphInterface $subgraph): array
+    {
+        $ancestors = $subgraph->findAncestorNodes(
+            $documentNode->aggregateId,
+            FindAncestorNodesFilter::create(nodeTypes: 'Neos.Neos:Document')
+        );
+        $breadcrumb = [];
+        // findAncestorNodes yields nearest-first; reverse for site-to-here order.
+        foreach (array_reverse(iterator_to_array($ancestors)) as $ancestor) {
+            $breadcrumb[] = $this->plainTextLabel($this->nodeLabelGenerator->getLabel($ancestor));
+        }
+        $breadcrumb[] = $this->plainTextLabel($this->nodeLabelGenerator->getLabel($documentNode));
+
+        return $breadcrumb;
     }
 
     /**
@@ -466,6 +655,23 @@ class WorkspacesController extends AbstractApiController
         $body = json_decode((string)$this->request->getHttpRequest()->getBody(), true);
 
         return is_array($body) ? array_filter($body, 'is_string') : [];
+    }
+
+    /**
+     * The "documents" list of a scoped publish/discard body ({"documents":
+     * ["id", ...]}) - the document aggregate ids a review selection targets.
+     * Empty when the body carries no such list.
+     *
+     * @return list<string>
+     */
+    private function getOperationDocuments(): array
+    {
+        $body = json_decode((string)$this->request->getHttpRequest()->getBody(), true);
+        if (!is_array($body) || !isset($body['documents']) || !is_array($body['documents'])) {
+            return [];
+        }
+
+        return array_values(array_filter($body['documents'], 'is_string'));
     }
 
     private function canWriteToWorkspace(WorkspaceName $workspaceName): bool
