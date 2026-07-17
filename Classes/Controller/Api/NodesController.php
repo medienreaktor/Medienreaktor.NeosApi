@@ -16,6 +16,7 @@ use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\Pagination\Pagina
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateClassification;
 use Neos\Flow\Annotations as Flow;
+use Neos\Neos\Utility\NodeUriPathSegmentGenerator;
 
 /**
  * Node reads over the security-aware content subgraph. The subgraph applies
@@ -27,6 +28,9 @@ class NodesController extends AbstractApiController
 {
     #[Flow\Inject]
     protected NodeSerializer $nodeSerializer;
+
+    #[Flow\Inject]
+    protected NodeUriPathSegmentGenerator $uriPathSegmentGenerator;
 
     public function showAction(string $nodeAddress): string
     {
@@ -123,8 +127,20 @@ class NodesController extends AbstractApiController
                 }
 
                 return $this->json(['references' => $items]);
+            case 'uri-path-segment':
+                // Build a URL path segment from ?text= (typically the current
+                // title), or from the node's label when no text is given -
+                // applying the same language-aware transliteration the classic
+                // UI's uriPathSegment "sync" button relies on. A read-only
+                // computation, hence a GET relation like the others.
+                $node = $subgraph->findNodeById($address->aggregateId);
+                if ($node === null) {
+                    $this->throwJsonStatus(404, 'node_not_found', 'The node does not exist in this subgraph or is not visible for this account.');
+                }
+
+                return $this->json(['slug' => $this->uriPathSegmentGenerator->generateUriPathSegment($node, $this->getStringQueryParam('text'))]);
             default:
-                $this->throwJsonStatus(404, 'unknown_relation', sprintf('Unknown relation "%s". Supported: children, descendants, ancestors, parent, references, variants, allowed-child-node-types.', $relation));
+                $this->throwJsonStatus(404, 'unknown_relation', sprintf('Unknown relation "%s". Supported: children, descendants, ancestors, parent, references, variants, allowed-child-node-types, uri-path-segment.', $relation));
         }
 
         return $this->json(['nodes' => $this->nodeSerializer->serializeNodes($nodes, $subgraph, $nodeTypes)]);
