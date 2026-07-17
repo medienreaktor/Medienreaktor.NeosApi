@@ -1,8 +1,16 @@
 #
-# Deny-by-default: the catch-all target below matches EVERY action in the
-# Controller\Api namespace. Flow denies any method matched by a privilege
-# target unless one matching target is granted to the current roles - so any
-# future endpoint added to this package is closed until explicitly granted.
+# Every Api endpoint is covered by exactly one explicit privilege target,
+# granted to the role that should reach it: editor endpoints to
+# Neos.Neos:AbstractEditor, administration (user management) to
+# Neos.Neos:Administrator. No broad catch-all is used - a catch-all matching
+# every action would, by Flow's overlapping-target semantics, have to be
+# granted to every role, and granting it to one role only (e.g. Administrator)
+# silently locks every other role out of every endpoint.
+#
+# TRADE-OFF: because Flow treats a method matched by NO privilege target as
+# open, a NEW controller/action added to Controller\Api is unprotected until
+# it is added to one of the targets below. Keep the matchers in sync with the
+# controllers (see the coverage list against Controller\Api\*).
 #
 # The Controller\OAuth namespace is deliberately NOT matched: token issuance,
 # discovery and dynamic client registration are public protocol endpoints.
@@ -22,9 +30,6 @@ privilegeTargets:
     'Medienreaktor.NeosApi:OAuth.PublicEndpoints':
       matcher: 'method(Medienreaktor\NeosApi\Controller\OAuth\TokenController->tokenAction()) || method(Medienreaktor\NeosApi\Controller\OAuth\RegistrationController->registerAction()) || method(Medienreaktor\NeosApi\Controller\OAuth\DiscoveryController->.*Action()) || method(Medienreaktor\NeosApi\Controller\OAuth\AuthorizeController->(authorize|approve)Action())'
 
-    'Medienreaktor.NeosApi:Api.CatchAll':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\.*->.*Action())'
-
     'Medienreaktor.NeosApi:Api.Read':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\(MeController|NodesController|SitesController|NodeTypesController|DimensionsController)->.*Action()) || method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show|changes)Action())'
 
@@ -39,6 +44,11 @@ privilegeTargets:
 
     'Medienreaktor.NeosApi:Api.Media.Write':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\AssetsController->(create|createVariant|update|delete|replaceResource|import|tag|untag|addToCollection|removeFromCollection)Action()) || method(Medienreaktor\NeosApi\Controller\Api\Media\(CollectionsController|TagsController)->(create|update|delete)Action())'
+
+    # Administration endpoints - user management and anything else that must be
+    # administrators only. Granted to Neos.Neos:Administrator, never to editors.
+    'Medienreaktor.NeosApi:Api.Administration':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\UsersController->.*Action())'
 
 roles:
   'Neos.Flow:Everybody':
@@ -68,5 +78,5 @@ roles:
   'Neos.Neos:Administrator':
     privileges:
       -
-        privilegeTarget: 'Medienreaktor.NeosApi:Api.CatchAll'
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Administration'
         permission: GRANT
