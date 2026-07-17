@@ -120,11 +120,16 @@ abstract class AbstractApiController extends ActionController
         return json_encode($data, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     }
 
-    protected function throwJsonStatus(int $statusCode, string $error, string $description): never
+    /**
+     * @param array<string, mixed> $details extra top-level fields merged into
+     *        the error body (e.g. a structured "conflicts" list). Cannot
+     *        override "error"/"error_description".
+     */
+    protected function throwJsonStatus(int $statusCode, string $error, string $description, array $details = []): never
     {
         $this->throwStatus($statusCode, null, json_encode([
             'error' => $error,
             'error_description' => $description,
-        ], JSON_UNESCAPED_SLASHES));
+        ] + $details, JSON_UNESCAPED_SLASHES));
     }
 }

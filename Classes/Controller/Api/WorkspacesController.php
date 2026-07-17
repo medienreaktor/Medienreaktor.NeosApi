@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Medienreaktor\NeosApi\Controller\Api;
 
+use Neos\ContentRepository\Core\EventStore\EventInterface;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
+use Neos\ContentRepository\Core\Feature\WorkspaceRebase\ConflictingEvents;
+use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\PartialWorkspaceRebaseFailed;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\WorkspaceRebaseFailed;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
 use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceContainsPublishableChanges;
@@ -61,6 +64,17 @@ class WorkspacesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
 
+        // Provision the acting user's personal workspace if it does not exist
+        // yet. In classic Neos this happens on backend module load
+        // (Neos.Neos.Ui BackendController); the Studio must not depend on a
+        // user ever having opened the old UI, so the API creates it on demand.
+        // The Studio selects the PERSONAL workspace to edit in and cannot
+        // initialise without one. Idempotent: a no-op once the workspace exists.
+        $currentUser = $this->userService->getCurrentUser();
+        if ($currentUser !== null) {
+            $this->workspaceService->createPersonalWorkspaceForUserIfMissing($this->getContentRepositoryId(), $currentUser);
+        }
+
         $workspaces = [];
         foreach ($this->getContentRepository()->findWorkspaces() as $workspace) {
             $serialized = $this->serializeWorkspace($workspace);
@@ -116,34 +130,54 @@ class WorkspacesController extends AbstractApiController
         $contentRepository = $this->getContentRepository();
         $changeFinder = $contentRepository->projectionState(ChangeFinder::class);
         $subgraphs = [];
+        $baseSubgraphs = [];
         $changes = [];
         foreach ($changeFinder->findByContentStreamId($workspace->currentContentStreamId) as $change) {
             // Resolve the containing document and site, so tree UIs can mark
             // documents whose content (not just the document itself) has
             // changes, and clients can scope publish/discard to one site.
-            $documentAggregateId = null;
-            $siteAggregateId = null;
+            $documentNode = null;
+            $siteNode = null;
             if ($change->originDimensionSpacePoint !== null) {
                 $dimensionSpacePoint = $change->originDimensionSpacePoint->toDimensionSpacePoint();
                 $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
                     $workspace->workspaceName,
                     $dimensionSpacePoint
                 );
-                $documentAggregateId = $subgraph->findClosestNode(
+                $documentNode = $subgraph->findClosestNode(
                     $change->nodeAggregateId,
                     FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
-                )?->aggregateId->value;
-                $siteAggregateId = $subgraph->findClosestNode(
+                );
+                $siteNode = $subgraph->findClosestNode(
                     $change->nodeAggregateId,
                     FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
-                )?->aggregateId->value;
+                );
+                // A node removed in this workspace is gone from its subgraph, so
+                // the lookups above return null - but it still exists in the
+                // base workspace. Resolve its document and site there so a
+                // deletion is still attributed to a document and site;
+                // otherwise a site-scoped client drops it from the change count
+                // and the deletion looks like it never happened. (The change's
+                // removal attachment point is not reliably populated, so we do
+                // not depend on it.)
+                if ($documentNode === null && $workspace->baseWorkspaceName !== null) {
+                    $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                        $workspace->baseWorkspaceName,
+                        $dimensionSpacePoint
+                    );
+                    $documentNode = $baseSubgraph->findClosestNode(
+                        $change->nodeAggregateId,
+                        FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
+                    );
+                    $siteNode ??= $baseSubgraph->findClosestNode(
+                        $change->nodeAggregateId,
+                        FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
+                    );
+                }
             }
-            // Deleted nodes no longer exist in the workspace subgraph; the
-            // change record remembers the closest document at removal time.
-            // The site cannot be resolved for them, so siteAggregateId stays
-            // null - a client-side count nuance only; the server resolves the
-            // actual node set itself when a site-scoped publish/discard runs.
-            $documentAggregateId ??= $change->getLegacyRemovalAttachmentPoint()?->value;
+            $documentAggregateId = $documentNode?->aggregateId->value
+                ?? $change->getLegacyRemovalAttachmentPoint()?->value;
+            $siteAggregateId = $siteNode?->aggregateId->value;
 
             $changes[] = [
                 'nodeAggregateId' => $change->nodeAggregateId->value,
@@ -216,11 +250,9 @@ class WorkspacesController extends AbstractApiController
             $strategy = ($filter['strategy'] ?? '') === 'force'
                 ? RebaseErrorHandlingStrategy::STRATEGY_FORCE
                 : RebaseErrorHandlingStrategy::STRATEGY_FAIL;
-            try {
-                $this->workspacePublishingService->rebaseWorkspace($this->getContentRepositoryId(), $workspace, $strategy);
-            } catch (WorkspaceRebaseFailed) {
-                $this->throwJsonStatus(409, 'rebase_conflicts', 'Some changes in the workspace conflict with changes published to the base workspace. Retry with {"strategy": "force"} to drop the conflicting changes.');
-            }
+            // A FAIL-strategy conflict surfaces as WorkspaceRebaseFailed, which
+            // executeWorkspaceOperation turns into a 409 with the conflict list.
+            $this->workspacePublishingService->rebaseWorkspace($this->getContentRepositoryId(), $workspace, $strategy);
 
             return ['rebased' => true];
         });
@@ -282,6 +314,21 @@ class WorkspacesController extends AbstractApiController
             $result = $operation($workspace);
         } catch (AccessDenied $exception) {
             $this->throwJsonStatus(403, 'access_denied', $exception->getMessage());
+        } catch (WorkspaceRebaseFailed $exception) {
+            // Own changes collide with changes already published to the base
+            // workspace. Retrying a rebase/publish with {"strategy":"force"}
+            // drops the conflicting own changes; the client decides.
+            $this->throwJsonStatus(409, 'rebase_conflicts', $exception->getMessage(), [
+                'conflicts' => $this->serializeRebaseConflicts($workspace, $exception->conflictingEvents),
+            ]);
+        } catch (PartialWorkspaceRebaseFailed $exception) {
+            // A scoped publish/discard whose selected changes cannot be
+            // separated from the rest (e.g. a move that depends on a create not
+            // in the selection). Not resolvable by force - the remedy is a
+            // different scope or publishing everything.
+            $this->throwJsonStatus(409, 'partial_publish_conflicts', $exception->getMessage(), [
+                'conflicts' => $this->serializeRebaseConflicts($workspace, $exception->conflictingEvents),
+            ]);
         } catch (StopActionException $exception) {
             // An operation already produced its own JSON status response.
             throw $exception;
@@ -290,6 +337,103 @@ class WorkspacesController extends AbstractApiController
         }
 
         return $this->json(['workspace' => $workspace->value] + $result);
+    }
+
+    /**
+     * Turn a rebase/publish conflict set into a client-consumable list: which
+     * node conflicts, what kind of change was rejected, and why. Mirrors the
+     * document/site fields of the changes resource so a UI can group conflicts
+     * and navigate to them. Deduplicated per affected node.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function serializeRebaseConflicts(WorkspaceName $workspaceName, ConflictingEvents $conflictingEvents): array
+    {
+        $contentRepository = $this->getContentRepository();
+        $conflicts = [];
+        $seen = [];
+        foreach ($conflictingEvents as $conflictingEvent) {
+            $nodeAggregateId = $conflictingEvent->getAffectedNodeAggregateId();
+            $nodeId = $nodeAggregateId?->value;
+            if ($nodeId !== null && isset($seen[$nodeId])) {
+                continue;
+            }
+            if ($nodeId !== null) {
+                $seen[$nodeId] = true;
+            }
+
+            $documentAggregateId = null;
+            $siteAggregateId = null;
+            if ($nodeAggregateId !== null) {
+                // The node still exists in the (losing) workspace even when the
+                // conflict is that the base deleted it, so its ancestors are
+                // usually resolvable. Any covered dimension yields the same
+                // document/site ids, so the first one is enough. Guarded: a
+                // resolution failure must not turn the 409 into a 500.
+                try {
+                    $nodeAggregate = $contentRepository->getContentGraph($workspaceName)->findNodeAggregateById($nodeAggregateId);
+                    foreach ($nodeAggregate?->coveredDimensionSpacePoints ?? [] as $dimensionSpacePoint) {
+                        $subgraph = $contentRepository->getContentSubgraph($workspaceName, $dimensionSpacePoint);
+                        $documentAggregateId = $subgraph->findClosestNode(
+                            $nodeAggregateId,
+                            FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
+                        )?->aggregateId->value;
+                        $siteAggregateId = $subgraph->findClosestNode(
+                            $nodeAggregateId,
+                            FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
+                        )?->aggregateId->value;
+                        break;
+                    }
+                } catch (\Throwable) {
+                    // Leave document/site null - the node id and reason are
+                    // still enough for the client to act.
+                }
+            }
+
+            $conflicts[] = [
+                'nodeAggregateId' => $nodeId,
+                'documentAggregateId' => $documentAggregateId,
+                'siteAggregateId' => $siteAggregateId,
+                'typeOfChange' => $this->conflictTypeOfChange($conflictingEvent->getEvent()),
+                'reason' => $this->conflictReason($conflictingEvent->getException()),
+                'message' => $conflictingEvent->getException()->getMessage(),
+                'sequenceNumber' => $conflictingEvent->getSequenceNumber()->value,
+            ];
+        }
+
+        return $conflicts;
+    }
+
+    /**
+     * The kind of change a conflicting event represents, in the vocabulary of
+     * the changes resource. Matched by event short name to avoid importing
+     * every event class - the same approach core's own conflict serializer uses.
+     */
+    private function conflictTypeOfChange(EventInterface $event): ?string
+    {
+        return match ($this->shortClassName($event)) {
+            'NodeAggregateWithNodeWasCreated', 'NodePeerVariantWasCreated', 'NodeGeneralizationVariantWasCreated' => 'created',
+            'NodePropertiesWereSet', 'NodeReferencesWereSet', 'SubtreeWasTagged', 'SubtreeWasUntagged', 'NodeAggregateTypeWasChanged' => 'changed',
+            'NodeAggregateWasMoved' => 'moved',
+            'NodeAggregateWasRemoved' => 'deleted',
+            default => null,
+        };
+    }
+
+    /** A machine-readable reason code for a conflict, or null if unclassified. */
+    private function conflictReason(\Throwable $exception): ?string
+    {
+        return match ($this->shortClassName($exception)) {
+            'NodeAggregateCurrentlyDoesNotExist' => 'node_has_been_deleted',
+            default => null,
+        };
+    }
+
+    private function shortClassName(object $object): string
+    {
+        $class = $object::class;
+        $position = strrpos($class, '\\');
+        return $position === false ? $class : substr($class, $position + 1);
     }
 
     /**
