@@ -1,72 +1,135 @@
 #
-# Every Api endpoint is covered by exactly one explicit privilege target,
-# granted to the role that should reach it: editor endpoints to
-# Neos.Neos:AbstractEditor, administration (user management) to
-# Neos.Neos:Administrator. No broad catch-all is used - a catch-all matching
-# every action would, by Flow's overlapping-target semantics, have to be
-# granted to every role, and granting it to one role only (e.g. Administrator)
-# silently locks every other role out of every endpoint.
+# Privileges here are FEATURES, not role assignments: each privilege target
+# names one accessible capability of the API (read nodes, write content,
+# manage media, publish a workspace, administer users). Roles below are then
+# granted the features they should have. A feature can be granted to several
+# roles, and a role collects several features - keep the two concerns apart.
+#
+# Granularity is per resource, split by operation (.Read / .Write / .Publish)
+# wherever a resource exposes both, so a resource's writes can be reserved for
+# a different role than its reads.
 #
 # TRADE-OFF: because Flow treats a method matched by NO privilege target as
-# open, a NEW controller/action added to Controller\Api is unprotected until
-# it is added to one of the targets below. Keep the matchers in sync with the
-# controllers (see the coverage list against Controller\Api\*).
+# open, a NEW controller/action added to Controller\Api is unprotected until it
+# is added to one of the matchers below. Keep the matchers in sync with the
+# controllers (coverage is checked against Controller\Api\*).
 #
-# The Controller\OAuth namespace is deliberately NOT matched: token issuance,
-# discovery and dynamic client registration are public protocol endpoints.
+# The Controller\OAuth namespace is deliberately NOT matched as a feature:
+# token issuance, discovery and dynamic client registration are public
+# protocol endpoints, granted to Everybody.
 #
 # Node-level and workspace-level authorization is NOT handled here - it is
 # enforced structurally by the content repository (visibility constraints on
 # every read, ContentRepositoryAuthProvider::canExecuteCommand on every
-# command), based on the roles of the authenticated account.
+# command), based on the roles of the authenticated account. In particular the
+# publish feature grants access to the publish/discard/rebase endpoints to any
+# editor; the rule that only Neos.Neos:LivePublisher may publish INTO the
+# "live" base workspace is enforced by the content repository, not here.
 #
 privilegeTargets:
   'Neos\Flow\Security\Authorization\Privilege\Method\MethodPrivilege':
 
-    # The OAuth protocol endpoints are public by design (Neos.Neos ships a
-    # global catch-all privilege over ALL controller actions, so public
-    # endpoints need an explicit grant to Everybody). The authorize endpoint
-    # additionally checks for a logged-in backend account itself.
+    # Public OAuth protocol endpoints. Neos.Neos ships a global catch-all
+    # privilege over ALL controller actions, so public endpoints need an
+    # explicit grant to Everybody. The authorize endpoint additionally checks
+    # for a logged-in backend account itself.
     'Medienreaktor.NeosApi:OAuth.PublicEndpoints':
       matcher: 'method(Medienreaktor\NeosApi\Controller\OAuth\TokenController->tokenAction()) || method(Medienreaktor\NeosApi\Controller\OAuth\RegistrationController->registerAction()) || method(Medienreaktor\NeosApi\Controller\OAuth\DiscoveryController->.*Action()) || method(Medienreaktor\NeosApi\Controller\OAuth\AuthorizeController->(authorize|approve)Action())'
 
-    'Medienreaktor.NeosApi:Api.Read':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\(MeController|NodesController|SitesController|NodeTypesController|DimensionsController)->.*Action()) || method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show|changes|documentChanges)Action())'
+    # --- Read features -----------------------------------------------------
 
-    'Medienreaktor.NeosApi:Api.Write':
+    # The authenticated account's own profile and permissions.
+    'Medienreaktor.NeosApi:Api.Me':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\MeController->.*Action())'
+
+    # Read the content graph (nodes and their relations).
+    'Medienreaktor.NeosApi:Api.Nodes':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\NodesController->.*Action())'
+
+    # Read the node type schema.
+    'Medienreaktor.NeosApi:Api.NodeTypes':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\NodeTypesController->.*Action())'
+
+    # Read the configured content dimensions.
+    'Medienreaktor.NeosApi:Api.Dimensions':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\DimensionsController->.*Action())'
+
+    # Read the list of sites.
+    'Medienreaktor.NeosApi:Api.Sites.Read':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\SitesController->(index|show)Action())'
+
+    # Read the list of users.
+    'Medienreaktor.NeosApi:Api.Users.Read':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\UsersController->(index|show)Action())'
+
+    # --- Write features ----------------------------------------------------
+
+    # Write content through the command bus (single + batch).
+    'Medienreaktor.NeosApi:Api.Content':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\CommandsController->.*Action())'
 
-    'Medienreaktor.NeosApi:Api.Publish':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(publish|discard|rebase|changeBaseWorkspace)Action())'
+    # Create, edit and delete sites. Administrators only.
+    'Medienreaktor.NeosApi:Api.Sites.Write':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\SitesController->(create|update|delete)Action())'
 
+    # Create, edit and delete users. Administrators only.
+    'Medienreaktor.NeosApi:Api.Users.Write':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\UsersController->(create|update|delete)Action())'
+
+    # --- Media features ----------------------------------------------------
+
+    # Browse assets, asset sources, collections and tags.
     'Medienreaktor.NeosApi:Api.Media.Read':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\(AssetsController|AssetSourcesController|CollectionsController|TagsController)->(index|show|usage)Action())'
 
+    # Create, edit and delete assets, collections and tags.
     'Medienreaktor.NeosApi:Api.Media.Write':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\AssetsController->(create|createVariant|update|delete|replaceResource|import|tag|untag|addToCollection|removeFromCollection)Action()) || method(Medienreaktor\NeosApi\Controller\Api\Media\(CollectionsController|TagsController)->(create|update|delete)Action())'
 
-    # Administration endpoints - user management and anything else that must be
-    # administrators only. Granted to Neos.Neos:Administrator, never to editors.
-    'Medienreaktor.NeosApi:Api.Administration':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\UsersController->.*Action())'
+    # --- Workspace features ------------------------------------------------
+
+    # Inspect workspaces and their pending changes.
+    'Medienreaktor.NeosApi:Api.Workspaces.Read':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show|changes|documentChanges)Action())'
+
+    # Publish, discard, rebase a workspace and change its base workspace.
+    'Medienreaktor.NeosApi:Api.Workspaces.Publish':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(publish|discard|rebase|changeBaseWorkspace)Action())'
 
 roles:
+
+  # Public protocol surface.
   'Neos.Flow:Everybody':
     privileges:
       -
         privilegeTarget: 'Medienreaktor.NeosApi:OAuth.PublicEndpoints'
         permission: GRANT
 
+  # Every editor gets the full editing surface: read everything, write content
+  # and media, and use the workspace publish endpoints (the live-workspace
+  # restriction is enforced by the content repository, see the header note).
   'Neos.Neos:AbstractEditor':
     privileges:
       -
-        privilegeTarget: 'Medienreaktor.NeosApi:Api.Read'
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Me'
         permission: GRANT
       -
-        privilegeTarget: 'Medienreaktor.NeosApi:Api.Write'
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Nodes'
         permission: GRANT
       -
-        privilegeTarget: 'Medienreaktor.NeosApi:Api.Publish'
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.NodeTypes'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Dimensions'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Sites.Read'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Users.Read'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Content'
         permission: GRANT
       -
         privilegeTarget: 'Medienreaktor.NeosApi:Api.Media.Read'
@@ -74,9 +137,21 @@ roles:
       -
         privilegeTarget: 'Medienreaktor.NeosApi:Api.Media.Write'
         permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Workspaces.Read'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Workspaces.Publish'
+        permission: GRANT
 
+  # Administrators additionally get the write side of sites and users (they
+  # inherit every editor feature, including the corresponding reads, via
+  # Neos.Neos:AbstractEditor).
   'Neos.Neos:Administrator':
     privileges:
       -
-        privilegeTarget: 'Medienreaktor.NeosApi:Api.Administration'
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Sites.Write'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Users.Write'
         permission: GRANT
