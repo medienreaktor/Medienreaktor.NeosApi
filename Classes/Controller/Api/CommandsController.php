@@ -6,7 +6,11 @@ namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Medienreaktor\NeosApi\Service\CommandRegistry;
 use Medienreaktor\NeosApi\Service\PropertyValueHydrator;
+use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
+use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
+use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\Flow\Annotations as Flow;
 
 /**
@@ -95,6 +99,16 @@ class CommandsController extends AbstractApiController
             return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
         }
 
+        // Record where a removed node lived, so a deletion can still be scoped
+        // to its document/site when publishing individual changes. See
+        // resolveRemovalAttachmentPoint().
+        if ($type === 'RemoveNodeAggregate' && !isset($payload['removalAttachmentPoint'])) {
+            $attachmentPoint = $this->resolveRemovalAttachmentPoint($payload);
+            if ($attachmentPoint !== null) {
+                $payload['removalAttachmentPoint'] = $attachmentPoint;
+            }
+        }
+
         try {
             $command = CommandRegistry::deserialize($type, $payload);
         } catch (\InvalidArgumentException $exception) {
@@ -112,6 +126,52 @@ class CommandsController extends AbstractApiController
         }
 
         return [];
+    }
+
+    /**
+     * Resolve the "removal attachment point" for a RemoveNodeAggregate: the
+     * closest document of the node being removed, captured while the node still
+     * exists. Partial (site/document-scoped) publishing attributes a change by
+     * walking up from the changed node to a Document/Site ancestor - but a
+     * removed node is gone from the workspace, so a deletion is unscopable
+     * unless the removal recorded a surviving ancestor. The ESCR command makes
+     * this optional and Neos leaves it unset otherwise, which makes deletions
+     * impossible to publish per site/document. Filling it here keeps every
+     * removal (from any client) scopable. Best-effort: on any failure we return
+     * null and let the command run without it, as before.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function resolveRemovalAttachmentPoint(array $payload): ?string
+    {
+        if (
+            !is_string($payload['workspaceName'] ?? null)
+            || !is_string($payload['nodeAggregateId'] ?? null)
+            || !is_array($payload['coveredDimensionSpacePoint'] ?? null)
+        ) {
+            return null;
+        }
+        try {
+            $subgraph = $this->getContentRepository()->getContentSubgraph(
+                WorkspaceName::fromString($payload['workspaceName']),
+                DimensionSpacePoint::fromArray($payload['coveredDimensionSpacePoint'])
+            );
+            $nodeAggregateId = NodeAggregateId::fromString($payload['nodeAggregateId']);
+            $documentFilter = FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document');
+            $closestDocument = $subgraph->findClosestNode($nodeAggregateId, $documentFilter);
+            // The removed node is itself a document: its own id would point at a
+            // node that no longer exists after removal, so attach to the parent's
+            // document instead.
+            if ($closestDocument !== null && $closestDocument->aggregateId->equals($nodeAggregateId)) {
+                $parent = $subgraph->findParentNode($nodeAggregateId);
+                $closestDocument = $parent === null
+                    ? null
+                    : $subgraph->findClosestNode($parent->aggregateId, $documentFilter);
+            }
+            return $closestDocument?->aggregateId->value;
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**
