@@ -118,27 +118,37 @@ class WorkspacesController extends AbstractApiController
         $subgraphs = [];
         $changes = [];
         foreach ($changeFinder->findByContentStreamId($workspace->currentContentStreamId) as $change) {
-            // Resolve the containing document, so tree UIs can mark documents
-            // whose content (not just the document itself) has changes.
+            // Resolve the containing document and site, so tree UIs can mark
+            // documents whose content (not just the document itself) has
+            // changes, and clients can scope publish/discard to one site.
             $documentAggregateId = null;
+            $siteAggregateId = null;
             if ($change->originDimensionSpacePoint !== null) {
                 $dimensionSpacePoint = $change->originDimensionSpacePoint->toDimensionSpacePoint();
-                $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
                     $workspace->workspaceName,
                     $dimensionSpacePoint
                 );
-                $documentAggregateId = $subgraphs[$dimensionSpacePoint->hash]->findClosestNode(
+                $documentAggregateId = $subgraph->findClosestNode(
                     $change->nodeAggregateId,
                     FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
+                )?->aggregateId->value;
+                $siteAggregateId = $subgraph->findClosestNode(
+                    $change->nodeAggregateId,
+                    FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
                 )?->aggregateId->value;
             }
             // Deleted nodes no longer exist in the workspace subgraph; the
             // change record remembers the closest document at removal time.
+            // The site cannot be resolved for them, so siteAggregateId stays
+            // null - a client-side count nuance only; the server resolves the
+            // actual node set itself when a site-scoped publish/discard runs.
             $documentAggregateId ??= $change->getLegacyRemovalAttachmentPoint()?->value;
 
             $changes[] = [
                 'nodeAggregateId' => $change->nodeAggregateId->value,
                 'documentAggregateId' => $documentAggregateId,
+                'siteAggregateId' => $siteAggregateId,
                 'originDimensionSpacePoint' => $change->originDimensionSpacePoint?->coordinates,
                 'created' => $change->created,
                 'changed' => $change->changed,

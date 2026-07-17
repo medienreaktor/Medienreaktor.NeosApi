@@ -45,6 +45,10 @@ class SitesController extends AbstractApiController
             $sites[] = [
                 'name' => $site->getName(),
                 'nodeName' => (string)$site->getNodeName(),
+                // The site node's aggregate id, used to scope workspace
+                // publish/discard to a single site in multi-site setups. null
+                // when the site node is absent from the current subgraph.
+                'aggregateId' => $siteNode?->aggregateId->value,
                 'nodeAddress' => $siteNode === null ? null : NodeAddressCodec::encode(NodeAddress::fromNode($siteNode)),
             ];
         }
