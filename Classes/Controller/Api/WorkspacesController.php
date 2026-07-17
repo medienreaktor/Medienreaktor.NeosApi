@@ -11,12 +11,15 @@ use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\PartialWorkspa
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\WorkspaceRebaseFailed;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
 use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceContainsPublishableChanges;
+use Neos\ContentRepository\Core\SharedModel\Node\NodeAddress;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\Workspace;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Mvc\Exception\StopActionException;
 use Neos\Neos\Domain\Model\WorkspaceMetadata;
+use Neos\Neos\Domain\NodeLabel\NodeLabelGeneratorInterface;
+use Medienreaktor\NeosApi\Service\NodeAddressCodec;
 use Neos\Neos\Fusion\Cache\CacheFlushingStrategy;
 use Neos\Neos\Fusion\Cache\ContentCacheFlusher;
 use Neos\Neos\Fusion\Cache\FlushWorkspaceRequest;
@@ -51,6 +54,9 @@ class WorkspacesController extends AbstractApiController
 
     #[Flow\Inject]
     protected ContentCacheFlusher $contentCacheFlusher;
+
+    #[Flow\Inject]
+    protected NodeLabelGeneratorInterface $nodeLabelGenerator;
 
     /**
      * Base workspaces recur across the list (usually all point to live), so
@@ -362,7 +368,8 @@ class WorkspacesController extends AbstractApiController
                 $seen[$nodeId] = true;
             }
 
-            $documentAggregateId = null;
+            $affectedNode = null;
+            $documentNode = null;
             $siteAggregateId = null;
             if ($nodeAggregateId !== null) {
                 // The node still exists in the (losing) workspace even when the
@@ -374,10 +381,11 @@ class WorkspacesController extends AbstractApiController
                     $nodeAggregate = $contentRepository->getContentGraph($workspaceName)->findNodeAggregateById($nodeAggregateId);
                     foreach ($nodeAggregate?->coveredDimensionSpacePoints ?? [] as $dimensionSpacePoint) {
                         $subgraph = $contentRepository->getContentSubgraph($workspaceName, $dimensionSpacePoint);
-                        $documentAggregateId = $subgraph->findClosestNode(
+                        $affectedNode = $subgraph->findNodeById($nodeAggregateId);
+                        $documentNode = $subgraph->findClosestNode(
                             $nodeAggregateId,
                             FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
-                        )?->aggregateId->value;
+                        );
                         $siteAggregateId = $subgraph->findClosestNode(
                             $nodeAggregateId,
                             FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
@@ -385,14 +393,19 @@ class WorkspacesController extends AbstractApiController
                         break;
                     }
                 } catch (\Throwable) {
-                    // Leave document/site null - the node id and reason are
-                    // still enough for the client to act.
+                    // Leave node/document/site null - the id, type of change and
+                    // reason are still enough for the client to act.
                 }
             }
 
             $conflicts[] = [
                 'nodeAggregateId' => $nodeId,
-                'documentAggregateId' => $documentAggregateId,
+                // Human-readable labels + a navigable document address so the UI
+                // can name the conflict and jump to the affected page.
+                'nodeLabel' => $affectedNode !== null ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($affectedNode)) : null,
+                'documentAggregateId' => $documentNode?->aggregateId->value,
+                'documentLabel' => $documentNode !== null ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($documentNode)) : null,
+                'documentAddress' => $documentNode !== null ? NodeAddressCodec::encode(NodeAddress::fromNode($documentNode)) : null,
                 'siteAggregateId' => $siteAggregateId,
                 'typeOfChange' => $this->conflictTypeOfChange($conflictingEvent->getEvent()),
                 'reason' => $this->conflictReason($conflictingEvent->getException()),
@@ -427,6 +440,15 @@ class WorkspacesController extends AbstractApiController
             'NodeAggregateCurrentlyDoesNotExist' => 'node_has_been_deleted',
             default => null,
         };
+    }
+
+    /**
+     * The label generator may return HTML entities/tags; conflicts are shown as
+     * plain text, so decode and strip - mirroring NodeSerializer.
+     */
+    private function plainTextLabel(string $label): string
+    {
+        return trim(strip_tags(html_entity_decode($label, ENT_QUOTES | ENT_HTML5, 'UTF-8')));
     }
 
     private function shortClassName(object $object): string
