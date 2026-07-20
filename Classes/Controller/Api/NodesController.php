@@ -13,8 +13,10 @@ use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindChildNodesFil
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindDescendantNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindReferencesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\Pagination\Pagination;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\PropertyValue\Criteria\PropertyValueContains;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateClassification;
+use Neos\ContentRepository\Core\SharedModel\Node\PropertyName;
 use Neos\Flow\Annotations as Flow;
 use Neos\Neos\Domain\Model\RenderingMode;
 use Neos\Neos\Domain\Service\NodeTypeNameFactory;
@@ -84,12 +86,24 @@ class NodesController extends AbstractApiController
             case 'descendants':
                 // ?search= narrows by fulltext over the property values (the CR's
                 // SearchTerm semantics) - what reference editors and pickers use
-                // for search-as-you-type. Search responses additionally carry a
-                // document breadcrumb per node, so same-named results stay
-                // distinguishable ("Home > Products > News" vs "Home > Blog > News").
+                // for search-as-you-type. ?searchProperty= restricts the match to
+                // that single property instead (case-insensitive contains) - the
+                // document toolbar's title-only search. Search responses
+                // additionally carry a document breadcrumb per node, so
+                // same-named results stay distinguishable ("Home > Products >
+                // News" vs "Home > Blog > News"); ?breadcrumbs=1 requests them
+                // for term-less (filter-only) listings too.
                 $search = $this->getStringQueryParam('search');
-                $nodes = $subgraph->findDescendantNodes($address->aggregateId, FindDescendantNodesFilter::create(nodeTypes: $nodeTypes, searchTerm: $search, pagination: $pagination));
-                if ($search !== null) {
+                $searchProperty = $this->getStringQueryParam('searchProperty');
+                $nodes = $subgraph->findDescendantNodes($address->aggregateId, FindDescendantNodesFilter::create(
+                    nodeTypes: $nodeTypes,
+                    searchTerm: $searchProperty === null ? $search : null,
+                    propertyValue: $search !== null && $searchProperty !== null
+                        ? PropertyValueContains::create(PropertyName::fromString($searchProperty), $search, caseSensitive: false)
+                        : null,
+                    pagination: $pagination
+                ));
+                if ($search !== null || $this->getStringQueryParam('breadcrumbs') !== null) {
                     $items = [];
                     foreach ($nodes as $node) {
                         $items[] = $this->nodeSerializer->serializeNode($node, $subgraph, $nodeTypes)
