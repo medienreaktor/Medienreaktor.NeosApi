@@ -62,6 +62,12 @@ privilegeTargets:
     'Medienreaktor.NeosApi:Api.Users.Read':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\UsersController->(index|show)Action())'
 
+    # Invoke the Neos data sources backing select-box style editors. Read-
+    # shaped by convention (data sources populate editor options), hence
+    # grouped with the read features.
+    'Medienreaktor.NeosApi:Api.DataSources':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\DataSourcesController->.*Action())'
+
     # --- Write features ----------------------------------------------------
 
     # Write content through the command bus (single + batch).
@@ -127,6 +133,9 @@ roles:
         permission: GRANT
       -
         privilegeTarget: 'Medienreaktor.NeosApi:Api.Users.Read'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.DataSources'
         permission: GRANT
       -
         privilegeTarget: 'Medienreaktor.NeosApi:Api.Content'

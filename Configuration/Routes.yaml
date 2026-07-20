@@ -230,6 +230,19 @@
     '@format': 'json'
   httpMethods: ['GET']
 
+# Query parameters beyond "node" are forwarded to the data source as its
+# $arguments array, so exceeding arguments are part of the contract here.
+-
+  name: 'API: Data source'
+  uriPattern: 'api/datasources/{dataSourceIdentifier}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\DataSources'
+    '@action': 'show'
+    '@format': 'json'
+  appendExceedingArguments: true
+  httpMethods: ['GET']
+
 #
 # Write API
 #
