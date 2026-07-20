@@ -67,7 +67,22 @@ class NodesController extends AbstractApiController
                 $nodes = $subgraph->findChildNodes($address->aggregateId, FindChildNodesFilter::create(nodeTypes: $nodeTypes, pagination: $pagination));
                 break;
             case 'descendants':
-                $nodes = $subgraph->findDescendantNodes($address->aggregateId, FindDescendantNodesFilter::create(nodeTypes: $nodeTypes, pagination: $pagination));
+                // ?search= narrows by fulltext over the property values (the CR's
+                // SearchTerm semantics) - what reference editors and pickers use
+                // for search-as-you-type. Search responses additionally carry a
+                // document breadcrumb per node, so same-named results stay
+                // distinguishable ("Home > Products > News" vs "Home > Blog > News").
+                $search = $this->getStringQueryParam('search');
+                $nodes = $subgraph->findDescendantNodes($address->aggregateId, FindDescendantNodesFilter::create(nodeTypes: $nodeTypes, searchTerm: $search, pagination: $pagination));
+                if ($search !== null) {
+                    $items = [];
+                    foreach ($nodes as $node) {
+                        $items[] = $this->nodeSerializer->serializeNode($node, $subgraph, $nodeTypes)
+                            + ['breadcrumb' => $this->nodeSerializer->breadcrumb($node, $subgraph)];
+                    }
+
+                    return $this->json(['nodes' => $items]);
+                }
                 break;
             case 'ancestors':
                 $nodes = $subgraph->findAncestorNodes($address->aggregateId, FindAncestorNodesFilter::create(nodeTypes: $nodeTypes));

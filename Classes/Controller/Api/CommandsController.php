@@ -8,11 +8,14 @@ use Medienreaktor\NeosApi\Service\CommandRegistry;
 use Medienreaktor\NeosApi\Service\PropertyTypeCoercer;
 use Medienreaktor\NeosApi\Service\PropertyValueHydrator;
 use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
+use Neos\ContentRepository\Core\Feature\NodeReferencing\Dto\NodeReferencesForName;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\NodeType\NodeType;
 use Neos\ContentRepository\Core\NodeType\NodeTypeName;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
+use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateIds;
+use Neos\ContentRepository\Core\SharedModel\Node\ReferenceName;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\Flow\Annotations as Flow;
 
@@ -115,6 +118,18 @@ class CommandsController extends AbstractApiController
             return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
         }
 
+        // SetNodeReferences carries value objects the command's fromArray()
+        // cannot build from plain JSON (NodeReferencesToWrite::fromArray()
+        // expects DTO instances) - translate the JSON transport shape
+        // [{referenceName, targets: [ids]}] into those DTOs here.
+        if ($type === 'SetNodeReferences') {
+            try {
+                $payload['references'] = $this->buildReferencesToWrite($payload['references'] ?? null);
+            } catch (\InvalidArgumentException $exception) {
+                return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
+            }
+        }
+
         // Record where a removed node lived, so a deletion can still be scoped
         // to its document/site when publishing individual changes. See
         // resolveRemovalAttachmentPoint().
@@ -142,6 +157,34 @@ class CommandsController extends AbstractApiController
         }
 
         return [];
+    }
+
+    /**
+     * The JSON transport shape of SetNodeReferences' "references" field:
+     * [{referenceName: string, targets: [nodeAggregateId, ...]}, ...]. An
+     * empty targets list is valid and clears the named reference (the CR's
+     * "writing no references deletes the previous ones" semantics); an empty
+     * or missing references list is not.
+     *
+     * @return array<NodeReferencesForName>
+     */
+    private function buildReferencesToWrite(mixed $references): array
+    {
+        if (!is_array($references) || $references === []) {
+            throw new \InvalidArgumentException('SetNodeReferences needs a non-empty "references" list of {referenceName, targets} entries.', 1752990010);
+        }
+        $result = [];
+        foreach ($references as $entry) {
+            if (!is_array($entry) || !is_string($entry['referenceName'] ?? null) || !is_array($entry['targets'] ?? null)) {
+                throw new \InvalidArgumentException('Each SetNodeReferences entry needs a string "referenceName" and a "targets" array of node aggregate ids.', 1752990011);
+            }
+            $result[] = NodeReferencesForName::fromTargets(
+                ReferenceName::fromString($entry['referenceName']),
+                NodeAggregateIds::fromArray($entry['targets'])
+            );
+        }
+
+        return $result;
     }
 
     /**

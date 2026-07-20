@@ -7,6 +7,7 @@ namespace Medienreaktor\NeosApi\Service;
 use Neos\ContentRepository\Core\Feature\SubtreeTagging\Dto\SubtreeTag;
 use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\CountChildNodesFilter;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\Flow\Annotations as Flow;
 use Neos\Neos\Domain\NodeLabel\NodeLabelGeneratorInterface;
@@ -93,5 +94,29 @@ class NodeSerializer
         }
 
         return $result;
+    }
+
+    /**
+     * Document labels from the site down to (and including) the node - the
+     * disambiguation line a search result shows under its label ("where does
+     * this page live?"). Same shape as the workspace document-changes
+     * breadcrumb.
+     *
+     * @return array<int, string>
+     */
+    public function breadcrumb(Node $node, ContentSubgraphInterface $subgraph): array
+    {
+        $ancestors = $subgraph->findAncestorNodes(
+            $node->aggregateId,
+            FindAncestorNodesFilter::create(nodeTypes: 'Neos.Neos:Document')
+        );
+        $breadcrumb = [];
+        // findAncestorNodes yields nearest-first; reverse for site-to-here order.
+        foreach (array_reverse(iterator_to_array($ancestors)) as $ancestor) {
+            $breadcrumb[] = $this->plainTextLabel($this->nodeLabelGenerator->getLabel($ancestor));
+        }
+        $breadcrumb[] = $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node));
+
+        return $breadcrumb;
     }
 }
