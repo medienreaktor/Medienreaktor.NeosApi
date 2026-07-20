@@ -16,7 +16,12 @@ use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\Pagination\Pagina
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateClassification;
 use Neos\Flow\Annotations as Flow;
+use Neos\Neos\Domain\Model\RenderingMode;
+use Neos\Neos\Domain\Service\NodeTypeNameFactory;
+use Neos\Neos\Domain\Service\RenderingModeService;
 use Neos\Neos\Utility\NodeUriPathSegmentGenerator;
+use Neos\Neos\View\FusionView;
+use Psr\Http\Message\ResponseInterface;
 
 /**
  * Node reads over the security-aware content subgraph. The subgraph applies
@@ -26,11 +31,21 @@ use Neos\Neos\Utility\NodeUriPathSegmentGenerator;
  */
 class NodesController extends AbstractApiController
 {
+    /**
+     * The render relation returns HTML, everything else JSON.
+     *
+     * @var array<string>
+     */
+    protected $supportedMediaTypes = ['application/json', 'text/html'];
+
     #[Flow\Inject]
     protected NodeSerializer $nodeSerializer;
 
     #[Flow\Inject]
     protected NodeUriPathSegmentGenerator $uriPathSegmentGenerator;
+
+    #[Flow\Inject]
+    protected RenderingModeService $renderingModeService;
 
     public function showAction(string $nodeAddress): string
     {
@@ -159,6 +174,90 @@ class NodesController extends AbstractApiController
         }
 
         return $this->json(['nodes' => $this->nodeSerializer->serializeNodes($nodes, $subgraph, $nodeTypes)]);
+    }
+
+    /**
+     * Renders a node as HTML through the site's Fusion. Documents render the
+     * whole page; content nodes require ?fusionPath= (the rendering entry
+     * point, taken verbatim from the data-__neos-fusion-path attribute the
+     * edit-mode markup carries) and return just that element's fragment - the
+     * out-of-band rendering an editing UI uses to refresh a single element
+     * after an edit instead of reloading the page.
+     *
+     * ?mode= selects the rendering mode: "frontend" (default) renders as
+     * visitors would see it (disabled nodes excluded), any configured edit
+     * mode (e.g. "inPlace") adds the content-element metadata attributes and
+     * renders with the account's own visibility, disabled nodes included.
+     *
+     * No cache flushing happens here: the content cache is flushed by the
+     * graph projector's catch-up hook when the underlying events commit, so a
+     * fragment rendered after a command already reflects the change - and the
+     * fragment's own cache entries warm the next full-page render.
+     */
+    public function renderAction(string $nodeAddress): string
+    {
+        $this->requireScope('neos.read');
+        $address = $this->decodeNodeAddress($nodeAddress);
+
+        $modeName = $this->getStringQueryParam('mode') ?? RenderingMode::FRONTEND;
+        try {
+            $renderingMode = $this->renderingModeService->findByName($modeName);
+        } catch (\Neos\Neos\Domain\Exception) {
+            $this->throwJsonStatus(400, 'invalid_rendering_mode', sprintf('Unknown rendering mode "%s".', $modeName));
+        }
+
+        $subgraph = $this->getSubgraph($address, !$renderingMode->isEdit);
+        $node = $subgraph->findNodeById($address->aggregateId);
+        if ($node === null) {
+            $this->throwJsonStatus(404, 'node_not_found', 'The node does not exist in this subgraph or is not visible for this account.');
+        }
+
+        $fusionPath = $this->getStringQueryParam('fusionPath');
+        if ($fusionPath !== null) {
+            if (!preg_match('#^[a-zA-Z0-9_/<>.:@\\\\-]+$#', $fusionPath)) {
+                $this->throwJsonStatus(400, 'invalid_fusion_path', 'The fusionPath contains unexpected characters.');
+            }
+            // The DOM attribute addresses the concretely rendered prototype
+            // inside the ContentCase matcher; rendering re-enters at the
+            // ContentCase so the type resolution runs again (the classic UI's
+            // RenderedNodeDomAddress::getFusionPathForContentRendering).
+            $fusionPath = preg_replace(
+                '/(\/itemRenderer<Neos\.Neos:ContentCase>)\/([^<>\/]+)<Neos\.Fusion:Matcher>\/element(<[^>]+>)$/',
+                '$1',
+                $fusionPath
+            );
+        } else {
+            $isDocument = $this->getContentRepository()->getNodeTypeManager()
+                ->getNodeType($node->nodeTypeName)?->isOfType(NodeTypeNameFactory::NAME_DOCUMENT) ?? false;
+            if (!$isDocument) {
+                $this->throwJsonStatus(400, 'missing_fusion_path', 'Rendering a content node requires the fusionPath parameter (documents render whole-page without one).');
+            }
+            $fusionPath = 'root';
+        }
+
+        // A fresh view instead of $this->view: the controller's default view
+        // is JSON-oriented, and FusionView resolves document and site context
+        // from the assigned node itself. The request is assigned so link
+        // rendering (routing) works inside the fragment.
+        $view = new FusionView();
+        $view->setOption('renderingModeName', $renderingMode->name);
+        $view->assign('request', $this->request);
+        $view->assign('value', $node);
+        $view->setFusionPath($fusionPath);
+
+        try {
+            $result = $view->render();
+        } catch (\Throwable $e) {
+            // A stale or foreign fusionPath renders nothing sensible - report
+            // it as a client-recoverable error (callers fall back to a full
+            // page reload) instead of a bare 500.
+            $this->throwJsonStatus(422, 'rendering_failed', $e->getMessage());
+        }
+
+        $this->response->setContentType('text/html');
+        $this->response->setHttpHeader('Cache-Control', 'no-cache');
+
+        return $result instanceof ResponseInterface ? (string)$result->getBody() : $result->getContents();
     }
 
     /**

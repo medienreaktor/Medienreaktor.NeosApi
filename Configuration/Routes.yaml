@@ -90,6 +90,17 @@
     '@format': 'json'
   httpMethods: ['GET']
 
+# Literal tail, declared before the {relation} wildcard so it wins.
+-
+  name: 'API: Node render'
+  uriPattern: 'api/nodes/{nodeAddress}/render'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Nodes'
+    '@action': 'render'
+    '@format': 'html'
+  httpMethods: ['GET']
+
 -
   name: 'API: Node relation'
   uriPattern: 'api/nodes/{nodeAddress}/{relation}'

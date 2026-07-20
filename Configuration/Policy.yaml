@@ -42,7 +42,8 @@ privilegeTargets:
     'Medienreaktor.NeosApi:Api.Me':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\MeController->.*Action())'
 
-    # Read the content graph (nodes and their relations).
+    # Read the content graph (nodes, their relations, and rendered HTML -
+    # the render action is a read of the graph through Fusion).
     'Medienreaktor.NeosApi:Api.Nodes':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\NodesController->.*Action())'
 
