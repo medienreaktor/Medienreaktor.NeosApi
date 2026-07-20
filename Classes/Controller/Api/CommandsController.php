@@ -5,9 +5,12 @@ declare(strict_types=1);
 namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Medienreaktor\NeosApi\Service\CommandRegistry;
+use Medienreaktor\NeosApi\Service\PropertyTypeCoercer;
 use Medienreaktor\NeosApi\Service\PropertyValueHydrator;
 use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
+use Neos\ContentRepository\Core\NodeType\NodeType;
+use Neos\ContentRepository\Core\NodeType\NodeTypeName;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
@@ -31,6 +34,9 @@ class CommandsController extends AbstractApiController
 {
     #[Flow\Inject]
     protected PropertyValueHydrator $propertyValueHydrator;
+
+    #[Flow\Inject]
+    protected PropertyTypeCoercer $propertyTypeCoercer;
 
     /**
      * Authenticated exclusively via sessionless bearer tokens - CSRF does not apply
@@ -99,6 +105,16 @@ class CommandsController extends AbstractApiController
             return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
         }
 
+        // Scalar property values whose JSON transport form differs from the
+        // declared PHP type (today: DateTime, sent as an ISO 8601 string) are
+        // coerced to that type before the command's instanceof validation - see
+        // PropertyTypeCoercer.
+        try {
+            $payload = $this->coerceScalarProperties($type, $payload);
+        } catch (\InvalidArgumentException $exception) {
+            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
+        }
+
         // Record where a removed node lived, so a deletion can still be scoped
         // to its document/site when publishing individual changes. See
         // resolveRemovalAttachmentPoint().
@@ -126,6 +142,72 @@ class CommandsController extends AbstractApiController
         }
 
         return [];
+    }
+
+    /**
+     * Coerce the property values of a property-bearing command to their
+     * declared PHP types. Only SetNodeProperties and CreateNodeAggregateWithNode
+     * carry a property map; every other command is returned untouched. The node
+     * type is resolved from the command (the existing node for a modification,
+     * the payload's nodeTypeName for a creation); if it cannot be resolved we
+     * leave the payload as-is and let the command run - a genuinely wrong type
+     * still fails downstream, exactly as before this step existed.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    private function coerceScalarProperties(string $type, array $payload): array
+    {
+        $key = match ($type) {
+            'SetNodeProperties' => 'propertyValues',
+            'CreateNodeAggregateWithNode' => 'initialPropertyValues',
+            default => null,
+        };
+        if ($key === null || !is_array($payload[$key] ?? null) || $payload[$key] === []) {
+            return $payload;
+        }
+        $nodeType = $this->resolveNodeTypeForCommand($type, $payload);
+        if ($nodeType === null) {
+            return $payload;
+        }
+        $payload[$key] = $this->propertyTypeCoercer->coerce($nodeType, $payload[$key]);
+        return $payload;
+    }
+
+    /**
+     * The node type a property-bearing command writes to: taken from the
+     * payload for a creation (the node does not exist yet), or looked up from
+     * the existing node for a modification. Best-effort - returns null on any
+     * failure so coercion is simply skipped.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function resolveNodeTypeForCommand(string $type, array $payload): ?NodeType
+    {
+        try {
+            $nodeTypeManager = $this->getContentRepository()->getNodeTypeManager();
+            if ($type === 'CreateNodeAggregateWithNode') {
+                if (!is_string($payload['nodeTypeName'] ?? null)) {
+                    return null;
+                }
+                return $nodeTypeManager->getNodeType(NodeTypeName::fromString($payload['nodeTypeName']));
+            }
+            // SetNodeProperties: resolve the existing node to read its type.
+            if (
+                !is_string($payload['workspaceName'] ?? null)
+                || !is_string($payload['nodeAggregateId'] ?? null)
+                || !is_array($payload['originDimensionSpacePoint'] ?? null)
+            ) {
+                return null;
+            }
+            $node = $this->getContentRepository()->getContentSubgraph(
+                WorkspaceName::fromString($payload['workspaceName']),
+                DimensionSpacePoint::fromArray($payload['originDimensionSpacePoint'])
+            )->findNodeById(NodeAggregateId::fromString($payload['nodeAggregateId']));
+            return $node === null ? null : $nodeTypeManager->getNodeType($node->nodeTypeName);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     /**
