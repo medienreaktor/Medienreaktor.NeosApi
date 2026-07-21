@@ -43,7 +43,7 @@ only Neos core and framework-agnostic libraries.
 composer require medienreaktor/neos-api
 
 # create the database tables for OAuth clients and token records
-./flow doctrine:update          # dev; use doctrine:migrationgenerate + migrate for production
+./flow doctrine:migrate
 
 # generate the OAuth signing / encryption keys
 ./flow neosapi:generatekeys
@@ -70,13 +70,13 @@ Medienreaktor:
 
 ## OAuth endpoints
 
-| Endpoint | Purpose |
-|---|---|
-| `GET/POST /oauth/authorize` | Authorization + consent (requires a logged-in Neos backend user) |
-| `POST /oauth/token` | Token endpoint (auth code + PKCE, refresh, client credentials) |
-| `POST /oauth/register` | Dynamic client registration, RFC 7591 (public clients only) |
-| `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata |
-| `GET /.well-known/oauth-protected-resource` | RFC 9728 metadata |
+| Endpoint                                      | Purpose                                                          |
+| --------------------------------------------- | ---------------------------------------------------------------- |
+| `GET/POST /oauth/authorize`                   | Authorization + consent (requires a logged-in Neos backend user) |
+| `POST /oauth/token`                           | Token endpoint (auth code + PKCE, refresh, client credentials)   |
+| `POST /oauth/register`                        | Dynamic client registration, RFC 7591 (public clients only)      |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata                                                |
+| `GET /.well-known/oauth-protected-resource`   | RFC 9728 metadata                                                |
 
 ## API endpoints
 
@@ -87,29 +87,29 @@ space point + aggregate id) — treat it as opaque; you obtain addresses from
 
 ### Account
 
-| Endpoint | Description |
-|---|---|
-| `GET /api/me` | Account, roles, scopes of this request |
-| `GET /api/me/profile` | Own profile (name, email, interface language) |
-| `PATCH /api/me/profile` | Update own profile |
-| `PUT /api/me/password` | Change own password (requires the current password) |
-| `GET /api/users` | Backend users (for ownership / attribution displays) |
+| Endpoint                | Description                                          |
+| ----------------------- | ---------------------------------------------------- |
+| `GET /api/me`           | Account, roles, scopes of this request               |
+| `GET /api/me/profile`   | Own profile (name, email, interface language)        |
+| `PATCH /api/me/profile` | Update own profile                                   |
+| `PUT /api/me/password`  | Change own password (requires the current password)  |
+| `GET /api/users`        | Backend users (for ownership / attribution displays) |
 
 ### Content reads
 
-| Endpoint | Description |
-|---|---|
-| `GET /api/sites` | Sites with their entry node addresses (`?workspace=`, `?dimensions=`) |
-| `GET /api/nodes/{nodeAddress}` | A single node |
-| `GET /api/nodes/{nodeAddress}/children` | Child nodes (`?nodeTypes=`, `?limit=`, `?offset=`) |
-| `GET /api/nodes/{nodeAddress}/descendants` | Descendants (same filters, plus `?search=` fulltext, `?searchProperty=` to match a single property, `?breadcrumbs=` to include ancestor paths) |
-| `GET /api/nodes/{nodeAddress}/ancestors` | Ancestors |
-| `GET /api/nodes/{nodeAddress}/parent` | Parent node |
-| `GET /api/nodes/{nodeAddress}/references` | Outgoing references incl. reference properties |
-| `GET /api/nodes/{nodeAddress}/allowed-child-node-types` | Node types allowed below this node (constraints + auto-created children) |
-| `GET /api/nodes/{nodeAddress}/variants` | Occupied + covered dimension space points of the aggregate |
-| `GET /api/nodes/{nodeAddress}/uri-path-segment` | Build a URL path segment from `?text=` |
-| `GET /api/nodes/{nodeAddress}/render` | HTML through the real Fusion pipeline (`?mode=` rendering mode, `?fusionPath=` for a single content fragment) |
+| Endpoint                                                | Description                                                                                                                                    |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/sites`                                        | Sites with their entry node addresses (`?workspace=`, `?dimensions=`)                                                                          |
+| `GET /api/nodes/{nodeAddress}`                          | A single node                                                                                                                                  |
+| `GET /api/nodes/{nodeAddress}/children`                 | Child nodes (`?nodeTypes=`, `?limit=`, `?offset=`)                                                                                             |
+| `GET /api/nodes/{nodeAddress}/descendants`              | Descendants (same filters, plus `?search=` fulltext, `?searchProperty=` to match a single property, `?breadcrumbs=` to include ancestor paths) |
+| `GET /api/nodes/{nodeAddress}/ancestors`                | Ancestors                                                                                                                                      |
+| `GET /api/nodes/{nodeAddress}/parent`                   | Parent node                                                                                                                                    |
+| `GET /api/nodes/{nodeAddress}/references`               | Outgoing references incl. reference properties                                                                                                 |
+| `GET /api/nodes/{nodeAddress}/allowed-child-node-types` | Node types allowed below this node (constraints + auto-created children)                                                                       |
+| `GET /api/nodes/{nodeAddress}/variants`                 | Occupied + covered dimension space points of the aggregate                                                                                     |
+| `GET /api/nodes/{nodeAddress}/uri-path-segment`         | Build a URL path segment from `?text=`                                                                                                         |
+| `GET /api/nodes/{nodeAddress}/render`                   | HTML through the real Fusion pipeline (`?mode=` rendering mode, `?fusionPath=` for a single content fragment)                                  |
 
 Node reads include disabled ("hidden") nodes — this is an editing API. Pass
 `?visibility=frontend` to preview what the public sees. Property values are
@@ -118,31 +118,31 @@ payloads.
 
 ### Workspaces
 
-| Endpoint | Description |
-|---|---|
-| `GET /api/workspaces` | Workspaces readable by this account, with permissions |
-| `GET /api/workspaces/{name}` | One workspace incl. pending change count |
-| `GET /api/workspaces/{name}/changes` | Pending changes (per node) |
-| `GET /api/workspaces/{name}/document-changes` | Pending changes aggregated per document |
-| `POST /api/workspaces/{name}/publish` | Publish all changes; body `{"site": "<id>"}` or `{"document": "<id>"}` for partial publish |
-| `POST /api/workspaces/{name}/discard` | Discard (same filters) |
-| `POST /api/workspaces/{name}/rebase` | Rebase (body `{"strategy": "force"}` optional) |
-| `POST /api/workspaces/{name}/base-workspace` | Change the base workspace |
+| Endpoint                                      | Description                                                                                |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET /api/workspaces`                         | Workspaces readable by this account, with permissions                                      |
+| `GET /api/workspaces/{name}`                  | One workspace incl. pending change count                                                   |
+| `GET /api/workspaces/{name}/changes`          | Pending changes (per node)                                                                 |
+| `GET /api/workspaces/{name}/document-changes` | Pending changes aggregated per document                                                    |
+| `POST /api/workspaces/{name}/publish`         | Publish all changes; body `{"site": "<id>"}` or `{"document": "<id>"}` for partial publish |
+| `POST /api/workspaces/{name}/discard`         | Discard (same filters)                                                                     |
+| `POST /api/workspaces/{name}/rebase`          | Rebase (body `{"strategy": "force"}` optional)                                             |
+| `POST /api/workspaces/{name}/base-workspace`  | Change the base workspace                                                                  |
 
 ### Schema & data
 
-| Endpoint | Description |
-|---|---|
-| `GET /api/nodetypes` / `GET /api/nodetypes/{name}` | Node type schema |
-| `GET /api/dimensions` | Dimension config + allowed dimension space points |
-| `GET /api/datasources/{identifier}` | Query a `DataSourceInterface` implementation (`?node=` node address, additional query params are passed through as arguments) |
+| Endpoint                                           | Description                                                                                                                   |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/nodetypes` / `GET /api/nodetypes/{name}` | Node type schema                                                                                                              |
+| `GET /api/dimensions`                              | Dimension config + allowed dimension space points                                                                             |
+| `GET /api/datasources/{identifier}`                | Query a `DataSourceInterface` implementation (`?node=` node address, additional query params are passed through as arguments) |
 
 ### Commands (writes)
 
-| Endpoint | Description |
-|---|---|
-| `POST /api/commands` | Execute one CR command: `{"type": "SetNodeProperties", "payload": {...}}` |
-| `POST /api/commands/batch` | Execute a sequence: `{"commands": [...]}` |
+| Endpoint                   | Description                                                               |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `POST /api/commands`       | Execute one CR command: `{"type": "SetNodeProperties", "payload": {...}}` |
+| `POST /api/commands/batch` | Execute a sequence: `{"commands": [...]}`                                 |
 
 Supported command types: see `Service/CommandRegistry.php` (all deserialized
 via the commands' own `::fromArray()`), plus the synthetic
@@ -153,22 +153,22 @@ keeping the same envelope; pin the copy root's id via
 
 ### Media
 
-| Endpoint | Description |
-|---|---|
-| `GET /api/media/asset-sources` | Available asset sources |
-| `GET /api/media/assets` | Browse/search assets (`?search=`, `?tag=`, `?collection=`, `?type=`, `?assetSource=`, sorting + pagination) |
-| `POST /api/media/assets` | Upload a new asset (multipart) |
-| `GET /api/media/assets/{source}/{id}` | One asset with metadata and variants |
-| `PATCH /api/media/assets/{id}` | Update title, caption, copyright, tags, collections |
-| `DELETE /api/media/assets/{id}` | Delete an asset |
-| `POST /api/media/assets/import` | Import an asset from a remote asset source |
-| `POST /api/media/assets/{id}/resource` | Replace the underlying resource (re-upload) |
-| `POST /api/media/assets/{id}/variants` | Create a crop variant |
-| `POST` / `DELETE /api/media/assets/{id}/tags` | Tag / untag an asset |
-| `POST` / `DELETE /api/media/assets/{id}/collections` | Add to / remove from a collection |
-| `GET /api/media/assets/{source}/{id}/usage` | Where an asset is used |
-| `GET/POST /api/media/collections`, `PATCH/DELETE /api/media/collections/{id}` | Manage asset collections |
-| `GET/POST /api/media/tags`, `PATCH/DELETE /api/media/tags/{id}` | Manage tags |
+| Endpoint                                                                      | Description                                                                                                 |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GET /api/media/asset-sources`                                                | Available asset sources                                                                                     |
+| `GET /api/media/assets`                                                       | Browse/search assets (`?search=`, `?tag=`, `?collection=`, `?type=`, `?assetSource=`, sorting + pagination) |
+| `POST /api/media/assets`                                                      | Upload a new asset (multipart)                                                                              |
+| `GET /api/media/assets/{source}/{id}`                                         | One asset with metadata and variants                                                                        |
+| `PATCH /api/media/assets/{id}`                                                | Update title, caption, copyright, tags, collections                                                         |
+| `DELETE /api/media/assets/{id}`                                               | Delete an asset                                                                                             |
+| `POST /api/media/assets/import`                                               | Import an asset from a remote asset source                                                                  |
+| `POST /api/media/assets/{id}/resource`                                        | Replace the underlying resource (re-upload)                                                                 |
+| `POST /api/media/assets/{id}/variants`                                        | Create a crop variant                                                                                       |
+| `POST` / `DELETE /api/media/assets/{id}/tags`                                 | Tag / untag an asset                                                                                        |
+| `POST` / `DELETE /api/media/assets/{id}/collections`                          | Add to / remove from a collection                                                                           |
+| `GET /api/media/assets/{source}/{id}/usage`                                   | Where an asset is used                                                                                      |
+| `GET/POST /api/media/collections`, `PATCH/DELETE /api/media/collections/{id}` | Manage asset collections                                                                                    |
+| `GET/POST /api/media/tags`, `PATCH/DELETE /api/media/tags/{id}`               | Manage tags                                                                                                 |
 
 ## License
 
