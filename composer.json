@@ -17,6 +17,9 @@
     "extra": {
         "neos": {
             "package-key": "Medienreaktor.NeosApi"
+        },
+        "branch-alias": {
+            "dev-main": "1.0.x-dev"
         }
     }
 }
