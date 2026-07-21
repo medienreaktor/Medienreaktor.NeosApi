@@ -170,6 +170,12 @@ keeping the same envelope; pin the copy root's id via
 | `GET/POST /api/media/collections`, `PATCH/DELETE /api/media/collections/{id}` | Manage asset collections |
 | `GET/POST /api/media/tags`, `PATCH/DELETE /api/media/tags/{id}` | Manage tags |
 
+## License
+
+Medienreaktor.NeosApi is free software, released under the [GNU General Public License, version 3 or later](LICENSE).
+
+Copyright (C) 2026 medienreaktor GmbH
+
 ---
 
 Built by [medienreaktor](https://www.medienreaktor.de) with ❤️ for the Neos community. Feedback, issues and plugin experiments very welcome — this is where the Neos editing experience is headed. Come shape it.
