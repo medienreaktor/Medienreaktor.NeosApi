@@ -105,7 +105,11 @@ returned in serialized `{value, type}` form and round-trip with the command
 payloads.
 
 Supported command types: see `Service/CommandRegistry.php` (all deserialized
-via the commands' own `::fromArray()`).
+via the commands' own `::fromArray()`), plus the synthetic
+`CopyNodesRecursively` — recursive node copy is no CR command in Neos 9, so
+the commands controller dispatches it to the `NodeDuplicationService` while
+keeping the same envelope; pin the copy root's id via
+`nodeAggregateIdMapping` to address the copy afterwards.
 
 ## Roadmap / TODO
 

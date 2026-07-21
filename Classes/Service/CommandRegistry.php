@@ -27,6 +27,10 @@ use Neos\ContentRepository\Core\Feature\SubtreeTagging\Command\UntagSubtree;
  * NOT exposed here - publish/discard/rebase have use-case endpoints under
  * /api/workspaces/{name}/... that go through the Neos publishing service.
  *
+ * The union has one member beyond this whitelist: the synthetic
+ * CopyNodesRecursively, intercepted in CommandsController before it reaches
+ * this registry (it is no CR command in Neos 9 and has no class to map to).
+ *
  * Authorization happens centrally in ContentRepository::handle() for every
  * command (workspace permissions + EditNodePrivilege).
  */

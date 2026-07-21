@@ -8,6 +8,7 @@ use Medienreaktor\NeosApi\Service\CommandRegistry;
 use Medienreaktor\NeosApi\Service\PropertyTypeCoercer;
 use Medienreaktor\NeosApi\Service\PropertyValueHydrator;
 use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
+use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
 use Neos\ContentRepository\Core\Feature\NodeReferencing\Dto\NodeReferencesForName;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\NodeType\NodeType;
@@ -18,6 +19,8 @@ use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateIds;
 use Neos\ContentRepository\Core\SharedModel\Node\ReferenceName;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\Flow\Annotations as Flow;
+use Neos\Neos\Domain\Service\NodeDuplication\NodeAggregateIdMapping;
+use Neos\Neos\Domain\Service\NodeDuplicationService;
 
 /**
  * The write API: execute whitelisted content repository commands.
@@ -32,6 +35,11 @@ use Neos\Flow\Annotations as Flow;
  *
  * Every command is authorized centrally by the content repository
  * (workspace permissions, EditNodePrivilege) - a denial maps to 403 here.
+ *
+ * One command type is synthetic: CopyNodesRecursively (removed from the CR
+ * core in Neos 9) dispatches to the NodeDuplicationService instead of the
+ * command bus - see handleCopyNodesRecursively(). Same envelope, same
+ * batching, same central authorization of every derived command.
  */
 class CommandsController extends AbstractApiController
 {
@@ -40,6 +48,9 @@ class CommandsController extends AbstractApiController
 
     #[Flow\Inject]
     protected PropertyTypeCoercer $propertyTypeCoercer;
+
+    #[Flow\Inject]
+    protected NodeDuplicationService $nodeDuplicationService;
 
     /**
      * Authenticated exclusively via sessionless bearer tokens - CSRF does not apply
@@ -99,6 +110,16 @@ class CommandsController extends AbstractApiController
             return ['error' => 'invalid_request', 'message' => 'Each command needs a string "type" and an object "payload".', 'statusCode' => 400];
         }
 
+        // CopyNodesRecursively is a synthetic command: Neos 9 removed it from
+        // the CR core, so it cannot be deserialized and handled like the
+        // whitelisted commands - it dispatches to the NodeDuplicationService
+        // instead, which derives and handles the actual command sequence.
+        // Intercepted before hydration/coercion (its payload carries node
+        // identities, never property values).
+        if ($type === 'CopyNodesRecursively') {
+            return $this->handleCopyNodesRecursively($payload);
+        }
+
         // Object-typed property values (assets, images, ...) arrive as
         // serialized references and must be resolved to real objects before the
         // command's instanceof validation - see PropertyValueHydrator.
@@ -152,6 +173,72 @@ class CommandsController extends AbstractApiController
             $this->getContentRepository()->handle($command);
         } catch (AccessDenied $exception) {
             return ['error' => 'access_denied', 'message' => $exception->getMessage(), 'statusCode' => 403];
+        } catch (\Throwable $exception) {
+            return ['error' => 'command_failed', 'message' => $exception->getMessage(), 'statusCode' => 422];
+        }
+
+        return [];
+    }
+
+    /**
+     * The synthetic CopyNodesRecursively command: recursively copy a node to
+     * a new parent, in the same envelope as every other command. The payload
+     * mirrors the CR command this used to be before Neos 9 removed it:
+     *
+     *   {
+     *     "workspaceName": "...",                              // copies within one workspace
+     *     "sourceDimensionSpacePoint": {...},                  // dimension to copy from
+     *     "sourceNodeAggregateId": "...",
+     *     "targetDimensionSpacePoint": {...},                  // origin dimension of the copy
+     *     "targetParentNodeAggregateId": "...",
+     *     "targetSucceedingSiblingNodeAggregateId": "..."|null, // null appends
+     *     "nodeAggregateIdMapping": {"<sourceId>": "<newId>"}  // optional; pin ids (e.g. the copy root) to address the copy afterwards
+     *   }
+     *
+     * The duplication service derives creation/tagging commands and handles
+     * them one by one; each is authorized centrally like any other command,
+     * and a mid-copy failure leaves a partial copy (reported, not rolled
+     * back) - the same non-transactional semantics as a batch. Document
+     * copies get their uriPathSegment deduplicated against the target's
+     * children by the service.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{error?: string, message?: string, statusCode?: int}
+     */
+    private function handleCopyNodesRecursively(array $payload): array
+    {
+        foreach (['workspaceName', 'sourceNodeAggregateId', 'targetParentNodeAggregateId'] as $field) {
+            if (!is_string($payload[$field] ?? null)) {
+                return ['error' => 'invalid_payload', 'message' => sprintf('CopyNodesRecursively needs a string "%s".', $field), 'statusCode' => 422];
+            }
+        }
+        foreach (['sourceDimensionSpacePoint', 'targetDimensionSpacePoint'] as $field) {
+            if (!is_array($payload[$field] ?? null)) {
+                return ['error' => 'invalid_payload', 'message' => sprintf('CopyNodesRecursively needs an object "%s".', $field), 'statusCode' => 422];
+            }
+        }
+
+        try {
+            $succeedingSiblingId = is_string($payload['targetSucceedingSiblingNodeAggregateId'] ?? null)
+                ? NodeAggregateId::fromString($payload['targetSucceedingSiblingNodeAggregateId'])
+                : null;
+            $idMapping = is_array($payload['nodeAggregateIdMapping'] ?? null)
+                ? NodeAggregateIdMapping::fromArray($payload['nodeAggregateIdMapping'])
+                : null;
+            $this->nodeDuplicationService->copyNodesRecursively(
+                $this->getContentRepositoryId(),
+                WorkspaceName::fromString($payload['workspaceName']),
+                DimensionSpacePoint::fromArray($payload['sourceDimensionSpacePoint']),
+                NodeAggregateId::fromString($payload['sourceNodeAggregateId']),
+                OriginDimensionSpacePoint::fromArray($payload['targetDimensionSpacePoint']),
+                NodeAggregateId::fromString($payload['targetParentNodeAggregateId']),
+                $succeedingSiblingId,
+                $idMapping
+            );
+        } catch (AccessDenied $exception) {
+            return ['error' => 'access_denied', 'message' => $exception->getMessage(), 'statusCode' => 403];
+        } catch (\InvalidArgumentException $exception) {
+            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
         } catch (\Throwable $exception) {
             return ['error' => 'command_failed', 'message' => $exception->getMessage(), 'statusCode' => 422];
         }
