@@ -38,7 +38,9 @@ privilegeTargets:
 
     # --- Read features -----------------------------------------------------
 
-    # The authenticated account's own profile and permissions.
+    # The authenticated account's own profile and permissions - including the
+    # self-service profile writes (own name, email, interface language,
+    # password), which are deliberately available to every editor.
     'Medienreaktor.NeosApi:Api.Me':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\MeController->.*Action())'
 

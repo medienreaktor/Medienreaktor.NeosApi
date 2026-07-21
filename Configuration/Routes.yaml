@@ -81,6 +81,36 @@
   httpMethods: ['GET']
 
 -
+  name: 'API: Me profile'
+  uriPattern: 'api/me/profile'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Me'
+    '@action': 'profile'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Me profile update'
+  uriPattern: 'api/me/profile'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Me'
+    '@action': 'updateProfile'
+    '@format': 'json'
+  httpMethods: ['PATCH']
+
+-
+  name: 'API: Me password change'
+  uriPattern: 'api/me/password'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Me'
+    '@action': 'changePassword'
+    '@format': 'json'
+  httpMethods: ['PUT']
+
+-
   name: 'API: Node'
   uriPattern: 'api/nodes/{nodeAddress}'
   defaults:
