@@ -25,9 +25,11 @@ only Neos core and framework-agnostic libraries.
    the **Flow account** of the user who approved the token (or the mapped
    account for `client_credentials`). From then on the request has the same
    roles and policies as an interactive backend session.
-2. **Deny-by-default endpoint policy.** A catch-all privilege target matches
-   every action in `Controller\Api`; unmatched-by-a-grant means denied. Grants
-   go to the standard Neos roles (see `Configuration/Policy.yaml`).
+2. **Feature-based endpoint policy.** Every action in `Controller\Api` is
+   matched by a privilege target that names one capability of the API (read
+   nodes, write content, manage media, publish workspaces, …), split by
+   operation where a resource exposes both reads and writes. The standard
+   Neos roles are granted these features (see `Configuration/Policy.yaml`).
 3. **Structural content authorization.** All reads run through
    `ContentRepository::getContentSubgraph()` (the account's visibility
    constraints are applied to every query — hidden/disabled nodes are visible,
