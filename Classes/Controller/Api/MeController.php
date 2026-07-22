@@ -67,8 +67,16 @@ class MeController extends AbstractApiController
             }
         }
 
+        $user = $this->userService->getCurrentUser();
+
         return $this->json([
             'account' => $account?->getAccountIdentifier(),
+            // The Neos user behind the account - the same id the content
+            // repository stamps into events as initiatingUserId and the
+            // presence roster reports, so clients can tell "me" from others.
+            'user' => $user !== null
+                ? ['id' => $user->getId()->value, 'label' => $user->getLabel()]
+                : null,
             'roles' => array_map(static fn (Role $role) => $role->getIdentifier(), array_values($this->securityContext->getRoles())),
             'scopes' => $scopes,
             'client' => $clientIdentifier,

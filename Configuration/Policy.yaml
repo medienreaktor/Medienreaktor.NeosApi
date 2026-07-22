@@ -105,6 +105,11 @@ privilegeTargets:
     'Medienreaktor.NeosApi:Api.Workspaces.Publish':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(publish|discard|rebase|changeBaseWorkspace)Action())'
 
+    # Collaboration: tail a workspace's change feed and exchange presence
+    # heartbeats. Both re-check read access on the workspace themselves.
+    'Medienreaktor.NeosApi:Api.Workspaces.Collaboration':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(events|presence)Action())'
+
 roles:
 
   # Public protocol surface.
@@ -154,6 +159,9 @@ roles:
         permission: GRANT
       -
         privilegeTarget: 'Medienreaktor.NeosApi:Api.Workspaces.Publish'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Workspaces.Collaboration'
         permission: GRANT
 
   # Administrators additionally get the write side of sites and users (they

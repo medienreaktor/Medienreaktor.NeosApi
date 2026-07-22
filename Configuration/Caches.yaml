@@ -1,0 +1,12 @@
+#
+# Presence entries for the collaboration feature: one entry per user and
+# workspace, tagged by workspace, expiring 30 seconds after the last
+# heartbeat. The FileBackend works on any host; deployments with several web
+# nodes should switch this to a shared backend (e.g. RedisBackend) so all
+# nodes see the same roster.
+#
+MedienreaktorNeosApi_Presence:
+  frontend: Neos\Cache\Frontend\VariableFrontend
+  backend: Neos\Cache\Backend\FileBackend
+  backendOptions:
+    defaultLifetime: 30

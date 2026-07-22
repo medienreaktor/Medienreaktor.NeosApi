@@ -232,6 +232,26 @@
   httpMethods: ['POST']
 
 -
+  name: 'API: Workspace event feed'
+  uriPattern: 'api/workspaces/{workspaceName}/events'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'events'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Workspace presence'
+  uriPattern: 'api/workspaces/{workspaceName}/presence'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'presence'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
   name: 'API: NodeTypes'
   uriPattern: 'api/nodetypes'
   defaults:

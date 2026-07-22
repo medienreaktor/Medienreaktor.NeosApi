@@ -23,6 +23,11 @@ use Neos\Flow\Mvc\Exception\StopActionException;
 use Neos\Neos\Domain\Model\WorkspaceMetadata;
 use Neos\Neos\Domain\NodeLabel\NodeLabelGeneratorInterface;
 use Medienreaktor\NeosApi\Service\NodeAddressCodec;
+use Medienreaktor\NeosApi\Service\WorkspaceEventFeed;
+use Medienreaktor\NeosApi\Service\WorkspaceEventFeedFactory;
+use Neos\Cache\Frontend\VariableFrontend;
+use Neos\EventStore\Model\EventEnvelope;
+use Neos\Flow\Cache\CacheManager;
 use Neos\Neos\Fusion\Cache\CacheFlushingStrategy;
 use Neos\Neos\Fusion\Cache\ContentCacheFlusher;
 use Neos\Neos\Fusion\Cache\FlushWorkspaceRequest;
@@ -61,6 +66,37 @@ class WorkspacesController extends AbstractApiController
 
     #[Flow\Inject]
     protected NodeLabelGeneratorInterface $nodeLabelGenerator;
+
+    #[Flow\Inject]
+    protected CacheManager $cacheManager;
+
+    /** Seconds a presence heartbeat stays valid; clients beat every ~5s. */
+    private const PRESENCE_LIFETIME = 30;
+
+    /** Page size of the event feed; a full page makes clients fully refresh. */
+    private const EVENT_FEED_LIMIT = 200;
+
+    /**
+     * How feed clients should react to an event type: 'content' = a node's
+     * rendered element / properties changed (re-render in place), 'structure'
+     * = the node tree changed shape (refresh trees, reload the preview).
+     * Event types not listed (stream bookkeeping like ContentStreamWasForked)
+     * are not surfaced to clients.
+     */
+    private const FEED_EVENT_KINDS = [
+        'NodePropertiesWereSet' => 'content',
+        'NodeReferencesWereSet' => 'content',
+        'NodeAggregateWithNodeWasCreated' => 'structure',
+        'NodeAggregateWasMoved' => 'structure',
+        'NodeAggregateWasRemoved' => 'structure',
+        'SubtreeWasTagged' => 'structure',
+        'SubtreeWasUntagged' => 'structure',
+        'NodeAggregateTypeWasChanged' => 'structure',
+        'NodeAggregateNameWasChanged' => 'structure',
+        'NodeSpecializationVariantWasCreated' => 'structure',
+        'NodeGeneralizationVariantWasCreated' => 'structure',
+        'NodePeerVariantWasCreated' => 'structure',
+    ];
 
     /**
      * Base workspaces recur across the list (usually all point to live), so
@@ -473,6 +509,217 @@ class WorkspacesController extends AbstractApiController
         );
 
         return $this->json(['workspace' => $workspace->value, 'baseWorkspace' => $baseWorkspaceName]);
+    }
+
+    /**
+     * The collaboration change feed: what happened in the workspace since the
+     * client's cursor. Clients poll this (1-2s) while editing a shared
+     * workspace and update trees/preview from the answer - the transport of
+     * Studio's multiplayer mode (deliberately plain HTTP: no extra server).
+     *
+     * Query parameters:
+     * - stream: the contentStreamId the client is tailing
+     * - since:  the last seen event sequence number (global, monotonic)
+     *
+     * Without both (the baseline request), or when the workspace has moved to
+     * a different content stream since (publish/discard/rebase fork streams),
+     * no events are enumerated - the response hands out the current cursor
+     * and, for a moved stream, reset=true ("your workspace content changed
+     * wholesale, refresh everything"). A full page sets truncated=true with
+     * the same client remedy.
+     */
+    public function eventsAction(string $workspaceName): string
+    {
+        $this->requireScope('neos.read');
+
+        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
+        if ($workspace === null) {
+            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
+        }
+        if ($this->serializeWorkspace($workspace) === null) {
+            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
+        }
+
+        $query = $this->request->getHttpRequest()->getQueryParams();
+        $knownStream = isset($query['stream']) && is_string($query['stream']) && $query['stream'] !== '' ? $query['stream'] : null;
+        $since = isset($query['since']) && is_numeric($query['since']) ? (int)$query['since'] : null;
+
+        /** @var WorkspaceEventFeed $feed */
+        $feed = $this->contentRepositoryRegistry->buildService($this->getContentRepositoryId(), new WorkspaceEventFeedFactory());
+        $contentStreamId = $workspace->currentContentStreamId;
+
+        if ($knownStream === null || $since === null || $knownStream !== $contentStreamId->value) {
+            return $this->json([
+                'workspace' => $workspace->workspaceName->value,
+                'contentStreamId' => $contentStreamId->value,
+                'sequenceNumber' => $feed->latestSequenceNumber($contentStreamId),
+                // reset only for an already-tailing client whose stream moved;
+                // a baseline request is not a change.
+                'reset' => $knownStream !== null && $knownStream !== $contentStreamId->value,
+                'truncated' => false,
+                'events' => [],
+            ]);
+        }
+
+        $envelopes = $feed->eventsSince($contentStreamId, $since, self::EVENT_FEED_LIMIT);
+        $cursor = $since;
+        $events = [];
+        foreach ($envelopes as $envelope) {
+            $cursor = $envelope->sequenceNumber->value;
+            $serialized = $this->serializeFeedEvent($envelope);
+            if ($serialized !== null) {
+                $events[] = $serialized;
+            }
+        }
+
+        return $this->json([
+            'workspace' => $workspace->workspaceName->value,
+            'contentStreamId' => $contentStreamId->value,
+            'sequenceNumber' => $cursor,
+            'reset' => false,
+            'truncated' => count($envelopes) === self::EVENT_FEED_LIMIT,
+            'events' => $events,
+        ]);
+    }
+
+    /**
+     * Presence heartbeat: "I am editing this workspace, standing on this
+     * document, focusing this node". Stores the beat (30s TTL - a closed tab
+     * simply expires) and answers with everyone currently present in the
+     * workspace, so one poll both announces and observes. {"leave": true}
+     * removes the own entry immediately (switching back to the personal
+     * workspace).
+     *
+     * Deliberately ephemeral state in a cache, not content: presence never
+     * touches the content repository.
+     */
+    #[Flow\SkipCsrfProtection]
+    public function presenceAction(string $workspaceName): string
+    {
+        $this->requireScope('neos.read');
+
+        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
+        if ($workspace === null) {
+            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
+        }
+        if ($this->serializeWorkspace($workspace) === null) {
+            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
+        }
+        $user = $this->userService->getCurrentUser();
+        if ($user === null) {
+            // e.g. a client-credentials token: no user, no presence.
+            $this->throwJsonStatus(403, 'no_user', 'Presence requires a user-bound authentication.');
+        }
+
+        $body = json_decode((string)$this->request->getHttpRequest()->getBody(), true);
+        $body = is_array($body) ? $body : [];
+
+        $userId = $user->getId()->value;
+        // Cache entry identifiers only allow a narrow character set - hash
+        // both parts. One entry per user and workspace, tagged by workspace
+        // so the roster is one getByTag().
+        $entryIdentifier = md5($workspace->workspaceName->value) . '_' . md5($userId);
+        $workspaceTag = 'workspace_' . md5($workspace->workspaceName->value);
+
+        $presenceCache = $this->presenceCache();
+        if (($body['leave'] ?? false) === true) {
+            $presenceCache->remove($entryIdentifier);
+        } else {
+            $presenceCache->set($entryIdentifier, [
+                'userId' => $userId,
+                'name' => $user->getLabel(),
+                'documentAggregateId' => is_string($body['documentAggregateId'] ?? null) ? $body['documentAggregateId'] : null,
+                'focusedAggregateId' => is_string($body['focusedAggregateId'] ?? null) ? $body['focusedAggregateId'] : null,
+                'dimensionSpacePoint' => is_array($body['dimensionSpacePoint'] ?? null) ? $body['dimensionSpacePoint'] : null,
+                'updatedAt' => time(),
+            ], [$workspaceTag], self::PRESENCE_LIFETIME);
+        }
+
+        $users = [];
+        foreach ($presenceCache->getByTag($workspaceTag) as $entry) {
+            // Defensive re-check of the TTL - backends differ in how eagerly
+            // they drop expired entries from tag lookups.
+            if (!is_array($entry) || ($entry['updatedAt'] ?? 0) < time() - self::PRESENCE_LIFETIME) {
+                continue;
+            }
+            $users[] = $entry;
+        }
+
+        return $this->json([
+            'workspace' => $workspace->workspaceName->value,
+            'you' => $userId,
+            'users' => $users,
+        ]);
+    }
+
+    /**
+     * The presence entries (who is editing in which workspace), see
+     * Caches.yaml. Fetched from the manager instead of property-injected:
+     * Flow's lazy property injection cannot initialize typed non-nullable
+     * properties. Ephemeral by design - entries expire PRESENCE_LIFETIME
+     * seconds after the last heartbeat, so a closed tab disappears on its own.
+     */
+    private function presenceCache(): VariableFrontend
+    {
+        $cache = $this->cacheManager->getCache('MedienreaktorNeosApi_Presence');
+        assert($cache instanceof VariableFrontend);
+
+        return $cache;
+    }
+
+    /**
+     * One change-feed event as clients consume it, or null for event types
+     * the feed does not surface. Payload fields are read from the raw event
+     * JSON - stable across event types without importing every event class.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function serializeFeedEvent(EventEnvelope $envelope): ?array
+    {
+        $type = $envelope->event->type->value;
+        $kind = self::FEED_EVENT_KINDS[$type] ?? null;
+        if ($kind === null) {
+            return null;
+        }
+
+        $payload = json_decode($envelope->event->data->value, true);
+        $payload = is_array($payload) ? $payload : [];
+
+        // The dimension space points an event names, whatever it calls them -
+        // single points and sets alike. Clients treat an empty list as
+        // "affects every dimension".
+        $dimensionSpacePoints = [];
+        foreach (['originDimensionSpacePoint', 'coveredDimensionSpacePoint', 'dimensionSpacePoint', 'sourceOrigin', 'targetOrigin', 'specializationOrigin', 'generalizationOrigin', 'peerOrigin'] as $pointKey) {
+            if (is_array($payload[$pointKey] ?? null)) {
+                $dimensionSpacePoints[] = $payload[$pointKey];
+            }
+        }
+        foreach (['affectedDimensionSpacePoints', 'affectedOccupiedDimensionSpacePoints', 'affectedCoveredDimensionSpacePoints', 'affectedSourceOriginDimensionSpacePoints'] as $setKey) {
+            if (is_array($payload[$setKey] ?? null)) {
+                foreach ($payload[$setKey] as $point) {
+                    if (is_array($point)) {
+                        $dimensionSpacePoints[] = $point;
+                    }
+                }
+            }
+        }
+
+        return [
+            'sequenceNumber' => $envelope->sequenceNumber->value,
+            'type' => $type,
+            'kind' => $kind,
+            'nodeAggregateId' => is_string($payload['nodeAggregateId'] ?? null)
+                ? $payload['nodeAggregateId']
+                : (is_string($payload['sourceNodeAggregateId'] ?? null) ? $payload['sourceNodeAggregateId'] : null),
+            // The collection a structural change happened inside, when the
+            // event knows it - lets clients refresh that subtree.
+            'parentNodeAggregateId' => is_string($payload['parentNodeAggregateId'] ?? null)
+                ? $payload['parentNodeAggregateId']
+                : (is_string($payload['newParentNodeAggregateId'] ?? null) ? $payload['newParentNodeAggregateId'] : null),
+            'dimensionSpacePoints' => $dimensionSpacePoints,
+            'initiatingUserId' => $envelope->event->metadata?->get('initiatingUserId'),
+            'recordedAt' => $envelope->recordedAt->format(\DateTimeInterface::ATOM),
+        ];
     }
 
     /**
