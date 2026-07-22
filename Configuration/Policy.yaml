@@ -81,9 +81,11 @@ privilegeTargets:
     'Medienreaktor.NeosApi:Api.Sites.Write':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\SitesController->(create|update|delete)Action())'
 
-    # Create, edit and delete users. Administrators only.
+    # Create, edit and delete users, plus the assignable-role catalog (a
+    # read, but only the admin-only role picker needs it). Administrators
+    # only.
     'Medienreaktor.NeosApi:Api.Users.Write':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\UsersController->(create|update|delete)Action())'
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\UsersController->(create|update|delete|roles)Action())'
 
     # --- Media features ----------------------------------------------------
 

@@ -291,6 +291,57 @@
     '@format': 'json'
   httpMethods: ['GET']
 
+-
+  name: 'API: User create'
+  uriPattern: 'api/users'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Users'
+    '@action': 'create'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+# Literal tail, declared before the {userId} wildcard so it wins.
+-
+  name: 'API: Assignable user roles'
+  uriPattern: 'api/users/roles'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Users'
+    '@action': 'roles'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: User'
+  uriPattern: 'api/users/{userId}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Users'
+    '@action': 'show'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: User update'
+  uriPattern: 'api/users/{userId}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Users'
+    '@action': 'update'
+    '@format': 'json'
+  httpMethods: ['PATCH']
+
+-
+  name: 'API: User delete'
+  uriPattern: 'api/users/{userId}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Users'
+    '@action': 'delete'
+    '@format': 'json'
+  httpMethods: ['DELETE']
+
 # Query parameters beyond "node" are forwarded to the data source as its
 # $arguments array, so exceeding arguments are part of the contract here.
 -
