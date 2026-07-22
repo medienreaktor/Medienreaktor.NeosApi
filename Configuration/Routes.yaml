@@ -233,6 +233,16 @@
   httpMethods: ['GET']
 
 -
+  name: 'API: Workspace create'
+  uriPattern: 'api/workspaces'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'create'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
   name: 'API: Workspace'
   uriPattern: 'api/workspaces/{workspaceName}'
   defaults:
@@ -241,6 +251,56 @@
     '@action': 'show'
     '@format': 'json'
   httpMethods: ['GET']
+
+-
+  name: 'API: Workspace update'
+  uriPattern: 'api/workspaces/{workspaceName}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'update'
+    '@format': 'json'
+  httpMethods: ['PATCH']
+
+-
+  name: 'API: Workspace delete'
+  uriPattern: 'api/workspaces/{workspaceName}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'delete'
+    '@format': 'json'
+  httpMethods: ['DELETE']
+
+-
+  name: 'API: Workspace role assignments'
+  uriPattern: 'api/workspaces/{workspaceName}/roles'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'roles'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Workspace role assign'
+  uriPattern: 'api/workspaces/{workspaceName}/roles'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'assignRole'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Workspace role unassign'
+  uriPattern: 'api/workspaces/{workspaceName}/roles'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'unassignRole'
+    '@format': 'json'
+  httpMethods: ['DELETE']
 
 -
   name: 'API: Workspace pending changes'

@@ -20,7 +20,16 @@ use Neos\ContentRepository\Core\SharedModel\Workspace\Workspace;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Mvc\Exception\StopActionException;
+use Neos\Neos\Domain\Model\UserId;
+use Neos\Neos\Domain\Model\WorkspaceClassification;
+use Neos\Neos\Domain\Model\WorkspaceDescription;
 use Neos\Neos\Domain\Model\WorkspaceMetadata;
+use Neos\Neos\Domain\Model\WorkspaceRole;
+use Neos\Neos\Domain\Model\WorkspaceRoleAssignment;
+use Neos\Neos\Domain\Model\WorkspaceRoleAssignments;
+use Neos\Neos\Domain\Model\WorkspaceRoleSubject;
+use Neos\Neos\Domain\Model\WorkspaceRoleSubjectType;
+use Neos\Neos\Domain\Model\WorkspaceTitle;
 use Neos\Neos\Domain\NodeLabel\NodeLabelGeneratorInterface;
 use Medienreaktor\NeosApi\Service\NodeAddressCodec;
 use Medienreaktor\NeosApi\Service\WorkspaceEventFeed;
@@ -509,6 +518,274 @@ class WorkspacesController extends AbstractApiController
         );
 
         return $this->json(['workspace' => $workspace->value, 'baseWorkspace' => $baseWorkspaceName]);
+    }
+
+    /**
+     * Create a shared or private workspace - the Studio's replacement for the
+     * classic Workspaces module's create. JSON body: title, description?,
+     * baseWorkspaceName? (default "live"), visibility? ("shared": every
+     * editor may collaborate, the creator manages; "private": only the
+     * creator). The workspace name is derived from the title.
+     */
+    #[Flow\SkipCsrfProtection]
+    public function createAction(
+        string $title,
+        ?string $description = null,
+        ?string $baseWorkspaceName = null,
+        string $visibility = 'shared'
+    ): string {
+        $this->requireScope('neos.write');
+
+        if (trim($title) === '') {
+            $this->throwJsonStatus(400, 'invalid_title', 'The title must not be empty.');
+        }
+        if (!in_array($visibility, ['shared', 'private'], true)) {
+            $this->throwJsonStatus(400, 'invalid_visibility', 'The visibility must be "shared" or "private".');
+        }
+        $currentUser = $this->userService->getCurrentUser();
+        if ($currentUser === null) {
+            $this->throwJsonStatus(404, 'no_user', 'The authenticated account is not associated with a Neos user.');
+        }
+
+        $base = WorkspaceName::fromString($baseWorkspaceName ?? WorkspaceName::WORKSPACE_NAME_LIVE);
+        $baseWorkspace = $this->getContentRepository()->findWorkspaceByName($base);
+        if ($baseWorkspace === null || $this->serializeWorkspace($baseWorkspace) === null) {
+            $this->throwJsonStatus(400, 'invalid_base_workspace', sprintf('The base workspace "%s" does not exist or is not accessible.', $base->value));
+        }
+
+        $workspaceName = $this->workspaceService->getUniqueWorkspaceName($this->getContentRepositoryId(), trim($title));
+        $assignments = $visibility === 'shared'
+            ? WorkspaceRoleAssignments::createForSharedWorkspace($currentUser->getId())
+            : WorkspaceRoleAssignments::createForPrivateWorkspace($currentUser->getId());
+
+        $this->workspaceService->createSharedWorkspace(
+            $this->getContentRepositoryId(),
+            $workspaceName,
+            WorkspaceTitle::fromString(trim($title)),
+            WorkspaceDescription::fromString(trim($description ?? '')),
+            $base,
+            $assignments
+        );
+
+        $workspace = $this->getContentRepository()->findWorkspaceByName($workspaceName);
+
+        return $this->json(['workspace' => $this->serializeWorkspace($workspace)], 201);
+    }
+
+    /**
+     * Update a workspace's title and/or description. Requires the manage
+     * permission on the workspace (owners and administrators).
+     */
+    #[Flow\SkipCsrfProtection]
+    public function updateAction(string $workspaceName, ?string $title = null, ?string $description = null): string
+    {
+        $this->requireScope('neos.write');
+
+        $workspace = $this->requireWorkspaceObject($workspaceName);
+        $this->requireManagePermission($workspace->workspaceName);
+        if ($title !== null && trim($title) === '') {
+            $this->throwJsonStatus(400, 'invalid_title', 'The title must not be empty.');
+        }
+
+        if ($title !== null) {
+            $this->workspaceService->setWorkspaceTitle($this->getContentRepositoryId(), $workspace->workspaceName, WorkspaceTitle::fromString(trim($title)));
+        }
+        if ($description !== null) {
+            $this->workspaceService->setWorkspaceDescription($this->getContentRepositoryId(), $workspace->workspaceName, WorkspaceDescription::fromString(trim($description)));
+        }
+
+        return $this->json(['workspace' => $this->serializeWorkspace($workspace)]);
+    }
+
+    /**
+     * Delete a workspace including its metadata and role assignments. Root
+     * and personal workspaces cannot be deleted; workspaces other workspaces
+     * are based on report a conflict. Pending changes block deletion unless
+     * the body sets force=true (the changes are then discarded with it).
+     */
+    #[Flow\SkipCsrfProtection]
+    public function deleteAction(string $workspaceName, bool $force = false): string
+    {
+        $this->requireScope('neos.write');
+
+        $workspace = $this->requireWorkspaceObject($workspaceName);
+        $this->requireManagePermission($workspace->workspaceName);
+
+        $metadata = $this->workspaceService->getWorkspaceMetadata($this->getContentRepositoryId(), $workspace->workspaceName);
+        if ($metadata->classification === WorkspaceClassification::ROOT) {
+            $this->throwJsonStatus(400, 'cannot_delete_root', 'Root workspaces cannot be deleted.');
+        }
+        if ($metadata->classification === WorkspaceClassification::PERSONAL) {
+            $this->throwJsonStatus(400, 'cannot_delete_personal', 'Personal workspaces cannot be deleted - delete the user instead.');
+        }
+
+        $dependents = [];
+        foreach ($this->getContentRepository()->findWorkspaces()->getDependantWorkspaces($workspace->workspaceName) as $dependent) {
+            $dependents[] = $dependent->workspaceName->value;
+        }
+        if ($dependents !== []) {
+            $this->throwJsonStatus(409, 'workspace_has_dependents', 'Other workspaces are based on this workspace.', ['dependents' => $dependents]);
+        }
+
+        $pendingChanges = $this->workspacePublishingService->countPendingWorkspaceChanges($this->getContentRepositoryId(), $workspace->workspaceName);
+        if ($pendingChanges > 0 && !$force) {
+            $this->throwJsonStatus(409, 'workspace_has_changes', sprintf('The workspace has %d unpublished change(s); pass force=true to delete it anyway.', $pendingChanges), ['pendingChanges' => $pendingChanges]);
+        }
+
+        $this->workspaceService->deleteWorkspace($this->getContentRepositoryId(), $workspace->workspaceName);
+
+        return $this->json(['success' => true]);
+    }
+
+    /**
+     * The role assignments of a workspace: who may view, collaborate or
+     * manage. Requires the manage permission.
+     */
+    public function rolesAction(string $workspaceName): string
+    {
+        $this->requireScope('neos.read');
+
+        $workspace = $this->requireWorkspaceObject($workspaceName);
+        $this->requireManagePermission($workspace->workspaceName);
+
+        return $this->json(['assignments' => $this->serializeRoleAssignments($workspace->workspaceName)]);
+    }
+
+    /**
+     * Assign a workspace role. JSON body: subjectType ("USER"/"GROUP"),
+     * subject (a user id / a Flow role identifier), role
+     * ("VIEWER"/"COLLABORATOR"/"MANAGER"). One role per subject - assigning
+     * to a subject that already has one reports a conflict.
+     */
+    #[Flow\SkipCsrfProtection]
+    public function assignRoleAction(string $workspaceName, string $subjectType, string $subject, string $role): string
+    {
+        $this->requireScope('neos.write');
+
+        $workspace = $this->requireWorkspaceObject($workspaceName);
+        $this->requireManagePermission($workspace->workspaceName);
+
+        $subjectValue = $this->buildRoleSubject($subjectType, $subject);
+        $workspaceRole = WorkspaceRole::tryFrom($role);
+        if ($workspaceRole === null) {
+            $this->throwJsonStatus(400, 'invalid_role', 'The role must be VIEWER, COLLABORATOR or MANAGER.');
+        }
+        foreach ($this->workspaceService->getWorkspaceRoleAssignments($this->getContentRepositoryId(), $workspace->workspaceName) as $existing) {
+            if ($existing->subject->equals($subjectValue)) {
+                $this->throwJsonStatus(409, 'subject_already_assigned', 'This subject already has a role in the workspace; remove it first.');
+            }
+        }
+
+        $this->workspaceService->assignWorkspaceRole(
+            $this->getContentRepositoryId(),
+            $workspace->workspaceName,
+            WorkspaceRoleAssignment::create($subjectValue, $workspaceRole)
+        );
+
+        return $this->json(['assignments' => $this->serializeRoleAssignments($workspace->workspaceName)], 201);
+    }
+
+    /**
+     * Remove a workspace role assignment. JSON body: subjectType, subject.
+     */
+    #[Flow\SkipCsrfProtection]
+    public function unassignRoleAction(string $workspaceName, string $subjectType, string $subject): string
+    {
+        $this->requireScope('neos.write');
+
+        $workspace = $this->requireWorkspaceObject($workspaceName);
+        $this->requireManagePermission($workspace->workspaceName);
+
+        $subjectValue = $this->buildRoleSubject($subjectType, $subject);
+        $found = false;
+        foreach ($this->workspaceService->getWorkspaceRoleAssignments($this->getContentRepositoryId(), $workspace->workspaceName) as $existing) {
+            if ($existing->subject->equals($subjectValue)) {
+                $found = true;
+            }
+        }
+        if (!$found) {
+            $this->throwJsonStatus(404, 'assignment_not_found', 'This subject has no role in the workspace.');
+        }
+
+        $this->workspaceService->unassignWorkspaceRole($this->getContentRepositoryId(), $workspace->workspaceName, $subjectValue);
+
+        return $this->json(['assignments' => $this->serializeRoleAssignments($workspace->workspaceName)]);
+    }
+
+    private function requireWorkspaceObject(string $workspaceName): Workspace
+    {
+        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
+        if ($workspace === null) {
+            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
+        }
+
+        return $workspace;
+    }
+
+    /** 403 unless the account may manage the workspace (owner, manager role, administrator). */
+    private function requireManagePermission(WorkspaceName $workspaceName): void
+    {
+        $permissions = $this->authorizationService->getWorkspacePermissions(
+            $this->getContentRepositoryId(),
+            $workspaceName,
+            $this->securityContext->getRoles(),
+            $this->userService->getCurrentUser()?->getId()
+        );
+        if (!$permissions->manage) {
+            $this->throwJsonStatus(403, 'access_denied', 'You are not allowed to manage this workspace.');
+        }
+    }
+
+    private function buildRoleSubject(string $subjectType, string $subject): WorkspaceRoleSubject
+    {
+        $type = WorkspaceRoleSubjectType::tryFrom($subjectType);
+        if ($type === null) {
+            $this->throwJsonStatus(400, 'invalid_subject_type', 'The subjectType must be USER or GROUP.');
+        }
+        if ($type === WorkspaceRoleSubjectType::USER) {
+            try {
+                $userId = UserId::fromString($subject);
+            } catch (\InvalidArgumentException) {
+                $this->throwJsonStatus(400, 'invalid_subject', 'The subject is not a valid user id.');
+            }
+            if ($this->userService->findUserById($userId) === null) {
+                $this->throwJsonStatus(400, 'invalid_subject', 'No user with this id exists.');
+            }
+        }
+
+        try {
+            return WorkspaceRoleSubject::create($type, $subject);
+        } catch (\InvalidArgumentException) {
+            $this->throwJsonStatus(400, 'invalid_subject', 'The subject is not valid.');
+        }
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function serializeRoleAssignments(WorkspaceName $workspaceName): array
+    {
+        $assignments = [];
+        foreach ($this->workspaceService->getWorkspaceRoleAssignments($this->getContentRepositoryId(), $workspaceName) as $assignment) {
+            $label = null;
+            if ($assignment->subject->type === WorkspaceRoleSubjectType::USER) {
+                try {
+                    $label = $this->userService->findUserById(UserId::fromString($assignment->subject->value))?->getLabel();
+                } catch (\InvalidArgumentException) {
+                    // Keep the raw subject value as the label.
+                }
+            }
+            $assignments[] = [
+                'subjectType' => $assignment->subject->type->value,
+                'subject' => $assignment->subject->value,
+                // Human-readable name for USER subjects; GROUP subjects show
+                // their Flow role identifier.
+                'label' => $label ?? $assignment->subject->value,
+                'role' => $assignment->role->value,
+            ];
+        }
+
+        return $assignments;
     }
 
     /**
