@@ -45,13 +45,20 @@ class NodeTypesController extends AbstractApiController
             str_starts_with($icon, 'icon-') ? $icon : 'icon-' . $icon
         );
     }
-    public function indexAction(): string
+    /**
+     * @param bool $includeProperties Also serialize each node type's merged
+     *                                property and reference declarations
+     *                                (name, type, label) - opt-in because it
+     *                                multiplies the payload and only schema
+     *                                visualizations need it.
+     */
+    public function indexAction(bool $includeProperties = false): string
     {
         $this->requireScope('neos.read');
 
         $nodeTypes = [];
         foreach ($this->getContentRepository()->getNodeTypeManager()->getNodeTypes(true) as $nodeType) {
-            $nodeTypes[] = [
+            $entry = [
                 'name' => $nodeType->name->value,
                 'abstract' => $nodeType->isAbstract(),
                 'superTypes' => array_keys($nodeType->getDeclaredSuperTypes()),
@@ -66,6 +73,33 @@ class NodeTypesController extends AbstractApiController
                 'group' => $nodeType->getConfiguration('ui.group'),
                 'position' => $nodeType->getConfiguration('ui.position'),
             ];
+            if ($includeProperties) {
+                $properties = [];
+                foreach ($nodeType->getProperties() as $propertyName => $propertyConfiguration) {
+                    // Underscore-prefixed properties (_hidden, _nodeType) are
+                    // internal plumbing, not content model.
+                    if (str_starts_with((string)$propertyName, '_')) {
+                        continue;
+                    }
+                    $properties[(string)$propertyName] = [
+                        'type' => $propertyConfiguration['type'] ?? null,
+                        'label' => $propertyConfiguration['ui']['label'] ?? null,
+                    ];
+                }
+                $references = [];
+                foreach (($nodeType->getConfiguration('references') ?? []) as $referenceName => $referenceConfiguration) {
+                    $references[(string)$referenceName] = [
+                        'label' => $referenceConfiguration['ui']['label'] ?? null,
+                        // maxItems 1 marks a singular reference (Neos 9 folds
+                        // legacy `type: reference` declarations in this way)
+                        'maxItems' => $referenceConfiguration['constraints']['maxItems'] ?? null,
+                    ];
+                }
+                // Force JSON objects - empty PHP arrays would serialize as []
+                $entry['properties'] = (object)$properties;
+                $entry['references'] = (object)$references;
+            }
+            $nodeTypes[] = $entry;
         }
 
         return $this->json(['nodeTypes' => $nodeTypes, 'groups' => $this->nodeTypeGroups]);
