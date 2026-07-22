@@ -14,6 +14,11 @@ No GraphQL ceremony, no coupling to the legacy backend, no community-package dep
   operations (publish / discard / rebase workspaces)
 - **Media API** for full asset management: assets, variants, tags, collections,
   asset sources, usage tracking
+- **Administration API** for users (incl. roles, activation, password resets),
+  sites + domains, and workspaces (incl. role assignments)
+- **Collaboration primitives** — a per-workspace event feed and presence
+  heartbeats over plain HTTP polling, the transport behind Studio's
+  multiplayer editing
 
 Requires Neos `^9.1` and PHP `^8.2`. No dependencies on community packages —
 only Neos core and framework-agnostic libraries.
@@ -89,13 +94,28 @@ space point + aggregate id) — treat it as opaque; you obtain addresses from
 
 ### Account
 
-| Endpoint                | Description                                          |
-| ----------------------- | ---------------------------------------------------- |
-| `GET /api/me`           | Account, roles, scopes of this request               |
-| `GET /api/me/profile`   | Own profile (name, email, interface language)        |
-| `PATCH /api/me/profile` | Update own profile                                   |
-| `PUT /api/me/password`  | Change own password (requires the current password)  |
-| `GET /api/users`        | Backend users (for ownership / attribution displays) |
+| Endpoint                | Description                                         |
+| ----------------------- | --------------------------------------------------- |
+| `GET /api/me`           | Account, roles, scopes of this request              |
+| `GET /api/me/profile`   | Own profile (name, email, interface language)       |
+| `PATCH /api/me/profile` | Update own profile                                  |
+| `PUT /api/me/password`  | Change own password (requires the current password) |
+
+### Users
+
+Listing users is available to every editor (for ownership / attribution
+displays); creating, updating and deleting is user administration. Updates
+guard against self-lockout: you cannot deactivate or delete your own user or
+drop your own Administrator role.
+
+| Endpoint                     | Description                                                                                                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /api/users`             | Backend users with their accounts and roles                                                                                                                  |
+| `POST /api/users`            | Create a user: `{"username", "password", "firstName", "lastName", "roles"?, "email"?}`                                                                       |
+| `GET /api/users/roles`       | Assignable roles (every non-abstract role known to the policy framework)                                                                                     |
+| `GET /api/users/{userId}`    | One user                                                                                                                                                     |
+| `PATCH /api/users/{userId}`  | Partial update: `firstName`, `lastName`, `email` (empty string removes it), `roles` (replaces), `active`, `password` (administrative reset, no old password) |
+| `DELETE /api/users/{userId}` | Delete a user incl. accounts and personal workspaces                                                                                                         |
 
 ### Content reads
 
@@ -118,18 +138,72 @@ Node reads include disabled ("hidden") nodes — this is an editing API. Pass
 returned in serialized `{value, type}` form and round-trip with the command
 payloads.
 
+### Sites administration
+
+`{siteNodeName}` is the site's node name as returned by `GET /api/sites`.
+
+| Endpoint                                                | Description                                                                                                       |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `GET /api/sites/options`                                | Site creation options: installed site packages + node types usable for a site node                                  |
+| `POST /api/sites`                                       | Create a site with a fresh site node in live: `{"packageKey", "name", "nodeTypeName", "nodeName"?, "inactive"?}`    |
+| `PATCH /api/sites/{siteNodeName}`                       | Partial update: `name`, `state` (`"online"`/`"offline"`), `primaryDomainId` (empty string = first active domain)    |
+| `DELETE /api/sites/{siteNodeName}`                      | Delete a site incl. content, domains and asset collection (the classic module's "prune")                            |
+| `POST /api/sites/{siteNodeName}/domains`                | Add a domain: `{"hostname", "scheme"?, "port"?, "active"?}`                                                          |
+| `PATCH /api/sites/{siteNodeName}/domains/{domainId}`    | Partial domain update: `hostname`, `scheme` (empty string clears), `port` (`0` clears), `active`                     |
+| `DELETE /api/sites/{siteNodeName}/domains/{domainId}`   | Remove a domain (an explicit primary falls back to the first active domain)                                          |
+
 ### Workspaces
 
 | Endpoint                                      | Description                                                                                |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `GET /api/workspaces`                         | Workspaces readable by this account, with permissions                                      |
+| `POST /api/workspaces`                        | Create a workspace: `{"title", "description"?, "baseWorkspaceName"?, "visibility"?}` — visibility `"shared"` (default, every editor may collaborate) or `"private"` |
 | `GET /api/workspaces/{name}`                  | One workspace incl. pending change count                                                   |
+| `PATCH /api/workspaces/{name}`                | Update title and/or description (requires the manage permission)                           |
+| `DELETE /api/workspaces/{name}`               | Delete a workspace incl. metadata and role assignments; pending changes block deletion unless `{"force": true}` |
 | `GET /api/workspaces/{name}/changes`          | Pending changes (per node)                                                                 |
 | `GET /api/workspaces/{name}/document-changes` | Pending changes aggregated per document                                                    |
 | `POST /api/workspaces/{name}/publish`         | Publish all changes; body `{"site": "<id>"}` or `{"document": "<id>"}` for partial publish |
 | `POST /api/workspaces/{name}/discard`         | Discard (same filters)                                                                     |
 | `POST /api/workspaces/{name}/rebase`          | Rebase (body `{"strategy": "force"}` optional)                                             |
 | `POST /api/workspaces/{name}/base-workspace`  | Change the base workspace                                                                  |
+
+Role assignments control who may view, collaborate in or manage a workspace.
+All three endpoints require the manage permission (owner, manager role or
+administrator); a subject holds at most one role at a time.
+
+| Endpoint                             | Description                                                                                                             |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `GET /api/workspaces/{name}/roles`   | The workspace's role assignments                                                                                          |
+| `POST /api/workspaces/{name}/roles`  | Assign a role: `{"subjectType": "USER"\|"GROUP", "subject": <user id / Flow role identifier>, "role": "VIEWER"\|"COLLABORATOR"\|"MANAGER"}` |
+| `DELETE /api/workspaces/{name}/roles`| Remove an assignment: `{"subjectType", "subject"}`                                                                        |
+
+### Collaborative editing
+
+Two polling endpoints make shared-workspace multiplayer work over plain HTTP —
+no WebSocket server to deploy. Clients editing a shared workspace poll both
+every 1–2 seconds.
+
+| Endpoint                               | Description                                                                                                          |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/workspaces/{name}/events`     | Change feed: everything that happened in the workspace since the client's cursor (`?stream=` content stream id, `?since=` last seen sequence number) |
+| `POST /api/workspaces/{name}/presence`  | Presence heartbeat: announce your position and get everyone currently present back in one call                          |
+
+The **event feed** is cursor-based: call it without parameters once to obtain
+the baseline (`contentStreamId` + `sequenceNumber`), then pass both back as
+`?stream=` and `?since=`. When the workspace has moved to a different content
+stream in the meantime (publish, discard and rebase fork streams) the response
+sets `reset: true` and enumerates no events — refresh everything and continue
+from the new cursor. A full page sets `truncated: true` with the same client
+remedy.
+
+The **presence heartbeat** takes a JSON body of
+`{"documentAggregateId"?, "focusedAggregateId"?, "dimensionSpacePoint"?}` and
+answers with all users currently in the workspace, so one poll both announces
+and observes. Entries expire 30 seconds after the last beat (a closed tab
+disappears on its own); `{"leave": true}` removes the own entry immediately.
+Presence is deliberately ephemeral cache state and requires a user-bound token
+(`client_credentials` clients get a 403).
 
 ### Schema & data
 
