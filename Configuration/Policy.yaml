@@ -77,9 +77,11 @@ privilegeTargets:
     'Medienreaktor.NeosApi:Api.Content':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\CommandsController->.*Action())'
 
-    # Create, edit and delete sites. Administrators only.
+    # Create, edit and delete sites and their domains, plus the creation
+    # options catalog (site packages + site node types - a read, but only
+    # the admin-only creation dialog needs it). Administrators only.
     'Medienreaktor.NeosApi:Api.Sites.Write':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\SitesController->(create|update|delete)Action())'
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\SitesController->(create|update|delete|options|createDomain|updateDomain|deleteDomain)Action())'
 
     # Create, edit and delete users, plus the assignable-role catalog (a
     # read, but only the admin-only role picker needs it). Administrators

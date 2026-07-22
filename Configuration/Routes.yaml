@@ -152,6 +152,77 @@
   httpMethods: ['GET']
 
 -
+  name: 'API: Site create'
+  uriPattern: 'api/sites'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Sites'
+    '@action': 'create'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+# Literal tail, declared before the {siteNodeName} wildcard so it wins.
+-
+  name: 'API: Site creation options'
+  uriPattern: 'api/sites/options'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Sites'
+    '@action': 'options'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Site update'
+  uriPattern: 'api/sites/{siteNodeName}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Sites'
+    '@action': 'update'
+    '@format': 'json'
+  httpMethods: ['PATCH']
+
+-
+  name: 'API: Site delete'
+  uriPattern: 'api/sites/{siteNodeName}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Sites'
+    '@action': 'delete'
+    '@format': 'json'
+  httpMethods: ['DELETE']
+
+-
+  name: 'API: Site domain create'
+  uriPattern: 'api/sites/{siteNodeName}/domains'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Sites'
+    '@action': 'createDomain'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Site domain update'
+  uriPattern: 'api/sites/{siteNodeName}/domains/{domainId}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Sites'
+    '@action': 'updateDomain'
+    '@format': 'json'
+  httpMethods: ['PATCH']
+
+-
+  name: 'API: Site domain delete'
+  uriPattern: 'api/sites/{siteNodeName}/domains/{domainId}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Sites'
+    '@action': 'deleteDomain'
+    '@format': 'json'
+  httpMethods: ['DELETE']
+
+-
   name: 'API: Workspaces'
   uriPattern: 'api/workspaces'
   defaults:
