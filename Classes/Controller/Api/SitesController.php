@@ -259,7 +259,11 @@ class SitesController extends AbstractApiController
         $site = $this->requireSite($siteNodeName);
         $hostname = strtolower(trim($hostname));
         $this->validateDomainProperties($hostname, $scheme, $port);
-        if ($this->domainRepository->findOneByHost($hostname) !== null) {
+        // Exact-match uniqueness via the magic property finder. NOT
+        // findOneByHost(): that one runs the domain MATCHING strategy, where
+        // "example.com" matches the host "sub.example.com" - subdomains of an
+        // existing domain would be rejected as duplicates.
+        if ($this->domainRepository->findOneByHostname($hostname) !== null) {
             $this->throwJsonStatus(409, 'domain_exists', sprintf('The domain "%s" is already configured.', $hostname));
         }
 
@@ -299,7 +303,8 @@ class SitesController extends AbstractApiController
         $hostname = $hostname !== null ? strtolower(trim($hostname)) : null;
         $this->validateDomainProperties($hostname ?? 'valid.example', $scheme, $port);
         if ($hostname !== null) {
-            $existing = $this->domainRepository->findOneByHost($hostname);
+            // Exact match, not findOneByHost - see createDomainAction.
+            $existing = $this->domainRepository->findOneByHostname($hostname);
             if ($existing !== null && $existing !== $domain) {
                 $this->throwJsonStatus(409, 'domain_exists', sprintf('The domain "%s" is already configured.', $hostname));
             }

@@ -47,7 +47,9 @@ Medienreaktor:
       media: 'Neos.Media.Browser:ManageAssets'
       users: 'Neos.Neos:Backend.Module.Administration.Users'
       sites: 'Neos.Neos:Backend.Module.Administration.Sites'
-      workspaces: 'Neos.Neos:Backend.Module.Management.Workspaces'
+      # The classic module lives in Neos.Workspace.Ui since Neos 9 - note the
+      # singular "Workspace" in the target name.
+      workspaces: 'Neos.Workspace.Ui:Backend.Module.Management.Workspace'
       administration: 'Neos.Neos:Backend.Module.Administration'
 
 Neos:
