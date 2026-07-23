@@ -67,6 +67,21 @@ final class WorkspaceEventFeed implements ContentRepositoryServiceInterface
     }
 
     /**
+     * The first event of the content stream - for workspace streams that is
+     * the ContentStreamWasForked event recording where (source stream and
+     * version) the workspace branched off its base.
+     */
+    public function firstEvent(ContentStreamId $contentStreamId): ?EventEnvelope
+    {
+        $streamName = ContentStreamEventStreamName::fromContentStreamId($contentStreamId)->getEventStreamName();
+        foreach ($this->eventStore->load($streamName)->limit(1) as $eventEnvelope) {
+            return $eventEnvelope;
+        }
+
+        return null;
+    }
+
+    /**
      * The newest $limit events of the content stream, oldest first. A
      * workspace's content stream is forked off its base on publish/discard/
      * rebase, so the whole stream IS the workspace's pending history - this

@@ -889,6 +889,25 @@ class WorkspacesController extends AbstractApiController
         $feed = $this->contentRepositoryRegistry->buildService($this->getContentRepositoryId(), new WorkspaceEventFeedFactory());
         $envelopes = $feed->latestEvents($workspace->currentContentStreamId, self::PENDING_EVENTS_LIMIT);
 
+        // Where this stream branched off: its first event is the fork event,
+        // naming the source stream and the version it had at that moment.
+        // Events of the base with a HIGHER version happened after the fork -
+        // they are what makes this workspace OUTDATED. Read separately from
+        // the tail page above, which may not reach back to the first event.
+        $forkedFrom = null;
+        $firstEvent = $feed->firstEvent($workspace->currentContentStreamId);
+        if ($firstEvent !== null && $firstEvent->event->type->value === 'ContentStreamWasForked') {
+            $forkPayload = json_decode($firstEvent->event->data->value, true);
+            $sourceStream = is_array($forkPayload) ? ($forkPayload['sourceContentStreamId'] ?? null) : null;
+            $sourceVersion = is_array($forkPayload) ? ($forkPayload['versionOfSourceContentStream'] ?? null) : null;
+            if (is_string($sourceStream) && is_numeric($sourceVersion)) {
+                $forkedFrom = [
+                    'contentStreamId' => $sourceStream,
+                    'version' => (int)$sourceVersion,
+                ];
+            }
+        }
+
         $contentRepository = $this->getContentRepository();
         $nodeTypeManager = $contentRepository->getNodeTypeManager();
         $subgraphs = [];
@@ -951,6 +970,7 @@ class WorkspacesController extends AbstractApiController
             'baseWorkspace' => $workspace->baseWorkspaceName?->value,
             'status' => $workspace->status->value,
             'contentStreamId' => $workspace->currentContentStreamId->value,
+            'forkedFrom' => $forkedFrom,
             'truncated' => count($envelopes) === self::PENDING_EVENTS_LIMIT,
             'events' => $events,
         ]);
@@ -1080,6 +1100,10 @@ class WorkspacesController extends AbstractApiController
 
         return [
             'sequenceNumber' => $envelope->sequenceNumber->value,
+            // The event's 0-based position within its content stream -
+            // comparable with a fork's versionOfSourceContentStream, which is
+            // how clients locate a workspace's branch point in its base.
+            'version' => $envelope->version->value,
             'type' => $type,
             'kind' => $kind,
             'nodeAggregateId' => is_string($payload['nodeAggregateId'] ?? null)
