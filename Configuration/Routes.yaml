@@ -373,6 +373,16 @@
   httpMethods: ['GET']
 
 -
+  name: 'API: Workspace document diff'
+  uriPattern: 'api/workspaces/{workspaceName}/document-diff'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'documentDiff'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
   name: 'API: Workspace pending events diff'
   uriPattern: 'api/workspaces/{workspaceName}/pending-events/diff'
   defaults:

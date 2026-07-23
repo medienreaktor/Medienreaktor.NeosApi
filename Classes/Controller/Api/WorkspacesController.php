@@ -416,6 +416,253 @@ class WorkspacesController extends AbstractApiController
         ]);
     }
 
+    /**
+     * The NET difference one document's changed nodes carry against the base
+     * workspace - what publishing this document would actually apply. Unlike
+     * the pending-events diff (which walks the event history step by step),
+     * this compares STATE: each changed node's current properties, references,
+     * type, name, parent and visibility against the base workspace's version.
+     * Five edits of the same text arrive squashed into one old -> new row by
+     * construction, and no event-history cap applies.
+     *
+     * Change rows come from the pending-changes projection (the same source
+     * the document-changes listing counts), deduplicated per node VARIANT:
+     * the projection fans rows out per covered dimension, but rows resolving
+     * to the same origin variant describe one and the same difference.
+     */
+    public function documentDiffAction(string $workspaceName, string $documentAggregateId): string
+    {
+        $this->requireScope('neos.read');
+
+        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
+        if ($workspace === null) {
+            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
+        }
+        if ($this->serializeWorkspace($workspace) === null) {
+            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
+        }
+
+        $contentRepository = $this->getContentRepository();
+        $nodeTypeManager = $contentRepository->getNodeTypeManager();
+        $changeFinder = $contentRepository->projectionState(ChangeFinder::class);
+        $subgraphs = [];
+        $baseSubgraphs = [];
+        $seenVariants = [];
+        $nodes = [];
+        foreach ($changeFinder->findByContentStreamId($workspace->currentContentStreamId) as $change) {
+            if ($change->originDimensionSpacePoint === null) {
+                continue;
+            }
+            $nodeId = $change->nodeAggregateId;
+            $dimensionSpacePoint = $change->originDimensionSpacePoint->toDimensionSpacePoint();
+            $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                $workspace->workspaceName,
+                $dimensionSpacePoint
+            );
+            $baseSubgraph = null;
+            if ($workspace->baseWorkspaceName !== null) {
+                $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                    $workspace->baseWorkspaceName,
+                    $dimensionSpacePoint
+                );
+            }
+
+            $wsNode = $subgraph->findNodeById($nodeId);
+            $baseNode = $baseSubgraph?->findNodeById($nodeId);
+            if ($wsNode === null && $baseNode === null) {
+                continue;
+            }
+
+            // Belongs to the requested document? Removed nodes resolve their
+            // document in the base (same fallback the listing uses).
+            $documentNode = $wsNode !== null
+                ? $subgraph->findClosestNode($nodeId, FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document'))
+                : $baseSubgraph?->findClosestNode($nodeId, FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document'));
+            $documentId = $documentNode?->aggregateId->value
+                ?? $change->getLegacyRemovalAttachmentPoint()?->value;
+            if ($documentId !== $documentAggregateId) {
+                continue;
+            }
+
+            // Rows fanned out over covered dimensions resolve to the same
+            // origin variant - one difference, listed once.
+            $node = $wsNode ?? $baseNode;
+            $variantKey = $nodeId->value . '|' . $node->originDimensionSpacePoint->hash;
+            if (isset($seenVariants[$variantKey])) {
+                continue;
+            }
+            $seenVariants[$variantKey] = true;
+
+            $status = $change->deleted
+                ? 'removed'
+                : ($change->created ? 'created' : ($change->moved ? 'moved' : 'changed'));
+            $changes = $this->diffNodeAgainstBase($wsNode, $baseNode, $change->moved, $subgraph, $baseSubgraph, $subgraphs, $baseSubgraphs, $workspace);
+
+            // A "changed" node whose state does not differ visibly (e.g.
+            // edited and manually reverted) would render as an empty block.
+            if ($changes === [] && $status === 'changed') {
+                continue;
+            }
+
+            $nodes[] = [
+                'nodeAggregateId' => $nodeId->value,
+                'dimensions' => $node->originDimensionSpacePoint->coordinates,
+                'status' => $status,
+                'nodeLabel' => $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node)),
+                'nodeType' => $node->nodeTypeName->value,
+                'icon' => $nodeTypeManager->getNodeType($node->nodeTypeName)?->getFullConfiguration()['ui']['icon'] ?? null,
+                'changes' => $changes,
+            ];
+        }
+
+        return $this->json([
+            'workspace' => $workspace->workspaceName->value,
+            'baseWorkspace' => $workspace->baseWorkspaceName?->value,
+            'documentAggregateId' => $documentAggregateId,
+            'nodes' => $nodes,
+        ]);
+    }
+
+    /**
+     * The visible state differences of one node variant between the workspace
+     * and its base: properties, node type, name, parent (or sibling position
+     * for in-place moves), the disabled tag, and reference targets. Rows share
+     * the pending-events diff vocabulary so clients render both the same way.
+     * A node missing on one side diffs against nothing: created nodes list
+     * their properties as new values, removed nodes need no rows (the status
+     * says it all).
+     *
+     * @param array<string, ContentSubgraphInterface> $subgraphs
+     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
+     * @return list<array<string, mixed>>
+     */
+    private function diffNodeAgainstBase(
+        ?Node $wsNode,
+        ?Node $baseNode,
+        bool $moved,
+        ContentSubgraphInterface $subgraph,
+        ?ContentSubgraphInterface $baseSubgraph,
+        array &$subgraphs,
+        array &$baseSubgraphs,
+        Workspace $workspace
+    ): array {
+        if ($wsNode === null) {
+            return [];
+        }
+        $coordinates = $wsNode->originDimensionSpacePoint->coordinates;
+        $rows = [];
+
+        // Properties: the union of both sides, rows only where values differ.
+        $wsProperties = [];
+        foreach ($wsNode->properties->serialized() as $name => $serialized) {
+            $wsProperties[$name] = $serialized->value;
+        }
+        $baseProperties = [];
+        if ($baseNode !== null) {
+            foreach ($baseNode->properties->serialized() as $name => $serialized) {
+                $baseProperties[$name] = $serialized->value;
+            }
+        }
+        foreach (array_keys($wsProperties + $baseProperties) as $name) {
+            $old = $baseProperties[$name] ?? null;
+            $new = $wsProperties[$name] ?? null;
+            if (json_encode($old) === json_encode($new)) {
+                continue;
+            }
+            $rows[] = [
+                'kind' => 'property',
+                'property' => (string)$name,
+                'label' => $this->propertyLabel($wsNode, (string)$name, 'properties'),
+                'old' => $old,
+                'new' => $new,
+            ];
+        }
+
+        if ($baseNode !== null && !$wsNode->nodeTypeName->equals($baseNode->nodeTypeName)) {
+            $rows[] = [
+                'kind' => 'nodeType',
+                'property' => null,
+                'label' => null,
+                'old' => $baseNode->nodeTypeName->value,
+                'new' => $wsNode->nodeTypeName->value,
+            ];
+        }
+        if ($baseNode !== null && $wsNode->name?->value !== $baseNode->name?->value) {
+            $rows[] = [
+                'kind' => 'name',
+                'property' => null,
+                'label' => null,
+                'old' => $baseNode->name?->value,
+                'new' => $wsNode->name?->value,
+            ];
+        }
+
+        // Parent: a real reparenting diffs; a move within the same parent is
+        // a position change state cannot express better than "reordered".
+        if ($baseNode !== null) {
+            $wsParentId = $subgraph->findParentNode($wsNode->aggregateId)?->aggregateId->value;
+            $baseParentId = $baseSubgraph?->findParentNode($baseNode->aggregateId)?->aggregateId->value;
+            if ($wsParentId !== null && $baseParentId !== null && $wsParentId !== $baseParentId) {
+                $rows[] = [
+                    'kind' => 'parent',
+                    'property' => null,
+                    'label' => null,
+                    'old' => $this->describeNodes([$baseParentId], $coordinates, $workspace, $subgraphs, $baseSubgraphs)[0] ?? null,
+                    'new' => $this->describeNodes([$wsParentId], $coordinates, $workspace, $subgraphs, $baseSubgraphs)[0] ?? null,
+                ];
+            } elseif ($moved) {
+                $rows[] = ['kind' => 'position', 'property' => null, 'label' => null, 'old' => null, 'new' => null];
+            }
+        }
+
+        $wsDisabled = $wsNode->tags->contain(NeosSubtreeTag::disabled());
+        $baseDisabled = $baseNode?->tags->contain(NeosSubtreeTag::disabled()) ?? false;
+        if ($wsDisabled !== $baseDisabled) {
+            $rows[] = [
+                'kind' => 'tag',
+                'property' => 'disabled',
+                'label' => null,
+                'old' => $baseDisabled ? 'disabled' : null,
+                'new' => $wsDisabled ? 'disabled' : null,
+            ];
+        }
+
+        // References: target id lists per reference name, both sides.
+        $collectReferences = static function (?ContentSubgraphInterface $fromSubgraph, ?Node $node): array {
+            if ($fromSubgraph === null || $node === null) {
+                return [];
+            }
+            $byName = [];
+            foreach ($fromSubgraph->findReferences($node->aggregateId, FindReferencesFilter::create()) as $reference) {
+                $byName[$reference->name->value][] = $reference->node->aggregateId->value;
+            }
+            return $byName;
+        };
+        try {
+            $wsReferences = $collectReferences($subgraph, $wsNode);
+            $baseReferences = $collectReferences($baseSubgraph, $baseNode);
+            foreach (array_keys($wsReferences + $baseReferences) as $referenceName) {
+                $oldTargets = $baseReferences[$referenceName] ?? [];
+                $newTargets = $wsReferences[$referenceName] ?? [];
+                if ($oldTargets === $newTargets) {
+                    continue;
+                }
+                $rows[] = [
+                    'kind' => 'reference',
+                    'property' => (string)$referenceName,
+                    'label' => $this->propertyLabel($wsNode, (string)$referenceName, 'references'),
+                    'old' => $this->describeNodes($oldTargets, $coordinates, $workspace, $subgraphs, $baseSubgraphs),
+                    'new' => $this->describeNodes($newTargets, $coordinates, $workspace, $subgraphs, $baseSubgraphs),
+                ];
+            }
+        } catch (\Throwable) {
+            // Reference reads must never break the diff - properties and the
+            // structural rows above still tell the story.
+        }
+
+        return $rows;
+    }
+
     #[Flow\SkipCsrfProtection]
     public function publishAction(string $workspaceName): string
     {
