@@ -97,4 +97,41 @@ final class WorkspaceEventFeed implements ContentRepositoryServiceInterface
 
         return array_reverse(iterator_to_array($stream, false));
     }
+
+    /**
+     * The events of the content stream with $from <= sequenceNumber <= $to,
+     * oldest first - one step of the pending history, for the diff resource.
+     *
+     * @return list<EventEnvelope>
+     */
+    public function eventsBetween(ContentStreamId $contentStreamId, int $from, int $to): array
+    {
+        $streamName = ContentStreamEventStreamName::fromContentStreamId($contentStreamId)->getEventStreamName();
+        $stream = $this->eventStore->load($streamName)
+            ->withMinimumSequenceNumber(SequenceNumber::fromInteger($from))
+            ->withMaximumSequenceNumber(SequenceNumber::fromInteger($to));
+
+        return iterator_to_array($stream, false);
+    }
+
+    /**
+     * The newest $limit events of the content stream BEFORE the given
+     * sequence number, newest first - the backward-scan window a diff walks
+     * to find the value a property had before a change.
+     *
+     * @return list<EventEnvelope>
+     */
+    public function eventsBefore(ContentStreamId $contentStreamId, int $beforeSequenceNumber, int $limit): array
+    {
+        if ($beforeSequenceNumber <= 1) {
+            return [];
+        }
+        $streamName = ContentStreamEventStreamName::fromContentStreamId($contentStreamId)->getEventStreamName();
+        $stream = $this->eventStore->load($streamName)
+            ->withMaximumSequenceNumber(SequenceNumber::fromInteger($beforeSequenceNumber - 1))
+            ->backwards()
+            ->limit($limit);
+
+        return iterator_to_array($stream, false);
+    }
 }

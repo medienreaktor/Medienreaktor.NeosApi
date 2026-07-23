@@ -13,6 +13,7 @@ use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\WorkspaceRebas
 use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindReferencesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceContainsPublishableChanges;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAddress;
@@ -88,6 +89,13 @@ class WorkspacesController extends AbstractApiController
 
     /** Newest events the pending-history resource returns per workspace. */
     private const PENDING_EVENTS_LIMIT = 100;
+
+    /** Widest sequence-number slice one pending-events diff may cover. */
+    private const DIFF_RANGE_LIMIT = 200;
+
+    /** Events the before-value scan walks back through, at most. Beyond this
+     * window the diff falls back to the base workspace's current value. */
+    private const DIFF_SCAN_LIMIT = 500;
 
     /**
      * How feed clients should react to an event type: 'content' = a node's
@@ -908,40 +916,65 @@ class WorkspacesController extends AbstractApiController
             }
         }
 
-        $contentRepository = $this->getContentRepository();
-        $nodeTypeManager = $contentRepository->getNodeTypeManager();
+        $events = array_map(
+            static fn (array $item): array => $item['event'],
+            $this->enrichFeedEvents($envelopes, $workspace)
+        );
+
+        return $this->json([
+            'workspace' => $workspace->workspaceName->value,
+            'baseWorkspace' => $workspace->baseWorkspaceName?->value,
+            'status' => $workspace->status->value,
+            'contentStreamId' => $workspace->currentContentStreamId->value,
+            'forkedFrom' => $forkedFrom,
+            'truncated' => count($envelopes) === self::PENDING_EVENTS_LIMIT,
+            'events' => $events,
+        ]);
+    }
+
+    /**
+     * Serialize and enrich feed events: the affected node's label/type/icon,
+     * the initiating user's name, and the containing document (id, label and
+     * a navigable address - what "go to page" on a history entry follows).
+     * The node is resolved in the workspace's own subgraph, falling back to
+     * the base for nodes removed in the workspace, in the dimension the event
+     * names (same fallback the changes resources use). Envelopes whose event
+     * type is not client-facing are dropped.
+     *
+     * @param list<EventEnvelope> $envelopes
+     * @return list<array{event: array<string, mixed>, envelope: EventEnvelope, node: ?Node, subgraph: ?ContentSubgraphInterface}>
+     */
+    private function enrichFeedEvents(array $envelopes, Workspace $workspace): array
+    {
+        $nodeTypeManager = $this->getContentRepository()->getNodeTypeManager();
         $subgraphs = [];
         $baseSubgraphs = [];
+        $documentNodes = [];
         $userLabels = [];
-        $events = [];
+        $items = [];
         foreach ($envelopes as $envelope) {
             $serialized = $this->serializeFeedEvent($envelope);
             if ($serialized === null) {
                 continue;
             }
 
-            // Resolve the affected node for a human-readable label, in the
-            // dimension the event names. A node removed in this workspace is
-            // gone from its subgraph - resolve it in the base workspace so
-            // the deletion still shows what it deleted (same fallback the
-            // changes resources use).
-            $node = null;
-            $nodeId = $serialized['nodeAggregateId'];
-            $coordinates = $serialized['dimensionSpacePoints'][0] ?? null;
-            if (is_string($nodeId) && is_array($coordinates)) {
-                $dimensionSpacePoint = DimensionSpacePoint::fromArray($coordinates);
-                $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-                    $workspace->workspaceName,
-                    $dimensionSpacePoint
-                );
-                $node = $subgraph->findNodeById(NodeAggregateId::fromString($nodeId));
-                if ($node === null && $workspace->baseWorkspaceName !== null) {
-                    $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-                        $workspace->baseWorkspaceName,
-                        $dimensionSpacePoint
-                    );
-                    $node = $baseSubgraph->findNodeById(NodeAggregateId::fromString($nodeId));
+            [$node, $subgraph] = $this->resolveFeedEventNode($serialized, $workspace, $subgraphs, $baseSubgraphs);
+
+            // Cached per node: consecutive events usually hit the same few nodes.
+            $documentNode = null;
+            if ($node !== null && $subgraph !== null) {
+                $documentCacheKey = $node->aggregateId->value . '|' . $node->originDimensionSpacePoint->hash;
+                if (!array_key_exists($documentCacheKey, $documentNodes)) {
+                    try {
+                        $documentNodes[$documentCacheKey] = $subgraph->findClosestNode(
+                            $node->aggregateId,
+                            FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
+                        );
+                    } catch (\Throwable) {
+                        $documentNodes[$documentCacheKey] = null;
+                    }
                 }
+                $documentNode = $documentNodes[$documentCacheKey];
             }
 
             $userId = $serialized['initiatingUserId'];
@@ -953,27 +986,610 @@ class WorkspacesController extends AbstractApiController
                 }
             }
 
-            $events[] = $serialized + [
-                'nodeLabel' => $node !== null
-                    ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node))
-                    : null,
-                'nodeType' => $node?->nodeTypeName->value,
-                'icon' => $node !== null
-                    ? ($nodeTypeManager->getNodeType($node->nodeTypeName)?->getFullConfiguration()['ui']['icon'] ?? null)
-                    : null,
-                'initiatingUserLabel' => is_string($userId) ? ($userLabels[$userId] ?? null) : null,
+            $items[] = [
+                'event' => $serialized + [
+                    'nodeLabel' => $node !== null
+                        ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node))
+                        : null,
+                    'nodeType' => $node?->nodeTypeName->value,
+                    'icon' => $node !== null
+                        ? ($nodeTypeManager->getNodeType($node->nodeTypeName)?->getFullConfiguration()['ui']['icon'] ?? null)
+                        : null,
+                    'initiatingUserLabel' => is_string($userId) ? ($userLabels[$userId] ?? null) : null,
+                    'documentAggregateId' => $documentNode?->aggregateId->value,
+                    'documentLabel' => $documentNode !== null
+                        ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($documentNode))
+                        : null,
+                    'documentAddress' => $documentNode !== null
+                        ? NodeAddressCodec::encode(NodeAddress::fromNode($documentNode))
+                        : null,
+                ],
+                'envelope' => $envelope,
+                'node' => $node,
+                'subgraph' => $subgraph,
+            ];
+        }
+
+        return $items;
+    }
+
+    /**
+     * The affected node of a serialized feed event plus the subgraph it was
+     * resolved in: the workspace's own, falling back to the base workspace
+     * for nodes removed in the workspace (so a deletion still shows what it
+     * deleted).
+     *
+     * @param array<string, mixed> $serialized
+     * @param array<string, ContentSubgraphInterface> $subgraphs
+     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
+     * @return array{?Node, ?ContentSubgraphInterface}
+     */
+    private function resolveFeedEventNode(array $serialized, Workspace $workspace, array &$subgraphs, array &$baseSubgraphs): array
+    {
+        $nodeId = $serialized['nodeAggregateId'];
+        $coordinates = $serialized['dimensionSpacePoints'][0] ?? null;
+        if (!is_string($nodeId) || !is_array($coordinates)) {
+            return [null, null];
+        }
+        $contentRepository = $this->getContentRepository();
+        $dimensionSpacePoint = DimensionSpacePoint::fromArray($coordinates);
+        $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+            $workspace->workspaceName,
+            $dimensionSpacePoint
+        );
+        $node = $subgraph->findNodeById(NodeAggregateId::fromString($nodeId));
+        if ($node !== null) {
+            return [$node, $subgraph];
+        }
+        if ($workspace->baseWorkspaceName !== null) {
+            $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                $workspace->baseWorkspaceName,
+                $dimensionSpacePoint
+            );
+            $node = $baseSubgraph->findNodeById(NodeAggregateId::fromString($nodeId));
+            if ($node !== null) {
+                return [$node, $baseSubgraph];
+            }
+        }
+        return [null, null];
+    }
+
+    /**
+     * Before/after detail for a slice of a workspace's pending history - the
+     * events of one editing step, addressed by the sequence-number range the
+     * pending-events resource reported (a command commits its events
+     * contiguously, so a step IS a range). Every event answers WHAT changed:
+     * per-property old and new values, old/new reference targets, old/new
+     * node type or parent, the visibility tag.
+     *
+     * "Old" is the value just before the event: resolved by scanning the same
+     * stream backwards (through earlier edits of this workspace, capped at
+     * DIFF_SCAN_LIMIT), falling back to the value the base workspace holds
+     * now. null means "did not exist". The fallback is approximate for an
+     * OUTDATED workspace - the base may have moved on since the fork - which
+     * matches how the review UI presents changes elsewhere.
+     */
+    public function pendingEventsDiffAction(string $workspaceName, int $from = 0, int $to = 0): string
+    {
+        $this->requireScope('neos.read');
+
+        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
+        if ($workspace === null) {
+            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
+        }
+        if ($this->serializeWorkspace($workspace) === null) {
+            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
+        }
+        if ($from < 1 || $to < $from || $to - $from >= self::DIFF_RANGE_LIMIT) {
+            $this->throwJsonStatus(400, 'invalid_range', sprintf(
+                'Provide 1 <= from <= to with a span below %d.',
+                self::DIFF_RANGE_LIMIT
+            ));
+        }
+
+        /** @var WorkspaceEventFeed $feed */
+        $feed = $this->contentRepositoryRegistry->buildService($this->getContentRepositoryId(), new WorkspaceEventFeedFactory());
+        $slice = $feed->eventsBetween($workspace->currentContentStreamId, $from, $to);
+
+        // The backward-scan window, newest first, pre-decoded once. Only
+        // needed for event types whose diff looks into the past.
+        $beforeEvents = null;
+        $loadBeforeEvents = function () use (&$beforeEvents, $feed, $workspace, $from): array {
+            if ($beforeEvents === null) {
+                $beforeEvents = [];
+                foreach ($feed->eventsBefore($workspace->currentContentStreamId, $from, self::DIFF_SCAN_LIMIT) as $envelope) {
+                    $payload = json_decode($envelope->event->data->value, true);
+                    if (is_array($payload)) {
+                        $beforeEvents[] = ['type' => $envelope->event->type->value, 'payload' => $payload];
+                    }
+                }
+            }
+            return $beforeEvents;
+        };
+
+        $subgraphs = [];
+        $baseSubgraphs = [];
+        $events = [];
+        foreach ($this->enrichFeedEvents($slice, $workspace) as $item) {
+            $events[] = $item['event'] + [
+                'changes' => $this->diffEventChanges(
+                    $item['envelope'],
+                    $item['node'],
+                    $workspace,
+                    $loadBeforeEvents,
+                    $subgraphs,
+                    $baseSubgraphs
+                ),
             ];
         }
 
         return $this->json([
             'workspace' => $workspace->workspaceName->value,
-            'baseWorkspace' => $workspace->baseWorkspaceName?->value,
-            'status' => $workspace->status->value,
             'contentStreamId' => $workspace->currentContentStreamId->value,
-            'forkedFrom' => $forkedFrom,
-            'truncated' => count($envelopes) === self::PENDING_EVENTS_LIMIT,
+            'from' => $from,
+            'to' => $to,
             'events' => $events,
         ]);
+    }
+
+    /**
+     * What one pending event changed, as before/after rows. Kinds: 'property'
+     * (old/new property value), 'reference' (old/new target lists of
+     * {id,label}), 'nodeType', 'name', 'parent' (old/new {id,label}),
+     * 'position' (reorder under the same parent), 'tag' (visibility et al.),
+     * 'variant' (old/new dimension coordinates).
+     *
+     * @param callable(): list<array{type: string, payload: array<string, mixed>}> $loadBeforeEvents
+     * @param array<string, ContentSubgraphInterface> $subgraphs
+     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
+     * @return list<array<string, mixed>>
+     */
+    private function diffEventChanges(
+        EventEnvelope $envelope,
+        ?Node $node,
+        Workspace $workspace,
+        callable $loadBeforeEvents,
+        array &$subgraphs,
+        array &$baseSubgraphs
+    ): array {
+        $type = $envelope->event->type->value;
+        $payload = json_decode($envelope->event->data->value, true);
+        $payload = is_array($payload) ? $payload : [];
+        $nodeId = $payload['nodeAggregateId'] ?? null;
+        if (!is_string($nodeId)) {
+            return [];
+        }
+
+        switch ($type) {
+            case 'NodePropertiesWereSet': {
+                $origin = is_array($payload['originDimensionSpacePoint'] ?? null) ? $payload['originDimensionSpacePoint'] : null;
+                $rows = [];
+                foreach ((array)($payload['propertyValues'] ?? []) as $name => $descriptor) {
+                    $rows[] = [
+                        'kind' => 'property',
+                        'property' => (string)$name,
+                        'label' => $this->propertyLabel($node, (string)$name, 'properties'),
+                        'old' => $this->propertyValueBefore($nodeId, $origin, (string)$name, $loadBeforeEvents(), $workspace, $baseSubgraphs),
+                        'new' => is_array($descriptor) && array_key_exists('value', $descriptor) ? $descriptor['value'] : null,
+                    ];
+                }
+                foreach ((array)($payload['propertiesToUnset'] ?? []) as $name) {
+                    $rows[] = [
+                        'kind' => 'property',
+                        'property' => (string)$name,
+                        'label' => $this->propertyLabel($node, (string)$name, 'properties'),
+                        'old' => $this->propertyValueBefore($nodeId, $origin, (string)$name, $loadBeforeEvents(), $workspace, $baseSubgraphs),
+                        'new' => null,
+                    ];
+                }
+                return $rows;
+            }
+            case 'NodeAggregateWithNodeWasCreated': {
+                $rows = [];
+                foreach ((array)($payload['initialPropertyValues'] ?? []) as $name => $descriptor) {
+                    $rows[] = [
+                        'kind' => 'property',
+                        'property' => (string)$name,
+                        'label' => $this->propertyLabel($node, (string)$name, 'properties'),
+                        'old' => null,
+                        'new' => is_array($descriptor) && array_key_exists('value', $descriptor) ? $descriptor['value'] : null,
+                    ];
+                }
+                return $rows;
+            }
+            case 'NodeReferencesWereSet': {
+                $origin = is_array($payload['affectedSourceOriginDimensionSpacePoints'][0] ?? null)
+                    ? $payload['affectedSourceOriginDimensionSpacePoints'][0]
+                    : null;
+                $rows = [];
+                foreach ((array)($payload['references'] ?? []) as $referencesForName) {
+                    $referenceName = $referencesForName['referenceName'] ?? null;
+                    if (!is_string($referenceName)) {
+                        continue;
+                    }
+                    $newTargets = [];
+                    foreach ((array)($referencesForName['references'] ?? []) as $reference) {
+                        if (is_string($reference['target'] ?? null)) {
+                            $newTargets[] = $reference['target'];
+                        }
+                    }
+                    $oldTargets = $this->referenceTargetsBefore($nodeId, $origin, $referenceName, $loadBeforeEvents(), $workspace, $baseSubgraphs);
+                    $rows[] = [
+                        'kind' => 'reference',
+                        'property' => $referenceName,
+                        'label' => $this->propertyLabel($node, $referenceName, 'references'),
+                        'old' => $this->describeNodes($oldTargets, $origin, $workspace, $subgraphs, $baseSubgraphs),
+                        'new' => $this->describeNodes($newTargets, $origin, $workspace, $subgraphs, $baseSubgraphs),
+                    ];
+                }
+                return $rows;
+            }
+            case 'NodeAggregateTypeWasChanged':
+                return [[
+                    'kind' => 'nodeType',
+                    'property' => null,
+                    'label' => null,
+                    'old' => $this->nodeTypeBefore($nodeId, $loadBeforeEvents(), $workspace),
+                    'new' => $payload['newNodeTypeName'] ?? null,
+                ]];
+            case 'NodeAggregateNameWasChanged':
+                return [[
+                    'kind' => 'name',
+                    'property' => null,
+                    'label' => null,
+                    'old' => $this->nodeNameBefore($nodeId, $loadBeforeEvents(), $workspace),
+                    'new' => $payload['newNodeName'] ?? null,
+                ]];
+            case 'NodeAggregateWasMoved': {
+                $newParentId = $payload['newParentNodeAggregateId'] ?? null;
+                if (!is_string($newParentId)) {
+                    // Reorder among its siblings - same parent, new position.
+                    return [['kind' => 'position', 'property' => null, 'label' => null, 'old' => null, 'new' => null]];
+                }
+                $coordinates = is_array($payload['succeedingSiblingsForCoverage'][0]['dimensionSpacePoint'] ?? null)
+                    ? $payload['succeedingSiblingsForCoverage'][0]['dimensionSpacePoint']
+                    : null;
+                $oldParentId = $this->parentBefore($nodeId, $coordinates, $loadBeforeEvents(), $workspace, $baseSubgraphs);
+                return [[
+                    'kind' => 'parent',
+                    'property' => null,
+                    'label' => null,
+                    'old' => $oldParentId !== null
+                        ? ($this->describeNodes([$oldParentId], $coordinates, $workspace, $subgraphs, $baseSubgraphs)[0] ?? null)
+                        : null,
+                    'new' => $this->describeNodes([$newParentId], $coordinates, $workspace, $subgraphs, $baseSubgraphs)[0] ?? null,
+                ]];
+            }
+            case 'SubtreeWasTagged':
+            case 'SubtreeWasUntagged': {
+                $tag = is_string($payload['tag'] ?? null) ? $payload['tag'] : null;
+                return [[
+                    'kind' => 'tag',
+                    'property' => $tag,
+                    'label' => null,
+                    'old' => $type === 'SubtreeWasUntagged' ? $tag : null,
+                    'new' => $type === 'SubtreeWasTagged' ? $tag : null,
+                ]];
+            }
+            case 'NodeSpecializationVariantWasCreated':
+            case 'NodeGeneralizationVariantWasCreated':
+            case 'NodePeerVariantWasCreated':
+                return [[
+                    'kind' => 'variant',
+                    'property' => null,
+                    'label' => null,
+                    'old' => $payload['sourceOrigin'] ?? null,
+                    'new' => $payload['specializationOrigin'] ?? $payload['generalizationOrigin'] ?? $payload['peerOrigin'] ?? null,
+                ]];
+            default:
+                return [];
+        }
+    }
+
+    /**
+     * The configured human label of a property or reference from the node's
+     * type - possibly an XLIFF shorthand the client translates, like every
+     * node-type label the API emits.
+     */
+    private function propertyLabel(?Node $node, string $name, string $section): ?string
+    {
+        if ($node === null) {
+            return null;
+        }
+        $configuration = $this->getContentRepository()->getNodeTypeManager()
+            ->getNodeType($node->nodeTypeName)?->getFullConfiguration();
+        $label = $configuration[$section][$name]['ui']['label'] ?? null;
+        return is_string($label) ? $label : null;
+    }
+
+    /**
+     * The value a property had just before the diffed event: the newest
+     * earlier write to it in the same stream (a set, an unset, the node's
+     * creation, or - transitively - the variant source it was copied from),
+     * falling back to the value the base workspace holds.
+     *
+     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
+     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
+     */
+    private function propertyValueBefore(
+        string $nodeId,
+        ?array $origin,
+        string $property,
+        array $beforeEvents,
+        Workspace $workspace,
+        array &$baseSubgraphs
+    ): mixed {
+        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
+            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
+                continue;
+            }
+            switch ($type) {
+                case 'NodePropertiesWereSet':
+                    if (!$this->sameCoordinates($payload['originDimensionSpacePoint'] ?? null, $origin)) {
+                        break;
+                    }
+                    $descriptor = $payload['propertyValues'][$property] ?? null;
+                    if (is_array($descriptor) && array_key_exists('value', $descriptor)) {
+                        return $descriptor['value'];
+                    }
+                    if (in_array($property, (array)($payload['propertiesToUnset'] ?? []), true)) {
+                        return null;
+                    }
+                    break;
+                case 'NodeAggregateWithNodeWasCreated':
+                    if (!$this->sameCoordinates($payload['originDimensionSpacePoint'] ?? null, $origin)) {
+                        break;
+                    }
+                    // The node was created inside this workspace: its initial
+                    // value is definitive, the base cannot know it.
+                    $descriptor = $payload['initialPropertyValues'][$property] ?? null;
+                    return is_array($descriptor) && array_key_exists('value', $descriptor) ? $descriptor['value'] : null;
+                case 'NodeSpecializationVariantWasCreated':
+                case 'NodeGeneralizationVariantWasCreated':
+                case 'NodePeerVariantWasCreated':
+                    // The variant copied the source origin's values when it
+                    // was created - continue the scan in the source origin.
+                    $target = $payload['specializationOrigin'] ?? $payload['generalizationOrigin'] ?? $payload['peerOrigin'] ?? null;
+                    if ($this->sameCoordinates($target, $origin) && is_array($payload['sourceOrigin'] ?? null)) {
+                        $origin = $payload['sourceOrigin'];
+                    }
+                    break;
+            }
+        }
+
+        if ($workspace->baseWorkspaceName === null || !is_array($origin)) {
+            return null;
+        }
+        try {
+            $dimensionSpacePoint = DimensionSpacePoint::fromArray($origin);
+            $subgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $this->getContentRepository()->getContentSubgraph(
+                $workspace->baseWorkspaceName,
+                $dimensionSpacePoint
+            );
+            return $subgraph->findNodeById(NodeAggregateId::fromString($nodeId))
+                ?->properties->serialized()->getProperty($property)?->value;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * The reference targets a name pointed to just before the diffed event.
+     *
+     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
+     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
+     * @return list<string>
+     */
+    private function referenceTargetsBefore(
+        string $nodeId,
+        ?array $origin,
+        string $referenceName,
+        array $beforeEvents,
+        Workspace $workspace,
+        array &$baseSubgraphs
+    ): array {
+        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
+            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
+                continue;
+            }
+            if ($type === 'NodeReferencesWereSet') {
+                $affected = (array)($payload['affectedSourceOriginDimensionSpacePoints'] ?? []);
+                $matches = $origin === null || array_filter($affected, fn ($point) => $this->sameCoordinates($point, $origin)) !== [];
+                if (!$matches) {
+                    continue;
+                }
+                foreach ((array)($payload['references'] ?? []) as $referencesForName) {
+                    if (($referencesForName['referenceName'] ?? null) !== $referenceName) {
+                        continue;
+                    }
+                    $targets = [];
+                    foreach ((array)($referencesForName['references'] ?? []) as $reference) {
+                        if (is_string($reference['target'] ?? null)) {
+                            $targets[] = $reference['target'];
+                        }
+                    }
+                    return $targets;
+                }
+            }
+            if ($type === 'NodeAggregateWithNodeWasCreated' && $this->sameCoordinates($payload['originDimensionSpacePoint'] ?? null, $origin)) {
+                foreach ((array)($payload['nodeReferences'] ?? []) as $referencesForName) {
+                    if (($referencesForName['referenceName'] ?? null) !== $referenceName) {
+                        continue;
+                    }
+                    $targets = [];
+                    foreach ((array)($referencesForName['references'] ?? []) as $reference) {
+                        if (is_string($reference['target'] ?? null)) {
+                            $targets[] = $reference['target'];
+                        }
+                    }
+                    return $targets;
+                }
+                return [];
+            }
+        }
+
+        if ($workspace->baseWorkspaceName === null || !is_array($origin)) {
+            return [];
+        }
+        try {
+            $dimensionSpacePoint = DimensionSpacePoint::fromArray($origin);
+            $subgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $this->getContentRepository()->getContentSubgraph(
+                $workspace->baseWorkspaceName,
+                $dimensionSpacePoint
+            );
+            $targets = [];
+            foreach ($subgraph->findReferences(NodeAggregateId::fromString($nodeId), FindReferencesFilter::create(referenceName: $referenceName)) as $reference) {
+                $targets[] = $reference->node->aggregateId->value;
+            }
+            return $targets;
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * The node type an aggregate had before the diffed event: an earlier type
+     * change or its creation in this stream, else what the base knows.
+     *
+     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
+     */
+    private function nodeTypeBefore(string $nodeId, array $beforeEvents, Workspace $workspace): ?string
+    {
+        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
+            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
+                continue;
+            }
+            if ($type === 'NodeAggregateTypeWasChanged' && is_string($payload['newNodeTypeName'] ?? null)) {
+                return $payload['newNodeTypeName'];
+            }
+            if ($type === 'NodeAggregateWithNodeWasCreated' && is_string($payload['nodeTypeName'] ?? null)) {
+                return $payload['nodeTypeName'];
+            }
+        }
+        if ($workspace->baseWorkspaceName === null) {
+            return null;
+        }
+        try {
+            return $this->getContentRepository()->getContentGraph($workspace->baseWorkspaceName)
+                ->findNodeAggregateById(NodeAggregateId::fromString($nodeId))?->nodeTypeName->value;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * The node name an aggregate had before the diffed event.
+     *
+     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
+     */
+    private function nodeNameBefore(string $nodeId, array $beforeEvents, Workspace $workspace): ?string
+    {
+        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
+            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
+                continue;
+            }
+            if ($type === 'NodeAggregateNameWasChanged' && is_string($payload['newNodeName'] ?? null)) {
+                return $payload['newNodeName'];
+            }
+            if ($type === 'NodeAggregateWithNodeWasCreated') {
+                return is_string($payload['nodeName'] ?? null) ? $payload['nodeName'] : null;
+            }
+        }
+        if ($workspace->baseWorkspaceName === null) {
+            return null;
+        }
+        try {
+            return $this->getContentRepository()->getContentGraph($workspace->baseWorkspaceName)
+                ->findNodeAggregateById(NodeAggregateId::fromString($nodeId))?->nodeName?->value;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * The parent an aggregate hung under before the diffed move: an earlier
+     * move or its creation in this stream, else the base workspace's parent.
+     *
+     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
+     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
+     */
+    private function parentBefore(
+        string $nodeId,
+        ?array $coordinates,
+        array $beforeEvents,
+        Workspace $workspace,
+        array &$baseSubgraphs
+    ): ?string {
+        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
+            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
+                continue;
+            }
+            if ($type === 'NodeAggregateWasMoved' && is_string($payload['newParentNodeAggregateId'] ?? null)) {
+                return $payload['newParentNodeAggregateId'];
+            }
+            if ($type === 'NodeAggregateWithNodeWasCreated' && is_string($payload['parentNodeAggregateId'] ?? null)) {
+                return $payload['parentNodeAggregateId'];
+            }
+        }
+        if ($workspace->baseWorkspaceName === null || !is_array($coordinates)) {
+            return null;
+        }
+        try {
+            $dimensionSpacePoint = DimensionSpacePoint::fromArray($coordinates);
+            $subgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $this->getContentRepository()->getContentSubgraph(
+                $workspace->baseWorkspaceName,
+                $dimensionSpacePoint
+            );
+            return $subgraph->findParentNode(NodeAggregateId::fromString($nodeId))?->aggregateId->value;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * Node ids as {id, label} pairs a human can read, resolved in the
+     * workspace (falling back to the base) in the given dimension.
+     *
+     * @param list<string> $nodeIds
+     * @param array<string, ContentSubgraphInterface> $subgraphs
+     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
+     * @return list<array{id: string, label: ?string}>
+     */
+    private function describeNodes(
+        array $nodeIds,
+        ?array $coordinates,
+        Workspace $workspace,
+        array &$subgraphs,
+        array &$baseSubgraphs
+    ): array {
+        $described = [];
+        foreach ($nodeIds as $nodeId) {
+            $node = null;
+            if (is_array($coordinates)) {
+                [$node] = $this->resolveFeedEventNode(
+                    ['nodeAggregateId' => $nodeId, 'dimensionSpacePoints' => [$coordinates]],
+                    $workspace,
+                    $subgraphs,
+                    $baseSubgraphs
+                );
+            }
+            $described[] = [
+                'id' => $nodeId,
+                'label' => $node !== null ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node)) : null,
+            ];
+        }
+        return $described;
+    }
+
+    /** Dimension coordinates compare as unordered maps; null only equals null. */
+    private function sameCoordinates(mixed $a, mixed $b): bool
+    {
+        if (!is_array($a) || !is_array($b)) {
+            return $a === null && $b === null;
+        }
+        ksort($a);
+        ksort($b);
+        return $a == $b;
     }
 
     /**
@@ -1117,6 +1733,16 @@ class WorkspacesController extends AbstractApiController
             'dimensionSpacePoints' => $dimensionSpacePoints,
             'initiatingUserId' => $envelope->event->metadata?->get('initiatingUserId'),
             'recordedAt' => $envelope->recordedAt->format(\DateTimeInterface::ATOM),
+            // The originating command (short class name) and the moment it was
+            // handled, from the metadata the CR keeps for rebasing. Together
+            // with the user they identify one editing step: all events of one
+            // command share one initiatingTimestamp, and unlike the events'
+            // correlation id these survive a rebase/partial publish (which
+            // re-stamps correlation ids but never touches this metadata).
+            'command' => is_string($commandClass = $envelope->event->metadata?->get('commandClass'))
+                ? substr($commandClass, (int)strrpos($commandClass, '\\') + 1)
+                : null,
+            'initiatingTimestamp' => $envelope->event->metadata?->get('initiatingTimestamp'),
         ];
     }
 
