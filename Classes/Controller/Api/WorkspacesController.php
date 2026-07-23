@@ -301,6 +301,11 @@ class WorkspacesController extends AbstractApiController
         $baseSubgraphs = [];
         // Accumulated per document aggregate id, in first-seen order.
         $documents = [];
+        // The distinct changed nodes per document: the projection records one
+        // row per node AND dimension (a move fans out per covered dimension
+        // space point), but the review UI shows no dimensions - counting rows
+        // would show phantom changes no user action explains.
+        $countedNodeIds = [];
         foreach ($changeFinder->findByContentStreamId($workspace->currentContentStreamId) as $change) {
             $documentNode = null;
             $siteNode = null;
@@ -385,7 +390,10 @@ class WorkspacesController extends AbstractApiController
                 ];
             }
 
-            $documents[$documentId]['changeCount']++;
+            if (!isset($countedNodeIds[$documentId][$change->nodeAggregateId->value])) {
+                $countedNodeIds[$documentId][$change->nodeAggregateId->value] = true;
+                $documents[$documentId]['changeCount']++;
+            }
             // The document node's own change gives the page-level verbs; any
             // change on a descendant is content that changed within the page.
             if ($documentNode !== null && $change->nodeAggregateId->equals($documentNode->aggregateId)) {
