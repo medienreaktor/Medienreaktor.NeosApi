@@ -101,9 +101,9 @@ privilegeTargets:
 
     # --- Workspace features ------------------------------------------------
 
-    # Inspect workspaces and their pending changes.
+    # Inspect workspaces and their pending changes/history.
     'Medienreaktor.NeosApi:Api.Workspaces.Read':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show|changes|documentChanges)Action())'
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show|changes|documentChanges|pendingEvents)Action())'
 
     # Publish, discard, rebase a workspace and change its base workspace.
     'Medienreaktor.NeosApi:Api.Workspaces.Publish':

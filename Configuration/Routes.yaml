@@ -373,6 +373,16 @@
   httpMethods: ['GET']
 
 -
+  name: 'API: Workspace pending events'
+  uriPattern: 'api/workspaces/{workspaceName}/pending-events'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'pendingEvents'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
   name: 'API: Workspace presence'
   uriPattern: 'api/workspaces/{workspaceName}/presence'
   defaults:

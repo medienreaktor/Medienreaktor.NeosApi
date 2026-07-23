@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Medienreaktor\NeosApi\Controller\Api;
 
+use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\EventStore\EventInterface;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\ConflictingEvents;
@@ -84,6 +85,9 @@ class WorkspacesController extends AbstractApiController
 
     /** Page size of the event feed; a full page makes clients fully refresh. */
     private const EVENT_FEED_LIMIT = 200;
+
+    /** Newest events the pending-history resource returns per workspace. */
+    private const PENDING_EVENTS_LIMIT = 100;
 
     /**
      * How feed clients should react to an event type: 'content' = a node's
@@ -855,6 +859,99 @@ class WorkspacesController extends AbstractApiController
             'sequenceNumber' => $cursor,
             'reset' => false,
             'truncated' => count($envelopes) === self::EVENT_FEED_LIMIT,
+            'events' => $events,
+        ]);
+    }
+
+    /**
+     * The pending history of a workspace, oldest first - the events recorded
+     * in its current content stream. A stream exists exactly since the
+     * workspace last forked off its base (publish/discard/rebase start a
+     * fresh one), so this is "every change since the branch point": what the
+     * Studio's Workspaces graph draws as commits on a branch. Events are
+     * enriched with the affected node's label/type/icon and the initiating
+     * user's name, and capped at the newest PENDING_EVENTS_LIMIT entries
+     * (truncated=true when older ones were dropped).
+     */
+    public function pendingEventsAction(string $workspaceName): string
+    {
+        $this->requireScope('neos.read');
+
+        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
+        if ($workspace === null) {
+            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
+        }
+        if ($this->serializeWorkspace($workspace) === null) {
+            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
+        }
+
+        /** @var WorkspaceEventFeed $feed */
+        $feed = $this->contentRepositoryRegistry->buildService($this->getContentRepositoryId(), new WorkspaceEventFeedFactory());
+        $envelopes = $feed->latestEvents($workspace->currentContentStreamId, self::PENDING_EVENTS_LIMIT);
+
+        $contentRepository = $this->getContentRepository();
+        $nodeTypeManager = $contentRepository->getNodeTypeManager();
+        $subgraphs = [];
+        $baseSubgraphs = [];
+        $userLabels = [];
+        $events = [];
+        foreach ($envelopes as $envelope) {
+            $serialized = $this->serializeFeedEvent($envelope);
+            if ($serialized === null) {
+                continue;
+            }
+
+            // Resolve the affected node for a human-readable label, in the
+            // dimension the event names. A node removed in this workspace is
+            // gone from its subgraph - resolve it in the base workspace so
+            // the deletion still shows what it deleted (same fallback the
+            // changes resources use).
+            $node = null;
+            $nodeId = $serialized['nodeAggregateId'];
+            $coordinates = $serialized['dimensionSpacePoints'][0] ?? null;
+            if (is_string($nodeId) && is_array($coordinates)) {
+                $dimensionSpacePoint = DimensionSpacePoint::fromArray($coordinates);
+                $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                    $workspace->workspaceName,
+                    $dimensionSpacePoint
+                );
+                $node = $subgraph->findNodeById(NodeAggregateId::fromString($nodeId));
+                if ($node === null && $workspace->baseWorkspaceName !== null) {
+                    $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
+                        $workspace->baseWorkspaceName,
+                        $dimensionSpacePoint
+                    );
+                    $node = $baseSubgraph->findNodeById(NodeAggregateId::fromString($nodeId));
+                }
+            }
+
+            $userId = $serialized['initiatingUserId'];
+            if (is_string($userId) && !array_key_exists($userId, $userLabels)) {
+                try {
+                    $userLabels[$userId] = $this->userService->findUserById(UserId::fromString($userId))?->getLabel();
+                } catch (\InvalidArgumentException) {
+                    $userLabels[$userId] = null;
+                }
+            }
+
+            $events[] = $serialized + [
+                'nodeLabel' => $node !== null
+                    ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node))
+                    : null,
+                'nodeType' => $node?->nodeTypeName->value,
+                'icon' => $node !== null
+                    ? ($nodeTypeManager->getNodeType($node->nodeTypeName)?->getFullConfiguration()['ui']['icon'] ?? null)
+                    : null,
+                'initiatingUserLabel' => is_string($userId) ? ($userLabels[$userId] ?? null) : null,
+            ];
+        }
+
+        return $this->json([
+            'workspace' => $workspace->workspaceName->value,
+            'baseWorkspace' => $workspace->baseWorkspaceName?->value,
+            'status' => $workspace->status->value,
+            'contentStreamId' => $workspace->currentContentStreamId->value,
+            'truncated' => count($envelopes) === self::PENDING_EVENTS_LIMIT,
             'events' => $events,
         ]);
     }

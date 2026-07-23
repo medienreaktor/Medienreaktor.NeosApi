@@ -65,4 +65,21 @@ final class WorkspaceEventFeed implements ContentRepositoryServiceInterface
 
         return iterator_to_array($stream, false);
     }
+
+    /**
+     * The newest $limit events of the content stream, oldest first. A
+     * workspace's content stream is forked off its base on publish/discard/
+     * rebase, so the whole stream IS the workspace's pending history - this
+     * reads its tail without paging through arbitrarily long streams (live!)
+     * from the front.
+     *
+     * @return list<EventEnvelope>
+     */
+    public function latestEvents(ContentStreamId $contentStreamId, int $limit): array
+    {
+        $streamName = ContentStreamEventStreamName::fromContentStreamId($contentStreamId)->getEventStreamName();
+        $stream = $this->eventStore->load($streamName)->backwards()->limit($limit);
+
+        return array_reverse(iterator_to_array($stream, false));
+    }
 }
