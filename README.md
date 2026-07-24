@@ -232,7 +232,7 @@ administrator); a subject holds at most one role at a time.
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | `GET /api/workspaces/{name}/roles`   | The workspace's role assignments                                                                                          |
 | `POST /api/workspaces/{name}/roles`  | Assign a role: `{"subjectType": "USER"\|"GROUP", "subject": <user id / Flow role identifier>, "role": "VIEWER"\|"COLLABORATOR"\|"MANAGER"}` |
-| `DELETE /api/workspaces/{name}/roles`| Remove an assignment: `{"subjectType", "subject"}`                                                                        |
+| `DELETE /api/workspaces/{name}/roles/{subjectType}/{subject}` | Remove an assignment (subject addressed in the path)                                             |
 
 ### Collaborative editing
 
@@ -265,9 +265,9 @@ Presence is deliberately ephemeral cache state and requires a user-bound token
 
 | Endpoint                                           | Description                                                                                                                   |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/nodetypes` / `GET /api/nodetypes/{name}` | Node type schema (`?includeProperties=1` on the listing also serializes each type's merged property + reference declarations) |
+| `GET /api/node-types` / `GET /api/node-types/{name}` | Node type schema (`?includeProperties=1` on the listing also serializes each type's merged property + reference declarations) |
 | `GET /api/dimensions`                              | Dimension config + allowed dimension space points                                                                             |
-| `GET /api/datasources/{identifier}`                | Query a `DataSourceInterface` implementation (`?node=` node address, additional query params are passed through as arguments) |
+| `GET /api/data-sources/{identifier}`                | Query a `DataSourceInterface` implementation (`?node=` node address, additional query params are passed through as arguments) |
 
 ### Commands (writes)
 
@@ -291,13 +291,13 @@ keeping the same envelope; pin the copy root's id via
 | `GET /api/media/assets`                                                       | Browse/search assets (`?search=`, `?tag=`, `?collection=`, `?type=`, `?assetSource=`, sorting + pagination) |
 | `POST /api/media/assets`                                                      | Upload a new asset (multipart)                                                                              |
 | `GET /api/media/assets/{source}/{id}`                                         | One asset with metadata and variants                                                                        |
-| `PATCH /api/media/assets/{id}`                                                | Update title, caption, copyright, tags, collections                                                         |
-| `DELETE /api/media/assets/{id}`                                               | Delete an asset                                                                                             |
+| `PATCH /api/media/assets/{source}/{id}`                                                | Update title, caption, copyright, tags, collections                                                         |
+| `DELETE /api/media/assets/{source}/{id}`                                               | Delete an asset                                                                                             |
 | `POST /api/media/assets/import`                                               | Import an asset from a remote asset source                                                                  |
-| `POST /api/media/assets/{id}/resource`                                        | Replace the underlying resource (re-upload)                                                                 |
-| `POST /api/media/assets/{id}/variants`                                        | Create a crop variant                                                                                       |
-| `POST` / `DELETE /api/media/assets/{id}/tags`                                 | Tag / untag an asset                                                                                        |
-| `POST` / `DELETE /api/media/assets/{id}/collections`                          | Add to / remove from a collection                                                                           |
+| `POST /api/media/assets/{source}/{id}/resource`                                        | Replace the underlying resource (re-upload)                                                                 |
+| `POST /api/media/assets/{source}/{id}/variants`                                        | Create a crop variant                                                                                       |
+| `PUT` / `DELETE /api/media/assets/{source}/{id}/tags/{tagId}`                                 | Tag / untag an asset                                                                                        |
+| `PUT` / `DELETE /api/media/assets/{source}/{id}/collections/{collectionId}`                          | Add to / remove from a collection                                                                           |
 | `GET /api/media/assets/{source}/{id}/usage`                                   | Where an asset is used                                                                                      |
 | `GET/POST /api/media/collections`, `PATCH/DELETE /api/media/collections/{id}` | Manage asset collections                                                                                    |
 | `GET/POST /api/media/tags`, `PATCH/DELETE /api/media/tags/{id}`               | Manage tags                                                                                                 |

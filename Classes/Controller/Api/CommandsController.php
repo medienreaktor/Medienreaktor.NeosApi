@@ -84,13 +84,21 @@ class CommandsController extends AbstractApiController
         foreach (array_values($commands) as $index => $command) {
             $result = $this->handleCommand(is_array($command) ? $command : []);
             if (isset($result['error'])) {
+                $failedType = is_array($command) && is_string($command['type'] ?? null) ? $command['type'] : 'invalid';
+                // Batches are non-transactional: the structured fields tell a
+                // client exactly how far the batch got, so it can resume or
+                // compensate without parsing the human-readable message.
                 $this->throwJsonStatus($result['statusCode'], $result['error'], sprintf(
                     'Command #%d (%s) failed after %d successfully executed commands: %s',
                     $index,
-                    is_array($command) && is_string($command['type'] ?? null) ? $command['type'] : 'invalid',
+                    $failedType,
                     $executed,
                     $result['message']
-                ));
+                ), [
+                    'executed' => $executed,
+                    'failedIndex' => $index,
+                    'failedType' => $failedType,
+                ]);
             }
             $executed++;
         }
@@ -129,7 +137,7 @@ class CommandsController extends AbstractApiController
             // \Throwable on purpose: malformed payload shapes can trigger
             // TypeErrors inside hydration, which is a client error here.
             $this->logger->info(sprintf('Command payload hydration for "%s" rejected: %s', $type, $exception->getMessage()), ['exception' => $exception]);
-            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
+            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 400];
         }
 
         // Scalar property values whose JSON transport form differs from the
@@ -139,7 +147,7 @@ class CommandsController extends AbstractApiController
         try {
             $payload = $this->coerceScalarProperties($type, $payload);
         } catch (\InvalidArgumentException $exception) {
-            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
+            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 400];
         }
 
         // SetNodeReferences carries value objects the command's fromArray()
@@ -150,7 +158,7 @@ class CommandsController extends AbstractApiController
             try {
                 $payload['references'] = $this->buildReferencesToWrite($payload['references'] ?? null);
             } catch (\InvalidArgumentException $exception) {
-                return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
+                return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 400];
             }
         }
 
@@ -172,7 +180,7 @@ class CommandsController extends AbstractApiController
             // \Throwable on purpose: fromArray() TypeErrors are client errors
             // here (the payload shape is entirely client-controlled).
             $this->logger->info(sprintf('Command "%s" could not be deserialized: %s', $type, $exception->getMessage()), ['exception' => $exception]);
-            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
+            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 400];
         }
 
         try {
@@ -218,12 +226,12 @@ class CommandsController extends AbstractApiController
     {
         foreach (['workspaceName', 'sourceNodeAggregateId', 'targetParentNodeAggregateId'] as $field) {
             if (!is_string($payload[$field] ?? null)) {
-                return ['error' => 'invalid_payload', 'message' => sprintf('CopyNodesRecursively needs a string "%s".', $field), 'statusCode' => 422];
+                return ['error' => 'invalid_payload', 'message' => sprintf('CopyNodesRecursively needs a string "%s".', $field), 'statusCode' => 400];
             }
         }
         foreach (['sourceDimensionSpacePoint', 'targetDimensionSpacePoint'] as $field) {
             if (!is_array($payload[$field] ?? null)) {
-                return ['error' => 'invalid_payload', 'message' => sprintf('CopyNodesRecursively needs an object "%s".', $field), 'statusCode' => 422];
+                return ['error' => 'invalid_payload', 'message' => sprintf('CopyNodesRecursively needs an object "%s".', $field), 'statusCode' => 400];
             }
         }
 
@@ -247,7 +255,7 @@ class CommandsController extends AbstractApiController
         } catch (AccessDenied $exception) {
             return ['error' => 'access_denied', 'message' => $exception->getMessage(), 'statusCode' => 403];
         } catch (\InvalidArgumentException $exception) {
-            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
+            return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 400];
         } catch (\Exception $exception) {
             // \Exception, not \Throwable: an \Error is a server bug and must
             // surface as a logged 500.

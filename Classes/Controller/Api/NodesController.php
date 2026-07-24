@@ -67,7 +67,7 @@ class NodesController extends AbstractApiController
         // any children" on every refetch.
         $nodeTypes = $this->getStringQueryParam('nodeTypes');
 
-        return $this->json($this->nodeSerializer->serializeNode($node, $subgraph, $nodeTypes));
+        return $this->json(['node' => $this->nodeSerializer->serializeNode($node, $subgraph, $nodeTypes)]);
     }
 
     public function relationAction(string $nodeAddress, string $relation): string
@@ -122,7 +122,7 @@ class NodesController extends AbstractApiController
                     $this->throwJsonStatus(404, 'node_not_found', 'The node has no visible parent in this subgraph.');
                 }
 
-                return $this->json($this->nodeSerializer->serializeNode($parent, $subgraph, $nodeTypes));
+                return $this->json(['node' => $this->nodeSerializer->serializeNode($parent, $subgraph, $nodeTypes)]);
             case 'allowed-child-node-types':
                 // Which node types the content model permits as children of
                 // this node - a drag-and-drop / creation client validates a
@@ -147,7 +147,7 @@ class NodesController extends AbstractApiController
                     $this->throwJsonStatus(404, 'node_not_found', 'The node aggregate does not exist in this workspace.');
                 }
 
-                return $this->json([
+                return $this->json(['variants' => [
                     'occupiedDimensionSpacePoints' => array_map(
                         static fn (OriginDimensionSpacePoint $point) => $point->coordinates,
                         array_values(iterator_to_array($nodeAggregate->occupiedDimensionSpacePoints))
@@ -156,7 +156,7 @@ class NodesController extends AbstractApiController
                         static fn (DimensionSpacePoint $point) => $point->coordinates,
                         array_values(iterator_to_array($nodeAggregate->coveredDimensionSpacePoints))
                     ),
-                ]);
+                ]]);
             case 'references':
                 $references = $subgraph->findReferences($address->aggregateId, FindReferencesFilter::create());
                 $items = [];

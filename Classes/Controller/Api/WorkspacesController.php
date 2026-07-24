@@ -146,7 +146,7 @@ class WorkspacesController extends AbstractApiController
             $workspace->workspaceName
         );
 
-        return $this->json($serialized);
+        return $this->json(['workspace' => $serialized]);
     }
 
     /**
@@ -701,7 +701,8 @@ class WorkspacesController extends AbstractApiController
     }
 
     /**
-     * Remove a workspace role assignment. JSON body: subjectType, subject.
+     * Remove a workspace role assignment; the subject is addressed in the
+     * path: DELETE .../roles/{subjectType}/{subject}.
      */
     #[Flow\SkipCsrfProtection]
     public function unassignRoleAction(string $workspaceName, string $subjectType, string $subject): string

@@ -205,9 +205,10 @@ class AssetsController extends AbstractApiController
      * @param array<int, string>|null $collections
      */
     #[Flow\SkipCsrfProtection]
-    public function updateAction(string $assetIdentifier, ?string $title = null, ?string $caption = null, ?string $copyrightNotice = null, ?array $tags = null, ?array $collections = null): string
+    public function updateAction(string $assetSource, string $assetIdentifier, ?string $title = null, ?string $caption = null, ?string $copyrightNotice = null, ?array $tags = null, ?array $collections = null): string
     {
         $this->requireScope('neos.media');
+        $this->requireWritableAssetSource($assetSource);
         $asset = $this->requireLocalAsset($assetIdentifier);
 
         if ($title !== null) {
@@ -233,9 +234,10 @@ class AssetsController extends AbstractApiController
     }
 
     #[Flow\SkipCsrfProtection]
-    public function deleteAction(string $assetIdentifier): string
+    public function deleteAction(string $assetSource, string $assetIdentifier): string
     {
         $this->requireScope('neos.media');
+        $this->requireWritableAssetSource($assetSource);
         $asset = $this->requireLocalAsset($assetIdentifier);
 
         if ($this->assetService->getUsageReferences($asset) !== []) {
@@ -245,36 +247,49 @@ class AssetsController extends AbstractApiController
         $this->assetRepository->remove($asset);
         $this->persistenceManager->persistAll();
 
-        return $this->json(['deleted' => true]);
+        return $this->json(['success' => true]);
     }
 
     /**
-     * Add or remove a tag. JSON body: { tag: <identifier> }.
+     * Tag membership as a sub-resource: PUT adds the tag (idempotent),
+     * DELETE removes it - the tag identifier travels in the path.
      */
     #[Flow\SkipCsrfProtection]
-    public function tagAction(string $assetIdentifier, string $tag): string
+    public function tagAction(string $assetSource, string $assetIdentifier, string $tag): string
     {
+        $this->requireWritableAssetSource($assetSource);
+
         return $this->toggleTag($assetIdentifier, $tag, true);
     }
 
     #[Flow\SkipCsrfProtection]
-    public function untagAction(string $assetIdentifier, string $tag): string
+    public function untagAction(string $assetSource, string $assetIdentifier, string $tag): string
     {
+        $this->requireWritableAssetSource($assetSource);
+
         return $this->toggleTag($assetIdentifier, $tag, false);
     }
 
     /**
      * Add or remove a collection assignment. JSON body: { collection: <identifier> }.
      */
+    /**
+     * Collection membership as a sub-resource: PUT adds (idempotent), DELETE
+     * removes - the collection identifier travels in the path.
+     */
     #[Flow\SkipCsrfProtection]
-    public function addToCollectionAction(string $assetIdentifier, string $collection): string
+    public function addToCollectionAction(string $assetSource, string $assetIdentifier, string $collection): string
     {
+        $this->requireWritableAssetSource($assetSource);
+
         return $this->toggleCollection($assetIdentifier, $collection, true);
     }
 
     #[Flow\SkipCsrfProtection]
-    public function removeFromCollectionAction(string $assetIdentifier, string $collection): string
+    public function removeFromCollectionAction(string $assetSource, string $assetIdentifier, string $collection): string
     {
+        $this->requireWritableAssetSource($assetSource);
+
         return $this->toggleCollection($assetIdentifier, $collection, false);
     }
 
@@ -308,9 +323,10 @@ class AssetsController extends AbstractApiController
      * replacement (e.g. image -> pdf) is rejected by the AssetService.
      */
     #[Flow\SkipCsrfProtection]
-    public function replaceResourceAction(string $assetIdentifier, PersistentResource $resource): string
+    public function replaceResourceAction(string $assetSource, string $assetIdentifier, PersistentResource $resource): string
     {
         $this->requireScope('neos.media');
+        $this->requireWritableAssetSource($assetSource);
         $asset = $this->requireLocalAsset($assetIdentifier);
 
         try {
@@ -336,9 +352,10 @@ class AssetsController extends AbstractApiController
      * JSON body: { crop: { x, y, width, height } } - integer pixels.
      */
     #[Flow\SkipCsrfProtection]
-    public function createVariantAction(string $assetIdentifier, array $crop): string
+    public function createVariantAction(string $assetSource, string $assetIdentifier, array $crop): string
     {
         $this->requireScope('neos.media');
+        $this->requireWritableAssetSource($assetSource);
         $asset = $this->requireLocalAsset($assetIdentifier);
         if (!$asset instanceof Image) {
             $this->throwJsonStatus(400, 'not_an_image', 'Image variants can only be created from images.');
@@ -486,6 +503,18 @@ class AssetsController extends AbstractApiController
         return $this->assetProxyRepository(self::DEFAULT_ASSET_SOURCE)->getAssetProxy(
             $this->persistenceManager->getIdentifierByObject($asset)
         );
+    }
+
+    /**
+     * Writes share the reads' two-segment address, but only the local Neos
+     * source is writable - foreign sources are read-only by nature (their
+     * assets must be imported first).
+     */
+    private function requireWritableAssetSource(string $assetSource): void
+    {
+        if ($assetSource !== self::DEFAULT_ASSET_SOURCE) {
+            $this->throwJsonStatus(400, 'asset_source_not_writable', sprintf('Asset source "%s" is read-only; only "%s" assets can be modified.', $assetSource, self::DEFAULT_ASSET_SOURCE));
+        }
     }
 
     private function requireLocalAsset(string $assetIdentifier): Asset

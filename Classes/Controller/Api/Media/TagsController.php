@@ -107,7 +107,7 @@ class TagsController extends AbstractApiController
         $this->tagRepository->remove($tag);
         $this->persistenceManager->persistAll();
 
-        return $this->json(['deleted' => true]);
+        return $this->json(['success' => true]);
     }
 
     private function requireTag(string $identifier): Tag

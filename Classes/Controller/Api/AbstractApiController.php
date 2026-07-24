@@ -49,6 +49,12 @@ abstract class AbstractApiController extends ActionController
     protected function initializeAction(): void
     {
         $this->response->setContentType('application/json');
+        // Every response is per-account (subgraphs apply the account's
+        // visibility constraints), so it must never end up in a shared cache -
+        // and an editing API wants fresh data, so no client caching either.
+        // Actions with a real caching story may override this.
+        $this->response->setHttpHeader('Cache-Control', 'private, no-store');
+        $this->response->setHttpHeader('Vary', 'Authorization');
     }
 
     protected function getContentRepository(): ContentRepository
