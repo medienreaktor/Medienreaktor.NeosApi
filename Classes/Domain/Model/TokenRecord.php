@@ -13,6 +13,9 @@ use Neos\Flow\Annotations as Flow;
  * never stored, only its identifier and lifecycle metadata.
  */
 #[Flow\Entity]
+#[ORM\Index(name: 'idx_neosapi_tokenrecord_expiresat', columns: ['expiresat'])]
+#[ORM\Index(name: 'idx_neosapi_tokenrecord_clientidentifier', columns: ['clientidentifier'])]
+#[ORM\Index(name: 'idx_neosapi_tokenrecord_accountidentifier', columns: ['accountidentifier'])]
 class TokenRecord
 {
     public const TYPE_ACCESS = 'access';

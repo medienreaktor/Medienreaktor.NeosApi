@@ -6,9 +6,14 @@ namespace Medienreaktor\NeosApi\Command;
 
 use Medienreaktor\NeosApi\Domain\Model\OAuthClient;
 use Medienreaktor\NeosApi\Domain\Repository\OAuthClientRepository;
+use Medienreaktor\NeosApi\Domain\Repository\TokenRecordRepository;
 use Medienreaktor\NeosApi\Security\OAuth\KeyManager;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Cli\CommandController;
+use Neos\Flow\Configuration\ConfigurationManager;
+use Neos\Flow\Mvc\Controller\ActionController;
+use Neos\Flow\Persistence\PersistenceManagerInterface;
+use Neos\Flow\Reflection\ReflectionService;
 
 class NeosApiCommandController extends CommandController
 {
@@ -17,6 +22,18 @@ class NeosApiCommandController extends CommandController
 
     #[Flow\Inject]
     protected OAuthClientRepository $clientRepository;
+
+    #[Flow\Inject]
+    protected TokenRecordRepository $tokenRecordRepository;
+
+    #[Flow\Inject]
+    protected PersistenceManagerInterface $persistenceManager;
+
+    #[Flow\Inject]
+    protected ReflectionService $reflectionService;
+
+    #[Flow\Inject]
+    protected ConfigurationManager $configurationManager;
 
     /**
      * @var array<string, string>
@@ -96,6 +113,119 @@ class NeosApiCommandController extends CommandController
             $this->outputLine('Client secret (shown only once, store it now):');
             $this->outputLine('  <b>%s</b>', [$secret]);
         }
+    }
+
+    /**
+     * Remove expired OAuth token records
+     *
+     * Every issued access token, refresh token and authorization code leaves a
+     * lifecycle record behind; expired records are dead weight (a missing
+     * record already means "revoked"). Run this periodically, e.g. via cron.
+     */
+    public function pruneTokensCommand(): void
+    {
+        $count = $this->tokenRecordRepository->removeExpired(new \DateTimeImmutable());
+        $this->outputLine('<success>Removed %d expired token record(s).</success>', [$count]);
+    }
+
+    /**
+     * Revoke all active OAuth tokens of a client and/or account
+     *
+     * Marks every not-yet-expired access token, refresh token and auth code
+     * matching the given filters as revoked. Access tokens die immediately:
+     * the resource server checks the record on every request.
+     *
+     * @param string $client Revoke tokens issued to this client identifier
+     * @param string $account Revoke tokens issued for this account identifier
+     */
+    public function revokeTokensCommand(string $client = '', string $account = ''): void
+    {
+        if ($client === '' && $account === '') {
+            $this->outputLine('<error>Give at least one filter: --client and/or --account.</error>');
+            $this->quit(1);
+        }
+
+        $records = $this->tokenRecordRepository->findActive(
+            $client === '' ? null : $client,
+            $account === '' ? null : $account,
+            new \DateTimeImmutable()
+        );
+        foreach ($records as $record) {
+            $record->revoke();
+            $this->tokenRecordRepository->update($record);
+        }
+        $this->persistenceManager->persistAll();
+
+        $this->outputLine('<success>Revoked %d active token(s).</success>', [count($records)]);
+    }
+
+    /**
+     * Verify that every API controller action is covered by a policy matcher
+     *
+     * Flow treats a controller method matched by NO privilege target as OPEN,
+     * so a new Controller\Api action is unprotected until it is added to a
+     * matcher in Policy.yaml. This command fails (exit code 1) if any action
+     * slipped through - run it as part of the test suite.
+     */
+    public function policyCoverageCommand(): void
+    {
+        $policy = $this->configurationManager->getConfiguration('Policy');
+        $methodPrivileges = $policy['privilegeTargets']['Neos\Flow\Security\Authorization\Privilege\Method\MethodPrivilege'] ?? [];
+
+        // Only this package's own privilege targets count as coverage - a
+        // foreign catch-all silently matching our actions is not protection we
+        // control.
+        $matcherExpressions = [];
+        foreach ($methodPrivileges as $targetIdentifier => $target) {
+            if (str_starts_with((string)$targetIdentifier, 'Medienreaktor.NeosApi:') && isset($target['matcher'])) {
+                foreach (explode('||', $target['matcher']) as $expression) {
+                    $matcherExpressions[] = trim($expression);
+                }
+            }
+        }
+        $matchers = [];
+        foreach ($matcherExpressions as $expression) {
+            if (preg_match('/^method\((?<class>.+)->(?<method>.+)\(\)\)$/', $expression, $matches) === 1) {
+                // The pointcut patterns are regexes except that namespace
+                // backslashes are literal - escape those, keep .* and (a|b).
+                $matchers[] = [
+                    '/^' . str_replace('\\', '\\\\', $matches['class']) . '$/',
+                    '/^' . $matches['method'] . '\\(\\)$/',
+                ];
+            }
+        }
+
+        $uncovered = [];
+        foreach ($this->reflectionService->getAllSubClassNamesForClass(ActionController::class) as $className) {
+            if (!str_starts_with($className, 'Medienreaktor\NeosApi\Controller\Api\\')
+                || $this->reflectionService->isClassAbstract($className)) {
+                continue;
+            }
+            foreach (get_class_methods($className) as $methodName) {
+                if (!str_ends_with($methodName, 'Action') || !(new \ReflectionMethod($className, $methodName))->isPublic()) {
+                    continue;
+                }
+                $covered = false;
+                foreach ($matchers as [$classPattern, $methodPattern]) {
+                    if (preg_match($classPattern, $className) === 1 && preg_match($methodPattern, $methodName . '()') === 1) {
+                        $covered = true;
+                        break;
+                    }
+                }
+                if (!$covered) {
+                    $uncovered[] = $className . '->' . $methodName . '()';
+                }
+            }
+        }
+
+        if ($uncovered !== []) {
+            $this->outputLine('<error>%d API action(s) are NOT covered by any Medienreaktor.NeosApi policy matcher (and therefore OPEN):</error>', [count($uncovered)]);
+            foreach ($uncovered as $action) {
+                $this->outputLine('  %s', [$action]);
+            }
+            $this->quit(1);
+        }
+        $this->outputLine('<success>All API controller actions are covered by policy matchers.</success>');
     }
 
     /**
