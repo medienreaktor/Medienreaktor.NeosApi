@@ -48,6 +48,11 @@ class AssetsController extends AbstractApiController
     private const DEFAULT_ASSET_SOURCE = 'neos';
     private const DEFAULT_LIMIT = 40;
 
+    // Serialization resolves thumbnail + preview URIs per asset, which can
+    // generate images synchronously - an uncapped limit would let a single
+    // request trigger unbounded thumbnail generation.
+    private const MAX_LIMIT = 200;
+
     #[Flow\Inject]
     protected AssetSourceService $assetSourceService;
 
@@ -119,7 +124,7 @@ class AssetsController extends AbstractApiController
             $result = $assetProxyRepository->findAll();
         }
 
-        $limit = max(1, (int)($params['limit'] ?? self::DEFAULT_LIMIT));
+        $limit = min(self::MAX_LIMIT, max(1, (int)($params['limit'] ?? self::DEFAULT_LIMIT)));
         $offset = max(0, (int)($params['offset'] ?? 0));
         $total = $result->count();
 
@@ -284,7 +289,8 @@ class AssetsController extends AbstractApiController
 
         try {
             $importedAsset = $this->assetSourceService->importAsset($assetSource, $assetIdentifier);
-        } catch (\Throwable $exception) {
+        } catch (\Exception $exception) {
+            $this->logger->info(sprintf('Importing asset "%s" from source "%s" failed: %s', $assetIdentifier, $assetSource, $exception->getMessage()), ['exception' => $exception]);
             $this->throwJsonStatus(400, 'import_failed', $exception->getMessage());
         }
 
@@ -309,7 +315,8 @@ class AssetsController extends AbstractApiController
 
         try {
             $this->assetService->replaceAssetResource($asset, $resource);
-        } catch (\Throwable $exception) {
+        } catch (\Exception $exception) {
+            $this->logger->info(sprintf('Replacing the resource of asset "%s" failed: %s', $assetIdentifier, $exception->getMessage()), ['exception' => $exception]);
             $this->throwJsonStatus(400, 'replace_failed', $exception->getMessage());
         }
         $this->persistenceManager->persistAll();

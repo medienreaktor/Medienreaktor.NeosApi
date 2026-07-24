@@ -771,7 +771,10 @@ class WorkspacesController extends AbstractApiController
             $this->throwJsonStatus(403, 'access_denied', $exception->getMessage());
         } catch (WorkspaceContainsPublishableChanges) {
             $this->throwJsonStatus(409, 'workspace_not_empty', 'The workspace still has publishable changes; publish or discard them before changing the base workspace.');
-        } catch (\Throwable $exception) {
+        } catch (\Exception $exception) {
+            // \Exception, not \Throwable: an \Error is a server bug and must
+            // surface as a logged 500.
+            $this->logger->warning(sprintf('Changing the base workspace of "%s" failed: %s', $workspaceName, $exception->getMessage()), ['exception' => $exception]);
             $this->throwJsonStatus(409, 'operation_failed', $exception->getMessage());
         }
 
@@ -835,6 +838,9 @@ class WorkspacesController extends AbstractApiController
         );
 
         $workspace = $this->getContentRepository()->findWorkspaceByName($workspaceName);
+        if ($workspace === null) {
+            $this->throwJsonStatus(500, 'workspace_not_ready', 'The workspace was created but could not be read back yet.');
+        }
 
         return $this->json(['workspace' => $this->serializeWorkspace($workspace)], 201);
     }
@@ -2053,7 +2059,10 @@ class WorkspacesController extends AbstractApiController
         } catch (StopActionException $exception) {
             // An operation already produced its own JSON status response.
             throw $exception;
-        } catch (\Throwable $exception) {
+        } catch (\Exception $exception) {
+            // \Exception, not \Throwable: an \Error is a server bug and must
+            // surface as a logged 500.
+            $this->logger->warning(sprintf('Workspace operation on "%s" failed: %s', $workspaceName, $exception->getMessage()), ['exception' => $exception]);
             $this->throwJsonStatus(409, 'operation_failed', $exception->getMessage());
         }
 

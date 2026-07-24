@@ -60,8 +60,11 @@ class DataSourcesController extends AbstractApiController
 
         try {
             $value = $dataSource->getData($node, $arguments);
-        } catch (\Throwable $exception) {
-            $this->throwJsonStatus(500, 'data_source_failed', sprintf('Data source "%s" threw: %s', $dataSourceIdentifier, $exception->getMessage()));
+        } catch (\Exception $exception) {
+            // The exception text stays out of the response: data sources are
+            // arbitrary third-party code and their messages may leak internals.
+            $this->logger->error(sprintf('Data source "%s" threw: %s', $dataSourceIdentifier, $exception->getMessage()), ['exception' => $exception]);
+            $this->throwJsonStatus(500, 'data_source_failed', sprintf('Data source "%s" failed to execute.', $dataSourceIdentifier));
         }
 
         return $this->json(['data' => $value]);

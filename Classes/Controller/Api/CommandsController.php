@@ -126,6 +126,9 @@ class CommandsController extends AbstractApiController
         try {
             $payload = (array)$this->propertyValueHydrator->hydrate($payload);
         } catch (\Throwable $exception) {
+            // \Throwable on purpose: malformed payload shapes can trigger
+            // TypeErrors inside hydration, which is a client error here.
+            $this->logger->info(sprintf('Command payload hydration for "%s" rejected: %s', $type, $exception->getMessage()), ['exception' => $exception]);
             return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
         }
 
@@ -166,6 +169,9 @@ class CommandsController extends AbstractApiController
         } catch (\InvalidArgumentException $exception) {
             return ['error' => 'unknown_command', 'message' => $exception->getMessage(), 'statusCode' => 400];
         } catch (\Throwable $exception) {
+            // \Throwable on purpose: fromArray() TypeErrors are client errors
+            // here (the payload shape is entirely client-controlled).
+            $this->logger->info(sprintf('Command "%s" could not be deserialized: %s', $type, $exception->getMessage()), ['exception' => $exception]);
             return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
         }
 
@@ -173,7 +179,10 @@ class CommandsController extends AbstractApiController
             $this->getContentRepository()->handle($command);
         } catch (AccessDenied $exception) {
             return ['error' => 'access_denied', 'message' => $exception->getMessage(), 'statusCode' => 403];
-        } catch (\Throwable $exception) {
+        } catch (\Exception $exception) {
+            // \Exception, not \Throwable: the command is fully typed by now, so
+            // an \Error is a server bug and must surface as a logged 500.
+            $this->logger->warning(sprintf('Command "%s" failed: %s', $type, $exception->getMessage()), ['exception' => $exception]);
             return ['error' => 'command_failed', 'message' => $exception->getMessage(), 'statusCode' => 422];
         }
 
@@ -239,7 +248,10 @@ class CommandsController extends AbstractApiController
             return ['error' => 'access_denied', 'message' => $exception->getMessage(), 'statusCode' => 403];
         } catch (\InvalidArgumentException $exception) {
             return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 422];
-        } catch (\Throwable $exception) {
+        } catch (\Exception $exception) {
+            // \Exception, not \Throwable: an \Error is a server bug and must
+            // surface as a logged 500.
+            $this->logger->warning(sprintf('CopyNodesRecursively failed: %s', $exception->getMessage()), ['exception' => $exception]);
             return ['error' => 'command_failed', 'message' => $exception->getMessage(), 'statusCode' => 422];
         }
 
