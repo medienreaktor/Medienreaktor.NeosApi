@@ -4,17 +4,13 @@ declare(strict_types=1);
 
 namespace Medienreaktor\NeosApi\Controller\Api;
 
-use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\EventStore\EventInterface;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\ConflictingEvents;
+use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Dto\RebaseErrorHandlingStrategy;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\PartialWorkspaceRebaseFailed;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\WorkspaceRebaseFailed;
-use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
-use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
-use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindReferencesFilter;
-use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceContainsPublishableChanges;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAddress;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
@@ -25,19 +21,22 @@ use Neos\Flow\Mvc\Exception\StopActionException;
 use Neos\Neos\Domain\Model\UserId;
 use Neos\Neos\Domain\Model\WorkspaceClassification;
 use Neos\Neos\Domain\Model\WorkspaceDescription;
-use Neos\Neos\Domain\Model\WorkspaceMetadata;
 use Neos\Neos\Domain\Model\WorkspaceRole;
 use Neos\Neos\Domain\Model\WorkspaceRoleAssignment;
 use Neos\Neos\Domain\Model\WorkspaceRoleAssignments;
 use Neos\Neos\Domain\Model\WorkspaceRoleSubject;
 use Neos\Neos\Domain\Model\WorkspaceRoleSubjectType;
 use Neos\Neos\Domain\Model\WorkspaceTitle;
-use Neos\Neos\Domain\NodeLabel\NodeLabelGeneratorInterface;
+use Medienreaktor\NeosApi\Service\EventBeforeWindow;
 use Medienreaktor\NeosApi\Service\NodeAddressCodec;
+use Medienreaktor\NeosApi\Service\NodeSerializer;
+use Medienreaktor\NeosApi\Service\WorkspaceDiffService;
 use Medienreaktor\NeosApi\Service\WorkspaceEventFeed;
 use Medienreaktor\NeosApi\Service\WorkspaceEventFeedFactory;
+use Medienreaktor\NeosApi\Service\WorkspaceHistoryService;
+use Medienreaktor\NeosApi\Service\WorkspaceReadContext;
+use Medienreaktor\NeosApi\Service\WorkspaceSerializer;
 use Neos\Cache\Frontend\VariableFrontend;
-use Neos\EventStore\Model\EventEnvelope;
 use Neos\Flow\Cache\CacheManager;
 use Neos\Neos\Fusion\Cache\CacheFlushingStrategy;
 use Neos\Neos\Fusion\Cache\ContentCacheFlusher;
@@ -47,8 +46,6 @@ use Neos\Neos\Domain\Service\UserService;
 use Neos\Neos\Domain\Service\WorkspacePublishingService;
 use Neos\Neos\Domain\Service\WorkspaceService;
 use Neos\Neos\Domain\SubtreeTagging\NeosSubtreeTag;
-use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Dto\RebaseErrorHandlingStrategy;
-use Neos\Neos\Security\Authorization\ContentRepositoryAuthorizationService;
 
 /**
  * Workspaces as read resources plus the use-case-level write operations
@@ -57,6 +54,12 @@ use Neos\Neos\Security\Authorization\ContentRepositoryAuthorizationService;
  * Authorization: listing only reveals workspaces the account may read;
  * publish/discard/rebase are re-checked by the workspace permission model
  * inside the publishing service / content repository.
+ *
+ * The heavy lifting lives in services: WorkspaceSerializer (permissions +
+ * JSON shape), WorkspaceHistoryService (event feed enrichment),
+ * WorkspaceDiffService (before/after change rows) - all reading through a
+ * per-request WorkspaceReadContext that caches subgraphs, ancestor lookups
+ * and node-type configuration across the request's fan-out.
  */
 class WorkspacesController extends AbstractApiController
 {
@@ -67,19 +70,25 @@ class WorkspacesController extends AbstractApiController
     protected WorkspacePublishingService $workspacePublishingService;
 
     #[Flow\Inject]
-    protected ContentRepositoryAuthorizationService $authorizationService;
-
-    #[Flow\Inject]
     protected UserService $userService;
 
     #[Flow\Inject]
     protected ContentCacheFlusher $contentCacheFlusher;
 
     #[Flow\Inject]
-    protected NodeLabelGeneratorInterface $nodeLabelGenerator;
+    protected CacheManager $cacheManager;
 
     #[Flow\Inject]
-    protected CacheManager $cacheManager;
+    protected NodeSerializer $nodeSerializer;
+
+    #[Flow\Inject]
+    protected WorkspaceSerializer $workspaceSerializer;
+
+    #[Flow\Inject]
+    protected WorkspaceHistoryService $workspaceHistoryService;
+
+    #[Flow\Inject]
+    protected WorkspaceDiffService $workspaceDiffService;
 
     /** Seconds a presence heartbeat stays valid; clients beat every ~5s. */
     private const PRESENCE_LIFETIME = 30;
@@ -97,35 +106,8 @@ class WorkspacesController extends AbstractApiController
      * window the diff falls back to the base workspace's current value. */
     private const DIFF_SCAN_LIMIT = 500;
 
-    /**
-     * How feed clients should react to an event type: 'content' = a node's
-     * rendered element / properties changed (re-render in place), 'structure'
-     * = the node tree changed shape (refresh trees, reload the preview).
-     * Event types not listed (stream bookkeeping like ContentStreamWasForked)
-     * are not surfaced to clients.
-     */
-    private const FEED_EVENT_KINDS = [
-        'NodePropertiesWereSet' => 'content',
-        'NodeReferencesWereSet' => 'content',
-        'NodeAggregateWithNodeWasCreated' => 'structure',
-        'NodeAggregateWasMoved' => 'structure',
-        'NodeAggregateWasRemoved' => 'structure',
-        'SubtreeWasTagged' => 'structure',
-        'SubtreeWasUntagged' => 'structure',
-        'NodeAggregateTypeWasChanged' => 'structure',
-        'NodeAggregateNameWasChanged' => 'structure',
-        'NodeSpecializationVariantWasCreated' => 'structure',
-        'NodeGeneralizationVariantWasCreated' => 'structure',
-        'NodePeerVariantWasCreated' => 'structure',
-    ];
-
-    /**
-     * Base workspaces recur across the list (usually all point to live), so
-     * remember their write permission for the duration of the request.
-     *
-     * @var array<string, bool>
-     */
-    private array $writePermissionCache = [];
+    /** The request body, parsed once (several helpers read it). */
+    private ?array $parsedRequestBody = null;
 
     public function indexAction(): string
     {
@@ -144,7 +126,7 @@ class WorkspacesController extends AbstractApiController
 
         $workspaces = [];
         foreach ($this->getContentRepository()->findWorkspaces() as $workspace) {
-            $serialized = $this->serializeWorkspace($workspace);
+            $serialized = $this->workspaceSerializer->serialize($this->getContentRepositoryId(), $workspace);
             if ($serialized !== null) {
                 $workspaces[] = $serialized;
             }
@@ -157,14 +139,8 @@ class WorkspacesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
 
-        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
-        if ($workspace === null) {
-            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
-        }
-        $serialized = $this->serializeWorkspace($workspace);
-        if ($serialized === null) {
-            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
-        }
+        $workspace = $this->requireReadableWorkspace($workspaceName);
+        $serialized = $this->workspaceSerializer->serialize($this->getContentRepositoryId(), $workspace);
         $serialized['pendingChanges'] = $this->workspacePublishingService->countPendingWorkspaceChanges(
             $this->getContentRepositoryId(),
             $workspace->workspaceName
@@ -186,61 +162,26 @@ class WorkspacesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
 
-        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
-        if ($workspace === null) {
-            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
-        }
-        if ($this->serializeWorkspace($workspace) === null) {
-            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
-        }
+        $workspace = $this->requireReadableWorkspace($workspaceName);
+        $context = $this->readContext($workspace);
+        $changeFinder = $context->contentRepository->projectionState(ChangeFinder::class);
 
-        $contentRepository = $this->getContentRepository();
-        $changeFinder = $contentRepository->projectionState(ChangeFinder::class);
-        $subgraphs = [];
-        $baseSubgraphs = [];
         $changes = [];
         foreach ($changeFinder->findByContentStreamId($workspace->currentContentStreamId) as $change) {
             // Resolve the containing document and site, so tree UIs can mark
             // documents whose content (not just the document itself) has
             // changes, and clients can scope publish/discard to one site.
+            // (The change's removal attachment point is not reliably
+            // populated, so the resolution does not depend on it.)
             $documentNode = null;
             $siteNode = null;
             if ($change->originDimensionSpacePoint !== null) {
-                $dimensionSpacePoint = $change->originDimensionSpacePoint->toDimensionSpacePoint();
-                $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-                    $workspace->workspaceName,
-                    $dimensionSpacePoint
-                );
-                $documentNode = $subgraph->findClosestNode(
+                $resolved = $context->closestDocumentAndSite(
                     $change->nodeAggregateId,
-                    FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
+                    $change->originDimensionSpacePoint->toDimensionSpacePoint()
                 );
-                $siteNode = $subgraph->findClosestNode(
-                    $change->nodeAggregateId,
-                    FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
-                );
-                // A node removed in this workspace is gone from its subgraph, so
-                // the lookups above return null - but it still exists in the
-                // base workspace. Resolve its document and site there so a
-                // deletion is still attributed to a document and site;
-                // otherwise a site-scoped client drops it from the change count
-                // and the deletion looks like it never happened. (The change's
-                // removal attachment point is not reliably populated, so we do
-                // not depend on it.)
-                if ($documentNode === null && $workspace->baseWorkspaceName !== null) {
-                    $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-                        $workspace->baseWorkspaceName,
-                        $dimensionSpacePoint
-                    );
-                    $documentNode = $baseSubgraph->findClosestNode(
-                        $change->nodeAggregateId,
-                        FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
-                    );
-                    $siteNode ??= $baseSubgraph->findClosestNode(
-                        $change->nodeAggregateId,
-                        FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
-                    );
-                }
+                $documentNode = $resolved['document'];
+                $siteNode = $resolved['site'];
             }
             $documentAggregateId = $documentNode?->aggregateId->value
                 ?? $change->getLegacyRemovalAttachmentPoint()?->value;
@@ -286,19 +227,10 @@ class WorkspacesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
 
-        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
-        if ($workspace === null) {
-            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
-        }
-        if ($this->serializeWorkspace($workspace) === null) {
-            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
-        }
+        $workspace = $this->requireReadableWorkspace($workspaceName);
+        $context = $this->readContext($workspace);
+        $changeFinder = $context->contentRepository->projectionState(ChangeFinder::class);
 
-        $contentRepository = $this->getContentRepository();
-        $nodeTypeManager = $contentRepository->getNodeTypeManager();
-        $changeFinder = $contentRepository->projectionState(ChangeFinder::class);
-        $subgraphs = [];
-        $baseSubgraphs = [];
         // Accumulated per document aggregate id, in first-seen order.
         $documents = [];
         // The distinct changed nodes per document: the projection records one
@@ -312,42 +244,16 @@ class WorkspacesController extends AbstractApiController
             $documentSubgraph = null;
             if ($change->originDimensionSpacePoint !== null) {
                 $dimensionSpacePoint = $change->originDimensionSpacePoint->toDimensionSpacePoint();
-                $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-                    $workspace->workspaceName,
-                    $dimensionSpacePoint
-                );
-                $documentNode = $subgraph->findClosestNode(
-                    $change->nodeAggregateId,
-                    FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
-                );
-                $siteNode = $subgraph->findClosestNode(
-                    $change->nodeAggregateId,
-                    FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
-                );
-                if ($documentNode !== null) {
-                    $documentSubgraph = $subgraph;
-                }
-                // A node removed in this workspace is gone from its subgraph, so
-                // resolve its document/site in the base workspace instead - the
-                // same fallback the changes resource uses - otherwise a deleted
-                // page would never appear in the review list. The base node is
-                // display-only (label/icon/breadcrumb); it is not offered for
-                // navigation.
-                if ($documentNode === null && $workspace->baseWorkspaceName !== null) {
-                    $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-                        $workspace->baseWorkspaceName,
-                        $dimensionSpacePoint
-                    );
-                    $documentNode = $baseSubgraph->findClosestNode(
-                        $change->nodeAggregateId,
-                        FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
-                    );
-                    $siteNode ??= $baseSubgraph->findClosestNode(
-                        $change->nodeAggregateId,
-                        FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Site')
-                    );
-                    // Left null on purpose: a base-resolved document is not
-                    // navigable in this workspace.
+                // Shared document/site resolution incl. the base-workspace
+                // fallback for removed nodes: without it a deleted page would
+                // never appear in the review list. A base-resolved document is
+                // display-only (label/icon/breadcrumb) - not navigable, hence
+                // no subgraph (and a null address below).
+                $resolved = $context->closestDocumentAndSite($change->nodeAggregateId, $dimensionSpacePoint);
+                $documentNode = $resolved['document'];
+                $siteNode = $resolved['site'];
+                if ($documentNode !== null && $resolved['inWorkspace']) {
+                    $documentSubgraph = $context->subgraph($dimensionSpacePoint);
                 }
             }
 
@@ -368,18 +274,12 @@ class WorkspacesController extends AbstractApiController
                         ? NodeAddressCodec::encode(NodeAddress::fromNode($documentNode))
                         : null,
                     'siteAggregateId' => $siteNode?->aggregateId->value,
-                    'siteLabel' => $siteNode !== null
-                        ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($siteNode))
-                        : null,
-                    'label' => $documentNode !== null
-                        ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($documentNode))
-                        : $documentId,
+                    'siteLabel' => $siteNode !== null ? $context->label($siteNode) : null,
+                    'label' => $documentNode !== null ? $context->label($documentNode) : $documentId,
                     'nodeType' => $documentNode?->nodeTypeName->value,
-                    'icon' => $documentNode !== null
-                        ? ($nodeTypeManager->getNodeType($documentNode->nodeTypeName)?->getFullConfiguration()['ui']['icon'] ?? null)
-                        : null,
+                    'icon' => $documentNode !== null ? $context->icon($documentNode->nodeTypeName) : null,
                     'breadcrumb' => $documentNode !== null && $documentSubgraph !== null
-                        ? $this->documentBreadcrumb($documentNode, $documentSubgraph)
+                        ? $this->nodeSerializer->breadcrumb($documentNode, $documentSubgraph)
                         : [],
                     'hidden' => $documentNode?->tags->contain(NeosSubtreeTag::disabled()) ?? false,
                     'created' => false,
@@ -434,19 +334,10 @@ class WorkspacesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
 
-        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
-        if ($workspace === null) {
-            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
-        }
-        if ($this->serializeWorkspace($workspace) === null) {
-            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
-        }
+        $workspace = $this->requireReadableWorkspace($workspaceName);
+        $context = $this->readContext($workspace);
+        $changeFinder = $context->contentRepository->projectionState(ChangeFinder::class);
 
-        $contentRepository = $this->getContentRepository();
-        $nodeTypeManager = $contentRepository->getNodeTypeManager();
-        $changeFinder = $contentRepository->projectionState(ChangeFinder::class);
-        $subgraphs = [];
-        $baseSubgraphs = [];
         $seenVariants = [];
         $nodes = [];
         foreach ($changeFinder->findByContentStreamId($workspace->currentContentStreamId) as $change) {
@@ -455,17 +346,8 @@ class WorkspacesController extends AbstractApiController
             }
             $nodeId = $change->nodeAggregateId;
             $dimensionSpacePoint = $change->originDimensionSpacePoint->toDimensionSpacePoint();
-            $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-                $workspace->workspaceName,
-                $dimensionSpacePoint
-            );
-            $baseSubgraph = null;
-            if ($workspace->baseWorkspaceName !== null) {
-                $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-                    $workspace->baseWorkspaceName,
-                    $dimensionSpacePoint
-                );
-            }
+            $subgraph = $context->subgraph($dimensionSpacePoint);
+            $baseSubgraph = $context->baseSubgraph($dimensionSpacePoint);
 
             $wsNode = $subgraph->findNodeById($nodeId);
             $baseNode = $baseSubgraph?->findNodeById($nodeId);
@@ -476,8 +358,8 @@ class WorkspacesController extends AbstractApiController
             // Belongs to the requested document? Removed nodes resolve their
             // document in the base (same fallback the listing uses).
             $documentNode = $wsNode !== null
-                ? $subgraph->findClosestNode($nodeId, FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document'))
-                : $baseSubgraph?->findClosestNode($nodeId, FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document'));
+                ? $context->closestNode($nodeId, $dimensionSpacePoint, 'Neos.Neos:Document')
+                : $context->closestNode($nodeId, $dimensionSpacePoint, 'Neos.Neos:Document', inBase: true);
             $documentId = $documentNode?->aggregateId->value
                 ?? $change->getLegacyRemovalAttachmentPoint()?->value;
             if ($documentId !== $documentAggregateId) {
@@ -496,7 +378,7 @@ class WorkspacesController extends AbstractApiController
             $status = $change->deleted
                 ? 'removed'
                 : ($change->created ? 'created' : ($change->moved ? 'moved' : 'changed'));
-            $changes = $this->diffNodeAgainstBase($wsNode, $baseNode, $change->moved, $subgraph, $baseSubgraph, $subgraphs, $baseSubgraphs, $workspace);
+            $changes = $this->workspaceDiffService->diffNodeAgainstBase($wsNode, $baseNode, $change->moved, $subgraph, $baseSubgraph, $context);
 
             // A "changed" node whose state does not differ visibly (e.g.
             // edited and manually reverted) would render as an empty block.
@@ -508,9 +390,9 @@ class WorkspacesController extends AbstractApiController
                 'nodeAggregateId' => $nodeId->value,
                 'dimensions' => $node->originDimensionSpacePoint->coordinates,
                 'status' => $status,
-                'nodeLabel' => $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node)),
+                'nodeLabel' => $context->label($node),
                 'nodeType' => $node->nodeTypeName->value,
-                'icon' => $nodeTypeManager->getNodeType($node->nodeTypeName)?->getFullConfiguration()['ui']['icon'] ?? null,
+                'icon' => $context->icon($node->nodeTypeName),
                 'changes' => $changes,
             ];
         }
@@ -521,146 +403,6 @@ class WorkspacesController extends AbstractApiController
             'documentAggregateId' => $documentAggregateId,
             'nodes' => $nodes,
         ]);
-    }
-
-    /**
-     * The visible state differences of one node variant between the workspace
-     * and its base: properties, node type, name, parent (or sibling position
-     * for in-place moves), the disabled tag, and reference targets. Rows share
-     * the pending-events diff vocabulary so clients render both the same way.
-     * A node missing on one side diffs against nothing: created nodes list
-     * their properties as new values, removed nodes need no rows (the status
-     * says it all).
-     *
-     * @param array<string, ContentSubgraphInterface> $subgraphs
-     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
-     * @return list<array<string, mixed>>
-     */
-    private function diffNodeAgainstBase(
-        ?Node $wsNode,
-        ?Node $baseNode,
-        bool $moved,
-        ContentSubgraphInterface $subgraph,
-        ?ContentSubgraphInterface $baseSubgraph,
-        array &$subgraphs,
-        array &$baseSubgraphs,
-        Workspace $workspace
-    ): array {
-        if ($wsNode === null) {
-            return [];
-        }
-        $coordinates = $wsNode->originDimensionSpacePoint->coordinates;
-        $rows = [];
-
-        // Properties: the union of both sides, rows only where values differ.
-        $wsProperties = [];
-        foreach ($wsNode->properties->serialized() as $name => $serialized) {
-            $wsProperties[$name] = $serialized->value;
-        }
-        $baseProperties = [];
-        if ($baseNode !== null) {
-            foreach ($baseNode->properties->serialized() as $name => $serialized) {
-                $baseProperties[$name] = $serialized->value;
-            }
-        }
-        foreach (array_keys($wsProperties + $baseProperties) as $name) {
-            $old = $baseProperties[$name] ?? null;
-            $new = $wsProperties[$name] ?? null;
-            if (json_encode($old) === json_encode($new)) {
-                continue;
-            }
-            $rows[] = [
-                'kind' => 'property',
-                'property' => (string)$name,
-                'label' => $this->propertyLabel($wsNode, (string)$name, 'properties'),
-                'old' => $old,
-                'new' => $new,
-            ];
-        }
-
-        if ($baseNode !== null && !$wsNode->nodeTypeName->equals($baseNode->nodeTypeName)) {
-            $rows[] = [
-                'kind' => 'nodeType',
-                'property' => null,
-                'label' => null,
-                'old' => $baseNode->nodeTypeName->value,
-                'new' => $wsNode->nodeTypeName->value,
-            ];
-        }
-        if ($baseNode !== null && $wsNode->name?->value !== $baseNode->name?->value) {
-            $rows[] = [
-                'kind' => 'name',
-                'property' => null,
-                'label' => null,
-                'old' => $baseNode->name?->value,
-                'new' => $wsNode->name?->value,
-            ];
-        }
-
-        // Parent: a real reparenting diffs; a move within the same parent is
-        // a position change state cannot express better than "reordered".
-        if ($baseNode !== null) {
-            $wsParentId = $subgraph->findParentNode($wsNode->aggregateId)?->aggregateId->value;
-            $baseParentId = $baseSubgraph?->findParentNode($baseNode->aggregateId)?->aggregateId->value;
-            if ($wsParentId !== null && $baseParentId !== null && $wsParentId !== $baseParentId) {
-                $rows[] = [
-                    'kind' => 'parent',
-                    'property' => null,
-                    'label' => null,
-                    'old' => $this->describeNodes([$baseParentId], $coordinates, $workspace, $subgraphs, $baseSubgraphs)[0] ?? null,
-                    'new' => $this->describeNodes([$wsParentId], $coordinates, $workspace, $subgraphs, $baseSubgraphs)[0] ?? null,
-                ];
-            } elseif ($moved) {
-                $rows[] = ['kind' => 'position', 'property' => null, 'label' => null, 'old' => null, 'new' => null];
-            }
-        }
-
-        $wsDisabled = $wsNode->tags->contain(NeosSubtreeTag::disabled());
-        $baseDisabled = $baseNode?->tags->contain(NeosSubtreeTag::disabled()) ?? false;
-        if ($wsDisabled !== $baseDisabled) {
-            $rows[] = [
-                'kind' => 'tag',
-                'property' => 'disabled',
-                'label' => null,
-                'old' => $baseDisabled ? 'disabled' : null,
-                'new' => $wsDisabled ? 'disabled' : null,
-            ];
-        }
-
-        // References: target id lists per reference name, both sides.
-        $collectReferences = static function (?ContentSubgraphInterface $fromSubgraph, ?Node $node): array {
-            if ($fromSubgraph === null || $node === null) {
-                return [];
-            }
-            $byName = [];
-            foreach ($fromSubgraph->findReferences($node->aggregateId, FindReferencesFilter::create()) as $reference) {
-                $byName[$reference->name->value][] = $reference->node->aggregateId->value;
-            }
-            return $byName;
-        };
-        try {
-            $wsReferences = $collectReferences($subgraph, $wsNode);
-            $baseReferences = $collectReferences($baseSubgraph, $baseNode);
-            foreach (array_keys($wsReferences + $baseReferences) as $referenceName) {
-                $oldTargets = $baseReferences[$referenceName] ?? [];
-                $newTargets = $wsReferences[$referenceName] ?? [];
-                if ($oldTargets === $newTargets) {
-                    continue;
-                }
-                $rows[] = [
-                    'kind' => 'reference',
-                    'property' => (string)$referenceName,
-                    'label' => $this->propertyLabel($wsNode, (string)$referenceName, 'references'),
-                    'old' => $this->describeNodes($oldTargets, $coordinates, $workspace, $subgraphs, $baseSubgraphs),
-                    'new' => $this->describeNodes($newTargets, $coordinates, $workspace, $subgraphs, $baseSubgraphs),
-                ];
-            }
-        } catch (\Throwable) {
-            // Reference reads must never break the diff - properties and the
-            // structural rows above still tell the story.
-        }
-
-        return $rows;
     }
 
     #[Flow\SkipCsrfProtection]
@@ -819,7 +561,7 @@ class WorkspacesController extends AbstractApiController
 
         $base = WorkspaceName::fromString($baseWorkspaceName ?? WorkspaceName::WORKSPACE_NAME_LIVE);
         $baseWorkspace = $this->getContentRepository()->findWorkspaceByName($base);
-        if ($baseWorkspace === null || $this->serializeWorkspace($baseWorkspace) === null) {
+        if ($baseWorkspace === null || !$this->workspaceSerializer->canRead($this->getContentRepositoryId(), $base)) {
             $this->throwJsonStatus(400, 'invalid_base_workspace', sprintf('The base workspace "%s" does not exist or is not accessible.', $base->value));
         }
 
@@ -842,7 +584,7 @@ class WorkspacesController extends AbstractApiController
             $this->throwJsonStatus(500, 'workspace_not_ready', 'The workspace was created but could not be read back yet.');
         }
 
-        return $this->json(['workspace' => $this->serializeWorkspace($workspace)], 201);
+        return $this->json(['workspace' => $this->workspaceSerializer->serialize($this->getContentRepositoryId(), $workspace)], 201);
     }
 
     /**
@@ -867,7 +609,7 @@ class WorkspacesController extends AbstractApiController
             $this->workspaceService->setWorkspaceDescription($this->getContentRepositoryId(), $workspace->workspaceName, WorkspaceDescription::fromString(trim($description)));
         }
 
-        return $this->json(['workspace' => $this->serializeWorkspace($workspace)]);
+        return $this->json(['workspace' => $this->workspaceSerializer->serialize($this->getContentRepositoryId(), $workspace)]);
     }
 
     /**
@@ -921,7 +663,7 @@ class WorkspacesController extends AbstractApiController
         $workspace = $this->requireWorkspaceObject($workspaceName);
         $this->requireManagePermission($workspace->workspaceName);
 
-        return $this->json(['assignments' => $this->serializeRoleAssignments($workspace->workspaceName)]);
+        return $this->json(['assignments' => $this->workspaceSerializer->serializeRoleAssignments($this->getContentRepositoryId(), $workspace->workspaceName)]);
     }
 
     /**
@@ -955,7 +697,7 @@ class WorkspacesController extends AbstractApiController
             WorkspaceRoleAssignment::create($subjectValue, $workspaceRole)
         );
 
-        return $this->json(['assignments' => $this->serializeRoleAssignments($workspace->workspaceName)], 201);
+        return $this->json(['assignments' => $this->workspaceSerializer->serializeRoleAssignments($this->getContentRepositoryId(), $workspace->workspaceName)], 201);
     }
 
     /**
@@ -982,83 +724,7 @@ class WorkspacesController extends AbstractApiController
 
         $this->workspaceService->unassignWorkspaceRole($this->getContentRepositoryId(), $workspace->workspaceName, $subjectValue);
 
-        return $this->json(['assignments' => $this->serializeRoleAssignments($workspace->workspaceName)]);
-    }
-
-    private function requireWorkspaceObject(string $workspaceName): Workspace
-    {
-        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
-        if ($workspace === null) {
-            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
-        }
-
-        return $workspace;
-    }
-
-    /** 403 unless the account may manage the workspace (owner, manager role, administrator). */
-    private function requireManagePermission(WorkspaceName $workspaceName): void
-    {
-        $permissions = $this->authorizationService->getWorkspacePermissions(
-            $this->getContentRepositoryId(),
-            $workspaceName,
-            $this->securityContext->getRoles(),
-            $this->userService->getCurrentUser()?->getId()
-        );
-        if (!$permissions->manage) {
-            $this->throwJsonStatus(403, 'access_denied', 'You are not allowed to manage this workspace.');
-        }
-    }
-
-    private function buildRoleSubject(string $subjectType, string $subject): WorkspaceRoleSubject
-    {
-        $type = WorkspaceRoleSubjectType::tryFrom($subjectType);
-        if ($type === null) {
-            $this->throwJsonStatus(400, 'invalid_subject_type', 'The subjectType must be USER or GROUP.');
-        }
-        if ($type === WorkspaceRoleSubjectType::USER) {
-            try {
-                $userId = UserId::fromString($subject);
-            } catch (\InvalidArgumentException) {
-                $this->throwJsonStatus(400, 'invalid_subject', 'The subject is not a valid user id.');
-            }
-            if ($this->userService->findUserById($userId) === null) {
-                $this->throwJsonStatus(400, 'invalid_subject', 'No user with this id exists.');
-            }
-        }
-
-        try {
-            return WorkspaceRoleSubject::create($type, $subject);
-        } catch (\InvalidArgumentException) {
-            $this->throwJsonStatus(400, 'invalid_subject', 'The subject is not valid.');
-        }
-    }
-
-    /**
-     * @return array<int, array<string, mixed>>
-     */
-    private function serializeRoleAssignments(WorkspaceName $workspaceName): array
-    {
-        $assignments = [];
-        foreach ($this->workspaceService->getWorkspaceRoleAssignments($this->getContentRepositoryId(), $workspaceName) as $assignment) {
-            $label = null;
-            if ($assignment->subject->type === WorkspaceRoleSubjectType::USER) {
-                try {
-                    $label = $this->userService->findUserById(UserId::fromString($assignment->subject->value))?->getLabel();
-                } catch (\InvalidArgumentException) {
-                    // Keep the raw subject value as the label.
-                }
-            }
-            $assignments[] = [
-                'subjectType' => $assignment->subject->type->value,
-                'subject' => $assignment->subject->value,
-                // Human-readable name for USER subjects; GROUP subjects show
-                // their Flow role identifier.
-                'label' => $label ?? $assignment->subject->value,
-                'role' => $assignment->role->value,
-            ];
-        }
-
-        return $assignments;
+        return $this->json(['assignments' => $this->workspaceSerializer->serializeRoleAssignments($this->getContentRepositoryId(), $workspace->workspaceName)]);
     }
 
     /**
@@ -1082,13 +748,7 @@ class WorkspacesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
 
-        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
-        if ($workspace === null) {
-            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
-        }
-        if ($this->serializeWorkspace($workspace) === null) {
-            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
-        }
+        $workspace = $this->requireReadableWorkspace($workspaceName);
 
         $query = $this->request->getHttpRequest()->getQueryParams();
         $knownStream = isset($query['stream']) && is_string($query['stream']) && $query['stream'] !== '' ? $query['stream'] : null;
@@ -1116,9 +776,9 @@ class WorkspacesController extends AbstractApiController
         $events = [];
         foreach ($envelopes as $envelope) {
             $cursor = $envelope->sequenceNumber->value;
-            $serialized = $this->serializeFeedEvent($envelope);
-            if ($serialized !== null) {
-                $events[] = $serialized;
+            $parsed = $this->workspaceHistoryService->parseFeedEvent($envelope);
+            if ($parsed !== null) {
+                $events[] = $parsed['event'];
             }
         }
 
@@ -1146,13 +806,7 @@ class WorkspacesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
 
-        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
-        if ($workspace === null) {
-            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
-        }
-        if ($this->serializeWorkspace($workspace) === null) {
-            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
-        }
+        $workspace = $this->requireReadableWorkspace($workspaceName);
 
         /** @var WorkspaceEventFeed $feed */
         $feed = $this->contentRepositoryRegistry->buildService($this->getContentRepositoryId(), new WorkspaceEventFeedFactory());
@@ -1179,7 +833,7 @@ class WorkspacesController extends AbstractApiController
 
         $events = array_map(
             static fn (array $item): array => $item['event'],
-            $this->enrichFeedEvents($envelopes, $workspace)
+            $this->workspaceHistoryService->enrichFeedEvents($envelopes, $this->readContext($workspace))
         );
 
         return $this->json([
@@ -1191,128 +845,6 @@ class WorkspacesController extends AbstractApiController
             'truncated' => count($envelopes) === self::PENDING_EVENTS_LIMIT,
             'events' => $events,
         ]);
-    }
-
-    /**
-     * Serialize and enrich feed events: the affected node's label/type/icon,
-     * the initiating user's name, and the containing document (id, label and
-     * a navigable address - what "go to page" on a history entry follows).
-     * The node is resolved in the workspace's own subgraph, falling back to
-     * the base for nodes removed in the workspace, in the dimension the event
-     * names (same fallback the changes resources use). Envelopes whose event
-     * type is not client-facing are dropped.
-     *
-     * @param list<EventEnvelope> $envelopes
-     * @return list<array{event: array<string, mixed>, envelope: EventEnvelope, node: ?Node, subgraph: ?ContentSubgraphInterface}>
-     */
-    private function enrichFeedEvents(array $envelopes, Workspace $workspace): array
-    {
-        $nodeTypeManager = $this->getContentRepository()->getNodeTypeManager();
-        $subgraphs = [];
-        $baseSubgraphs = [];
-        $documentNodes = [];
-        $userLabels = [];
-        $items = [];
-        foreach ($envelopes as $envelope) {
-            $serialized = $this->serializeFeedEvent($envelope);
-            if ($serialized === null) {
-                continue;
-            }
-
-            [$node, $subgraph] = $this->resolveFeedEventNode($serialized, $workspace, $subgraphs, $baseSubgraphs);
-
-            // Cached per node: consecutive events usually hit the same few nodes.
-            $documentNode = null;
-            if ($node !== null && $subgraph !== null) {
-                $documentCacheKey = $node->aggregateId->value . '|' . $node->originDimensionSpacePoint->hash;
-                if (!array_key_exists($documentCacheKey, $documentNodes)) {
-                    try {
-                        $documentNodes[$documentCacheKey] = $subgraph->findClosestNode(
-                            $node->aggregateId,
-                            FindClosestNodeFilter::create(nodeTypes: 'Neos.Neos:Document')
-                        );
-                    } catch (\Throwable) {
-                        $documentNodes[$documentCacheKey] = null;
-                    }
-                }
-                $documentNode = $documentNodes[$documentCacheKey];
-            }
-
-            $userId = $serialized['initiatingUserId'];
-            if (is_string($userId) && !array_key_exists($userId, $userLabels)) {
-                try {
-                    $userLabels[$userId] = $this->userService->findUserById(UserId::fromString($userId))?->getLabel();
-                } catch (\InvalidArgumentException) {
-                    $userLabels[$userId] = null;
-                }
-            }
-
-            $items[] = [
-                'event' => $serialized + [
-                    'nodeLabel' => $node !== null
-                        ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node))
-                        : null,
-                    'nodeType' => $node?->nodeTypeName->value,
-                    'icon' => $node !== null
-                        ? ($nodeTypeManager->getNodeType($node->nodeTypeName)?->getFullConfiguration()['ui']['icon'] ?? null)
-                        : null,
-                    'initiatingUserLabel' => is_string($userId) ? ($userLabels[$userId] ?? null) : null,
-                    'documentAggregateId' => $documentNode?->aggregateId->value,
-                    'documentLabel' => $documentNode !== null
-                        ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($documentNode))
-                        : null,
-                    'documentAddress' => $documentNode !== null
-                        ? NodeAddressCodec::encode(NodeAddress::fromNode($documentNode))
-                        : null,
-                ],
-                'envelope' => $envelope,
-                'node' => $node,
-                'subgraph' => $subgraph,
-            ];
-        }
-
-        return $items;
-    }
-
-    /**
-     * The affected node of a serialized feed event plus the subgraph it was
-     * resolved in: the workspace's own, falling back to the base workspace
-     * for nodes removed in the workspace (so a deletion still shows what it
-     * deleted).
-     *
-     * @param array<string, mixed> $serialized
-     * @param array<string, ContentSubgraphInterface> $subgraphs
-     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
-     * @return array{?Node, ?ContentSubgraphInterface}
-     */
-    private function resolveFeedEventNode(array $serialized, Workspace $workspace, array &$subgraphs, array &$baseSubgraphs): array
-    {
-        $nodeId = $serialized['nodeAggregateId'];
-        $coordinates = $serialized['dimensionSpacePoints'][0] ?? null;
-        if (!is_string($nodeId) || !is_array($coordinates)) {
-            return [null, null];
-        }
-        $contentRepository = $this->getContentRepository();
-        $dimensionSpacePoint = DimensionSpacePoint::fromArray($coordinates);
-        $subgraph = $subgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-            $workspace->workspaceName,
-            $dimensionSpacePoint
-        );
-        $node = $subgraph->findNodeById(NodeAggregateId::fromString($nodeId));
-        if ($node !== null) {
-            return [$node, $subgraph];
-        }
-        if ($workspace->baseWorkspaceName !== null) {
-            $baseSubgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $contentRepository->getContentSubgraph(
-                $workspace->baseWorkspaceName,
-                $dimensionSpacePoint
-            );
-            $node = $baseSubgraph->findNodeById(NodeAggregateId::fromString($nodeId));
-            if ($node !== null) {
-                return [$node, $baseSubgraph];
-            }
-        }
-        return [null, null];
     }
 
     /**
@@ -1334,13 +866,7 @@ class WorkspacesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
 
-        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
-        if ($workspace === null) {
-            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
-        }
-        if ($this->serializeWorkspace($workspace) === null) {
-            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
-        }
+        $workspace = $this->requireReadableWorkspace($workspaceName);
         if ($from < 1 || $to < $from || $to - $from >= self::DIFF_RANGE_LIMIT) {
             $this->throwJsonStatus(400, 'invalid_range', sprintf(
                 'Provide 1 <= from <= to with a span below %d.',
@@ -1352,34 +878,29 @@ class WorkspacesController extends AbstractApiController
         $feed = $this->contentRepositoryRegistry->buildService($this->getContentRepositoryId(), new WorkspaceEventFeedFactory());
         $slice = $feed->eventsBetween($workspace->currentContentStreamId, $from, $to);
 
-        // The backward-scan window, newest first, pre-decoded once. Only
-        // needed for event types whose diff looks into the past.
-        $beforeEvents = null;
-        $loadBeforeEvents = function () use (&$beforeEvents, $feed, $workspace, $from): array {
-            if ($beforeEvents === null) {
-                $beforeEvents = [];
-                foreach ($feed->eventsBefore($workspace->currentContentStreamId, $from, self::DIFF_SCAN_LIMIT) as $envelope) {
-                    $payload = json_decode($envelope->event->data->value, true);
-                    if (is_array($payload)) {
-                        $beforeEvents[] = ['type' => $envelope->event->type->value, 'payload' => $payload];
-                    }
+        // The backward-scan window: loaded lazily on the first before-value
+        // lookup, decoded once, indexed per node (see EventBeforeWindow).
+        $beforeWindow = new EventBeforeWindow(function () use ($feed, $workspace, $from): array {
+            $events = [];
+            foreach ($feed->eventsBefore($workspace->currentContentStreamId, $from, self::DIFF_SCAN_LIMIT) as $envelope) {
+                $payload = json_decode($envelope->event->data->value, true);
+                if (is_array($payload)) {
+                    $events[] = ['type' => $envelope->event->type->value, 'payload' => $payload];
                 }
             }
-            return $beforeEvents;
-        };
+            return $events;
+        });
 
-        $subgraphs = [];
-        $baseSubgraphs = [];
+        $context = $this->readContext($workspace);
         $events = [];
-        foreach ($this->enrichFeedEvents($slice, $workspace) as $item) {
+        foreach ($this->workspaceHistoryService->enrichFeedEvents($slice, $context) as $item) {
             $events[] = $item['event'] + [
-                'changes' => $this->diffEventChanges(
+                'changes' => $this->workspaceDiffService->diffEventChanges(
                     $item['envelope'],
+                    $item['payload'],
                     $item['node'],
-                    $workspace,
-                    $loadBeforeEvents,
-                    $subgraphs,
-                    $baseSubgraphs
+                    $context,
+                    $beforeWindow
                 ),
             ];
         }
@@ -1391,466 +912,6 @@ class WorkspacesController extends AbstractApiController
             'to' => $to,
             'events' => $events,
         ]);
-    }
-
-    /**
-     * What one pending event changed, as before/after rows. Kinds: 'property'
-     * (old/new property value), 'reference' (old/new target lists of
-     * {id,label}), 'nodeType', 'name', 'parent' (old/new {id,label}),
-     * 'position' (reorder under the same parent), 'tag' (visibility et al.),
-     * 'variant' (old/new dimension coordinates).
-     *
-     * @param callable(): list<array{type: string, payload: array<string, mixed>}> $loadBeforeEvents
-     * @param array<string, ContentSubgraphInterface> $subgraphs
-     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
-     * @return list<array<string, mixed>>
-     */
-    private function diffEventChanges(
-        EventEnvelope $envelope,
-        ?Node $node,
-        Workspace $workspace,
-        callable $loadBeforeEvents,
-        array &$subgraphs,
-        array &$baseSubgraphs
-    ): array {
-        $type = $envelope->event->type->value;
-        $payload = json_decode($envelope->event->data->value, true);
-        $payload = is_array($payload) ? $payload : [];
-        $nodeId = $payload['nodeAggregateId'] ?? null;
-        if (!is_string($nodeId)) {
-            return [];
-        }
-
-        switch ($type) {
-            case 'NodePropertiesWereSet': {
-                $origin = is_array($payload['originDimensionSpacePoint'] ?? null) ? $payload['originDimensionSpacePoint'] : null;
-                $rows = [];
-                foreach ((array)($payload['propertyValues'] ?? []) as $name => $descriptor) {
-                    $rows[] = [
-                        'kind' => 'property',
-                        'property' => (string)$name,
-                        'label' => $this->propertyLabel($node, (string)$name, 'properties'),
-                        'old' => $this->propertyValueBefore($nodeId, $origin, (string)$name, $loadBeforeEvents(), $workspace, $baseSubgraphs),
-                        'new' => is_array($descriptor) && array_key_exists('value', $descriptor) ? $descriptor['value'] : null,
-                    ];
-                }
-                foreach ((array)($payload['propertiesToUnset'] ?? []) as $name) {
-                    $rows[] = [
-                        'kind' => 'property',
-                        'property' => (string)$name,
-                        'label' => $this->propertyLabel($node, (string)$name, 'properties'),
-                        'old' => $this->propertyValueBefore($nodeId, $origin, (string)$name, $loadBeforeEvents(), $workspace, $baseSubgraphs),
-                        'new' => null,
-                    ];
-                }
-                return $rows;
-            }
-            case 'NodeAggregateWithNodeWasCreated': {
-                $rows = [];
-                foreach ((array)($payload['initialPropertyValues'] ?? []) as $name => $descriptor) {
-                    $rows[] = [
-                        'kind' => 'property',
-                        'property' => (string)$name,
-                        'label' => $this->propertyLabel($node, (string)$name, 'properties'),
-                        'old' => null,
-                        'new' => is_array($descriptor) && array_key_exists('value', $descriptor) ? $descriptor['value'] : null,
-                    ];
-                }
-                return $rows;
-            }
-            case 'NodeReferencesWereSet': {
-                $origin = is_array($payload['affectedSourceOriginDimensionSpacePoints'][0] ?? null)
-                    ? $payload['affectedSourceOriginDimensionSpacePoints'][0]
-                    : null;
-                $rows = [];
-                foreach ((array)($payload['references'] ?? []) as $referencesForName) {
-                    $referenceName = $referencesForName['referenceName'] ?? null;
-                    if (!is_string($referenceName)) {
-                        continue;
-                    }
-                    $newTargets = [];
-                    foreach ((array)($referencesForName['references'] ?? []) as $reference) {
-                        if (is_string($reference['target'] ?? null)) {
-                            $newTargets[] = $reference['target'];
-                        }
-                    }
-                    $oldTargets = $this->referenceTargetsBefore($nodeId, $origin, $referenceName, $loadBeforeEvents(), $workspace, $baseSubgraphs);
-                    $rows[] = [
-                        'kind' => 'reference',
-                        'property' => $referenceName,
-                        'label' => $this->propertyLabel($node, $referenceName, 'references'),
-                        'old' => $this->describeNodes($oldTargets, $origin, $workspace, $subgraphs, $baseSubgraphs),
-                        'new' => $this->describeNodes($newTargets, $origin, $workspace, $subgraphs, $baseSubgraphs),
-                    ];
-                }
-                return $rows;
-            }
-            case 'NodeAggregateTypeWasChanged':
-                return [[
-                    'kind' => 'nodeType',
-                    'property' => null,
-                    'label' => null,
-                    'old' => $this->nodeTypeBefore($nodeId, $loadBeforeEvents(), $workspace),
-                    'new' => $payload['newNodeTypeName'] ?? null,
-                ]];
-            case 'NodeAggregateNameWasChanged':
-                return [[
-                    'kind' => 'name',
-                    'property' => null,
-                    'label' => null,
-                    'old' => $this->nodeNameBefore($nodeId, $loadBeforeEvents(), $workspace),
-                    'new' => $payload['newNodeName'] ?? null,
-                ]];
-            case 'NodeAggregateWasMoved': {
-                $newParentId = $payload['newParentNodeAggregateId'] ?? null;
-                if (!is_string($newParentId)) {
-                    // Reorder among its siblings - same parent, new position.
-                    return [['kind' => 'position', 'property' => null, 'label' => null, 'old' => null, 'new' => null]];
-                }
-                $coordinates = is_array($payload['succeedingSiblingsForCoverage'][0]['dimensionSpacePoint'] ?? null)
-                    ? $payload['succeedingSiblingsForCoverage'][0]['dimensionSpacePoint']
-                    : null;
-                $oldParentId = $this->parentBefore($nodeId, $coordinates, $loadBeforeEvents(), $workspace, $baseSubgraphs);
-                return [[
-                    'kind' => 'parent',
-                    'property' => null,
-                    'label' => null,
-                    'old' => $oldParentId !== null
-                        ? ($this->describeNodes([$oldParentId], $coordinates, $workspace, $subgraphs, $baseSubgraphs)[0] ?? null)
-                        : null,
-                    'new' => $this->describeNodes([$newParentId], $coordinates, $workspace, $subgraphs, $baseSubgraphs)[0] ?? null,
-                ]];
-            }
-            case 'SubtreeWasTagged':
-            case 'SubtreeWasUntagged': {
-                $tag = is_string($payload['tag'] ?? null) ? $payload['tag'] : null;
-                return [[
-                    'kind' => 'tag',
-                    'property' => $tag,
-                    'label' => null,
-                    'old' => $type === 'SubtreeWasUntagged' ? $tag : null,
-                    'new' => $type === 'SubtreeWasTagged' ? $tag : null,
-                ]];
-            }
-            case 'NodeSpecializationVariantWasCreated':
-            case 'NodeGeneralizationVariantWasCreated':
-            case 'NodePeerVariantWasCreated':
-                return [[
-                    'kind' => 'variant',
-                    'property' => null,
-                    'label' => null,
-                    'old' => $payload['sourceOrigin'] ?? null,
-                    'new' => $payload['specializationOrigin'] ?? $payload['generalizationOrigin'] ?? $payload['peerOrigin'] ?? null,
-                ]];
-            default:
-                return [];
-        }
-    }
-
-    /**
-     * The configured human label of a property or reference from the node's
-     * type - possibly an XLIFF shorthand the client translates, like every
-     * node-type label the API emits.
-     */
-    private function propertyLabel(?Node $node, string $name, string $section): ?string
-    {
-        if ($node === null) {
-            return null;
-        }
-        $configuration = $this->getContentRepository()->getNodeTypeManager()
-            ->getNodeType($node->nodeTypeName)?->getFullConfiguration();
-        $label = $configuration[$section][$name]['ui']['label'] ?? null;
-        return is_string($label) ? $label : null;
-    }
-
-    /**
-     * The value a property had just before the diffed event: the newest
-     * earlier write to it in the same stream (a set, an unset, the node's
-     * creation, or - transitively - the variant source it was copied from),
-     * falling back to the value the base workspace holds.
-     *
-     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
-     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
-     */
-    private function propertyValueBefore(
-        string $nodeId,
-        ?array $origin,
-        string $property,
-        array $beforeEvents,
-        Workspace $workspace,
-        array &$baseSubgraphs
-    ): mixed {
-        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
-            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
-                continue;
-            }
-            switch ($type) {
-                case 'NodePropertiesWereSet':
-                    if (!$this->sameCoordinates($payload['originDimensionSpacePoint'] ?? null, $origin)) {
-                        break;
-                    }
-                    $descriptor = $payload['propertyValues'][$property] ?? null;
-                    if (is_array($descriptor) && array_key_exists('value', $descriptor)) {
-                        return $descriptor['value'];
-                    }
-                    if (in_array($property, (array)($payload['propertiesToUnset'] ?? []), true)) {
-                        return null;
-                    }
-                    break;
-                case 'NodeAggregateWithNodeWasCreated':
-                    if (!$this->sameCoordinates($payload['originDimensionSpacePoint'] ?? null, $origin)) {
-                        break;
-                    }
-                    // The node was created inside this workspace: its initial
-                    // value is definitive, the base cannot know it.
-                    $descriptor = $payload['initialPropertyValues'][$property] ?? null;
-                    return is_array($descriptor) && array_key_exists('value', $descriptor) ? $descriptor['value'] : null;
-                case 'NodeSpecializationVariantWasCreated':
-                case 'NodeGeneralizationVariantWasCreated':
-                case 'NodePeerVariantWasCreated':
-                    // The variant copied the source origin's values when it
-                    // was created - continue the scan in the source origin.
-                    $target = $payload['specializationOrigin'] ?? $payload['generalizationOrigin'] ?? $payload['peerOrigin'] ?? null;
-                    if ($this->sameCoordinates($target, $origin) && is_array($payload['sourceOrigin'] ?? null)) {
-                        $origin = $payload['sourceOrigin'];
-                    }
-                    break;
-            }
-        }
-
-        if ($workspace->baseWorkspaceName === null || !is_array($origin)) {
-            return null;
-        }
-        try {
-            $dimensionSpacePoint = DimensionSpacePoint::fromArray($origin);
-            $subgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $this->getContentRepository()->getContentSubgraph(
-                $workspace->baseWorkspaceName,
-                $dimensionSpacePoint
-            );
-            return $subgraph->findNodeById(NodeAggregateId::fromString($nodeId))
-                ?->properties->serialized()->getProperty($property)?->value;
-        } catch (\Throwable) {
-            return null;
-        }
-    }
-
-    /**
-     * The reference targets a name pointed to just before the diffed event.
-     *
-     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
-     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
-     * @return list<string>
-     */
-    private function referenceTargetsBefore(
-        string $nodeId,
-        ?array $origin,
-        string $referenceName,
-        array $beforeEvents,
-        Workspace $workspace,
-        array &$baseSubgraphs
-    ): array {
-        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
-            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
-                continue;
-            }
-            if ($type === 'NodeReferencesWereSet') {
-                $affected = (array)($payload['affectedSourceOriginDimensionSpacePoints'] ?? []);
-                $matches = $origin === null || array_filter($affected, fn ($point) => $this->sameCoordinates($point, $origin)) !== [];
-                if (!$matches) {
-                    continue;
-                }
-                foreach ((array)($payload['references'] ?? []) as $referencesForName) {
-                    if (($referencesForName['referenceName'] ?? null) !== $referenceName) {
-                        continue;
-                    }
-                    $targets = [];
-                    foreach ((array)($referencesForName['references'] ?? []) as $reference) {
-                        if (is_string($reference['target'] ?? null)) {
-                            $targets[] = $reference['target'];
-                        }
-                    }
-                    return $targets;
-                }
-            }
-            if ($type === 'NodeAggregateWithNodeWasCreated' && $this->sameCoordinates($payload['originDimensionSpacePoint'] ?? null, $origin)) {
-                foreach ((array)($payload['nodeReferences'] ?? []) as $referencesForName) {
-                    if (($referencesForName['referenceName'] ?? null) !== $referenceName) {
-                        continue;
-                    }
-                    $targets = [];
-                    foreach ((array)($referencesForName['references'] ?? []) as $reference) {
-                        if (is_string($reference['target'] ?? null)) {
-                            $targets[] = $reference['target'];
-                        }
-                    }
-                    return $targets;
-                }
-                return [];
-            }
-        }
-
-        if ($workspace->baseWorkspaceName === null || !is_array($origin)) {
-            return [];
-        }
-        try {
-            $dimensionSpacePoint = DimensionSpacePoint::fromArray($origin);
-            $subgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $this->getContentRepository()->getContentSubgraph(
-                $workspace->baseWorkspaceName,
-                $dimensionSpacePoint
-            );
-            $targets = [];
-            foreach ($subgraph->findReferences(NodeAggregateId::fromString($nodeId), FindReferencesFilter::create(referenceName: $referenceName)) as $reference) {
-                $targets[] = $reference->node->aggregateId->value;
-            }
-            return $targets;
-        } catch (\Throwable) {
-            return [];
-        }
-    }
-
-    /**
-     * The node type an aggregate had before the diffed event: an earlier type
-     * change or its creation in this stream, else what the base knows.
-     *
-     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
-     */
-    private function nodeTypeBefore(string $nodeId, array $beforeEvents, Workspace $workspace): ?string
-    {
-        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
-            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
-                continue;
-            }
-            if ($type === 'NodeAggregateTypeWasChanged' && is_string($payload['newNodeTypeName'] ?? null)) {
-                return $payload['newNodeTypeName'];
-            }
-            if ($type === 'NodeAggregateWithNodeWasCreated' && is_string($payload['nodeTypeName'] ?? null)) {
-                return $payload['nodeTypeName'];
-            }
-        }
-        if ($workspace->baseWorkspaceName === null) {
-            return null;
-        }
-        try {
-            return $this->getContentRepository()->getContentGraph($workspace->baseWorkspaceName)
-                ->findNodeAggregateById(NodeAggregateId::fromString($nodeId))?->nodeTypeName->value;
-        } catch (\Throwable) {
-            return null;
-        }
-    }
-
-    /**
-     * The node name an aggregate had before the diffed event.
-     *
-     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
-     */
-    private function nodeNameBefore(string $nodeId, array $beforeEvents, Workspace $workspace): ?string
-    {
-        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
-            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
-                continue;
-            }
-            if ($type === 'NodeAggregateNameWasChanged' && is_string($payload['newNodeName'] ?? null)) {
-                return $payload['newNodeName'];
-            }
-            if ($type === 'NodeAggregateWithNodeWasCreated') {
-                return is_string($payload['nodeName'] ?? null) ? $payload['nodeName'] : null;
-            }
-        }
-        if ($workspace->baseWorkspaceName === null) {
-            return null;
-        }
-        try {
-            return $this->getContentRepository()->getContentGraph($workspace->baseWorkspaceName)
-                ->findNodeAggregateById(NodeAggregateId::fromString($nodeId))?->nodeName?->value;
-        } catch (\Throwable) {
-            return null;
-        }
-    }
-
-    /**
-     * The parent an aggregate hung under before the diffed move: an earlier
-     * move or its creation in this stream, else the base workspace's parent.
-     *
-     * @param list<array{type: string, payload: array<string, mixed>}> $beforeEvents newest first
-     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
-     */
-    private function parentBefore(
-        string $nodeId,
-        ?array $coordinates,
-        array $beforeEvents,
-        Workspace $workspace,
-        array &$baseSubgraphs
-    ): ?string {
-        foreach ($beforeEvents as ['type' => $type, 'payload' => $payload]) {
-            if (($payload['nodeAggregateId'] ?? null) !== $nodeId) {
-                continue;
-            }
-            if ($type === 'NodeAggregateWasMoved' && is_string($payload['newParentNodeAggregateId'] ?? null)) {
-                return $payload['newParentNodeAggregateId'];
-            }
-            if ($type === 'NodeAggregateWithNodeWasCreated' && is_string($payload['parentNodeAggregateId'] ?? null)) {
-                return $payload['parentNodeAggregateId'];
-            }
-        }
-        if ($workspace->baseWorkspaceName === null || !is_array($coordinates)) {
-            return null;
-        }
-        try {
-            $dimensionSpacePoint = DimensionSpacePoint::fromArray($coordinates);
-            $subgraph = $baseSubgraphs[$dimensionSpacePoint->hash] ??= $this->getContentRepository()->getContentSubgraph(
-                $workspace->baseWorkspaceName,
-                $dimensionSpacePoint
-            );
-            return $subgraph->findParentNode(NodeAggregateId::fromString($nodeId))?->aggregateId->value;
-        } catch (\Throwable) {
-            return null;
-        }
-    }
-
-    /**
-     * Node ids as {id, label} pairs a human can read, resolved in the
-     * workspace (falling back to the base) in the given dimension.
-     *
-     * @param list<string> $nodeIds
-     * @param array<string, ContentSubgraphInterface> $subgraphs
-     * @param array<string, ContentSubgraphInterface> $baseSubgraphs
-     * @return list<array{id: string, label: ?string}>
-     */
-    private function describeNodes(
-        array $nodeIds,
-        ?array $coordinates,
-        Workspace $workspace,
-        array &$subgraphs,
-        array &$baseSubgraphs
-    ): array {
-        $described = [];
-        foreach ($nodeIds as $nodeId) {
-            $node = null;
-            if (is_array($coordinates)) {
-                [$node] = $this->resolveFeedEventNode(
-                    ['nodeAggregateId' => $nodeId, 'dimensionSpacePoints' => [$coordinates]],
-                    $workspace,
-                    $subgraphs,
-                    $baseSubgraphs
-                );
-            }
-            $described[] = [
-                'id' => $nodeId,
-                'label' => $node !== null ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node)) : null,
-            ];
-        }
-        return $described;
-    }
-
-    /** Dimension coordinates compare as unordered maps; null only equals null. */
-    private function sameCoordinates(mixed $a, mixed $b): bool
-    {
-        if (!is_array($a) || !is_array($b)) {
-            return $a === null && $b === null;
-        }
-        ksort($a);
-        ksort($b);
-        return $a == $b;
     }
 
     /**
@@ -1869,21 +930,14 @@ class WorkspacesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
 
-        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
-        if ($workspace === null) {
-            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
-        }
-        if ($this->serializeWorkspace($workspace) === null) {
-            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
-        }
+        $workspace = $this->requireReadableWorkspace($workspaceName);
         $user = $this->userService->getCurrentUser();
         if ($user === null) {
             // e.g. a client-credentials token: no user, no presence.
             $this->throwJsonStatus(403, 'no_user', 'Presence requires a user-bound authentication.');
         }
 
-        $body = json_decode((string)$this->request->getHttpRequest()->getBody(), true);
-        $body = is_array($body) ? $body : [];
+        $body = $this->requestBody();
 
         $userId = $user->getId()->value;
         // Cache entry identifiers only allow a narrow character set - hash
@@ -1924,6 +978,69 @@ class WorkspacesController extends AbstractApiController
     }
 
     /**
+     * The workspace by name, or a JSON 404/403: the shared preamble of every
+     * read resource - the workspace must exist and the account must have read
+     * permission on it.
+     */
+    private function requireReadableWorkspace(string $workspaceName): Workspace
+    {
+        $workspace = $this->requireWorkspaceObject($workspaceName);
+        if (!$this->workspaceSerializer->canRead($this->getContentRepositoryId(), $workspace->workspaceName)) {
+            $this->throwJsonStatus(403, 'access_denied', 'You have no read access to this workspace.');
+        }
+
+        return $workspace;
+    }
+
+    private function requireWorkspaceObject(string $workspaceName): Workspace
+    {
+        $workspace = $this->getContentRepository()->findWorkspaceByName(WorkspaceName::fromString($workspaceName));
+        if ($workspace === null) {
+            $this->throwJsonStatus(404, 'workspace_not_found', 'The workspace does not exist.');
+        }
+
+        return $workspace;
+    }
+
+    /** 403 unless the account may manage the workspace (owner, manager role, administrator). */
+    private function requireManagePermission(WorkspaceName $workspaceName): void
+    {
+        if (!$this->workspaceSerializer->permissions($this->getContentRepositoryId(), $workspaceName)->manage) {
+            $this->throwJsonStatus(403, 'access_denied', 'You are not allowed to manage this workspace.');
+        }
+    }
+
+    /** The request-scoped read context the history/diff services cache through. */
+    private function readContext(Workspace $workspace): WorkspaceReadContext
+    {
+        return new WorkspaceReadContext($this->getContentRepository(), $workspace, $this->nodeSerializer);
+    }
+
+    private function buildRoleSubject(string $subjectType, string $subject): WorkspaceRoleSubject
+    {
+        $type = WorkspaceRoleSubjectType::tryFrom($subjectType);
+        if ($type === null) {
+            $this->throwJsonStatus(400, 'invalid_subject_type', 'The subjectType must be USER or GROUP.');
+        }
+        if ($type === WorkspaceRoleSubjectType::USER) {
+            try {
+                $userId = UserId::fromString($subject);
+            } catch (\InvalidArgumentException) {
+                $this->throwJsonStatus(400, 'invalid_subject', 'The subject is not a valid user id.');
+            }
+            if ($this->userService->findUserById($userId) === null) {
+                $this->throwJsonStatus(400, 'invalid_subject', 'No user with this id exists.');
+            }
+        }
+
+        try {
+            return WorkspaceRoleSubject::create($type, $subject);
+        } catch (\InvalidArgumentException) {
+            $this->throwJsonStatus(400, 'invalid_subject', 'The subject is not valid.');
+        }
+    }
+
+    /**
      * The presence entries (who is editing in which workspace), see
      * Caches.yaml. Fetched from the manager instead of property-injected:
      * Flow's lazy property injection cannot initialize typed non-nullable
@@ -1936,99 +1053,6 @@ class WorkspacesController extends AbstractApiController
         assert($cache instanceof VariableFrontend);
 
         return $cache;
-    }
-
-    /**
-     * One change-feed event as clients consume it, or null for event types
-     * the feed does not surface. Payload fields are read from the raw event
-     * JSON - stable across event types without importing every event class.
-     *
-     * @return array<string, mixed>|null
-     */
-    private function serializeFeedEvent(EventEnvelope $envelope): ?array
-    {
-        $type = $envelope->event->type->value;
-        $kind = self::FEED_EVENT_KINDS[$type] ?? null;
-        if ($kind === null) {
-            return null;
-        }
-
-        $payload = json_decode($envelope->event->data->value, true);
-        $payload = is_array($payload) ? $payload : [];
-
-        // The dimension space points an event names, whatever it calls them -
-        // single points and sets alike. Clients treat an empty list as
-        // "affects every dimension".
-        $dimensionSpacePoints = [];
-        foreach (['originDimensionSpacePoint', 'coveredDimensionSpacePoint', 'dimensionSpacePoint', 'sourceOrigin', 'targetOrigin', 'specializationOrigin', 'generalizationOrigin', 'peerOrigin'] as $pointKey) {
-            if (is_array($payload[$pointKey] ?? null)) {
-                $dimensionSpacePoints[] = $payload[$pointKey];
-            }
-        }
-        foreach (['affectedDimensionSpacePoints', 'affectedOccupiedDimensionSpacePoints', 'affectedCoveredDimensionSpacePoints', 'affectedSourceOriginDimensionSpacePoints'] as $setKey) {
-            if (is_array($payload[$setKey] ?? null)) {
-                foreach ($payload[$setKey] as $point) {
-                    if (is_array($point)) {
-                        $dimensionSpacePoints[] = $point;
-                    }
-                }
-            }
-        }
-
-        return [
-            'sequenceNumber' => $envelope->sequenceNumber->value,
-            // The event's 0-based position within its content stream -
-            // comparable with a fork's versionOfSourceContentStream, which is
-            // how clients locate a workspace's branch point in its base.
-            'version' => $envelope->version->value,
-            'type' => $type,
-            'kind' => $kind,
-            'nodeAggregateId' => is_string($payload['nodeAggregateId'] ?? null)
-                ? $payload['nodeAggregateId']
-                : (is_string($payload['sourceNodeAggregateId'] ?? null) ? $payload['sourceNodeAggregateId'] : null),
-            // The collection a structural change happened inside, when the
-            // event knows it - lets clients refresh that subtree.
-            'parentNodeAggregateId' => is_string($payload['parentNodeAggregateId'] ?? null)
-                ? $payload['parentNodeAggregateId']
-                : (is_string($payload['newParentNodeAggregateId'] ?? null) ? $payload['newParentNodeAggregateId'] : null),
-            'dimensionSpacePoints' => $dimensionSpacePoints,
-            'initiatingUserId' => $envelope->event->metadata?->get('initiatingUserId'),
-            'recordedAt' => $envelope->recordedAt->format(\DateTimeInterface::ATOM),
-            // The originating command (short class name) and the moment it was
-            // handled, from the metadata the CR keeps for rebasing. Together
-            // with the user they identify one editing step: all events of one
-            // command share one initiatingTimestamp, and unlike the events'
-            // correlation id these survive a rebase/partial publish (which
-            // re-stamps correlation ids but never touches this metadata).
-            'command' => is_string($commandClass = $envelope->event->metadata?->get('commandClass'))
-                ? substr($commandClass, (int)strrpos($commandClass, '\\') + 1)
-                : null,
-            'initiatingTimestamp' => $envelope->event->metadata?->get('initiatingTimestamp'),
-        ];
-    }
-
-    /**
-     * The chain of document labels from the site down to (and including) the
-     * given document, e.g. ["Products", "Widgets", "Widget X"] - the path a
-     * reviewer reads to place a change. The site node is excluded (the review
-     * UI groups by site already); non-document ancestors are skipped.
-     *
-     * @return list<string>
-     */
-    private function documentBreadcrumb(Node $documentNode, ContentSubgraphInterface $subgraph): array
-    {
-        $ancestors = $subgraph->findAncestorNodes(
-            $documentNode->aggregateId,
-            FindAncestorNodesFilter::create(nodeTypes: 'Neos.Neos:Document')
-        );
-        $breadcrumb = [];
-        // findAncestorNodes yields nearest-first; reverse for site-to-here order.
-        foreach (array_reverse(iterator_to_array($ancestors)) as $ancestor) {
-            $breadcrumb[] = $this->plainTextLabel($this->nodeLabelGenerator->getLabel($ancestor));
-        }
-        $breadcrumb[] = $this->plainTextLabel($this->nodeLabelGenerator->getLabel($documentNode));
-
-        return $breadcrumb;
     }
 
     /**
@@ -2126,9 +1150,9 @@ class WorkspacesController extends AbstractApiController
                 'nodeAggregateId' => $nodeId,
                 // Human-readable labels + a navigable document address so the UI
                 // can name the conflict and jump to the affected page.
-                'nodeLabel' => $affectedNode !== null ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($affectedNode)) : null,
+                'nodeLabel' => $affectedNode !== null ? $this->nodeSerializer->label($affectedNode) : null,
                 'documentAggregateId' => $documentNode?->aggregateId->value,
-                'documentLabel' => $documentNode !== null ? $this->plainTextLabel($this->nodeLabelGenerator->getLabel($documentNode)) : null,
+                'documentLabel' => $documentNode !== null ? $this->nodeSerializer->label($documentNode) : null,
                 'documentAddress' => $documentNode !== null ? NodeAddressCodec::encode(NodeAddress::fromNode($documentNode)) : null,
                 'siteAggregateId' => $siteAggregateId,
                 'typeOfChange' => $this->conflictTypeOfChange($conflictingEvent->getEvent()),
@@ -2166,15 +1190,6 @@ class WorkspacesController extends AbstractApiController
         };
     }
 
-    /**
-     * The label generator may return HTML entities/tags; conflicts are shown as
-     * plain text, so decode and strip - mirroring NodeSerializer.
-     */
-    private function plainTextLabel(string $label): string
-    {
-        return trim(strip_tags(html_entity_decode($label, ENT_QUOTES | ENT_HTML5, 'UTF-8')));
-    }
-
     private function shortClassName(object $object): string
     {
         $class = $object::class;
@@ -2183,13 +1198,27 @@ class WorkspacesController extends AbstractApiController
     }
 
     /**
+     * The JSON request body, parsed once per request (the operation filter,
+     * the documents list and the presence beat all read it).
+     *
+     * @return array<string, mixed>
+     */
+    private function requestBody(): array
+    {
+        if ($this->parsedRequestBody === null) {
+            $body = json_decode((string)$this->request->getHttpRequest()->getBody(), true);
+            $this->parsedRequestBody = is_array($body) ? $body : [];
+        }
+
+        return $this->parsedRequestBody;
+    }
+
+    /**
      * @return array<string, string>
      */
     private function getOperationFilter(): array
     {
-        $body = json_decode((string)$this->request->getHttpRequest()->getBody(), true);
-
-        return is_array($body) ? array_filter($body, 'is_string') : [];
+        return array_filter($this->requestBody(), 'is_string');
     }
 
     /**
@@ -2201,60 +1230,11 @@ class WorkspacesController extends AbstractApiController
      */
     private function getOperationDocuments(): array
     {
-        $body = json_decode((string)$this->request->getHttpRequest()->getBody(), true);
-        if (!is_array($body) || !isset($body['documents']) || !is_array($body['documents'])) {
+        $documents = $this->requestBody()['documents'] ?? null;
+        if (!is_array($documents)) {
             return [];
         }
 
-        return array_values(array_filter($body['documents'], 'is_string'));
-    }
-
-    private function canWriteToWorkspace(WorkspaceName $workspaceName): bool
-    {
-        return $this->writePermissionCache[$workspaceName->value] ??= $this->authorizationService->getWorkspacePermissions(
-            $this->getContentRepositoryId(),
-            $workspaceName,
-            $this->securityContext->getRoles(),
-            $this->userService->getCurrentUser()?->getId()
-        )->write;
-    }
-
-    /**
-     * @return array<string, mixed>|null null if the account may not read the workspace
-     */
-    private function serializeWorkspace(Workspace $workspace): ?array
-    {
-        $permissions = $this->authorizationService->getWorkspacePermissions(
-            $this->getContentRepositoryId(),
-            $workspace->workspaceName,
-            $this->securityContext->getRoles(),
-            $this->userService->getCurrentUser()?->getId()
-        );
-        if (!$permissions->read) {
-            return null;
-        }
-
-        $metadata = $this->workspaceService->getWorkspaceMetadata($this->getContentRepositoryId(), $workspace->workspaceName);
-
-        return [
-            'name' => $workspace->workspaceName->value,
-            'baseWorkspace' => $workspace->baseWorkspaceName?->value,
-            'title' => $metadata->title->value,
-            'description' => $metadata->description->value,
-            'classification' => $metadata->classification->value,
-            'owner' => $metadata->ownerUserId?->value,
-            'hasPublishableChanges' => $workspace->hasPublishableChanges(),
-            'status' => $workspace->status->value,
-            'permissions' => [
-                'read' => $permissions->read,
-                'write' => $permissions->write,
-                'manage' => $permissions->manage,
-                // Publishing means writing to the base workspace - the same
-                // check the content repository applies to PublishWorkspace.
-                // false for root workspaces (there is nothing to publish to).
-                'publish' => $workspace->baseWorkspaceName !== null
-                    && $this->canWriteToWorkspace($workspace->baseWorkspaceName),
-            ],
-        ];
+        return array_values(array_filter($documents, 'is_string'));
     }
 }

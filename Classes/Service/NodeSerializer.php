@@ -68,6 +68,16 @@ class NodeSerializer
     }
 
     /**
+     * The canonical human-readable label of a node, as plain text - what every
+     * label field the API emits contains. Public: the workspace history/diff
+     * serialization names nodes with exactly this label.
+     */
+    public function label(Node $node): string
+    {
+        return $this->plainTextLabel($this->nodeLabelGenerator->getLabel($node));
+    }
+
+    /**
      * The label generator returns display text that may carry HTML entities
      * (e.g. a title "Tom &amp; Jerry") or stray markup. The client renders the
      * label as plain text, so decode entities to their glyphs and strip any

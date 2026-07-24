@@ -42,6 +42,10 @@ abstract class AbstractApiController extends ActionController
     #[Flow\InjectConfiguration(package: 'Medienreaktor.NeosApi', path: 'contentRepository')]
     protected string $contentRepositoryId;
 
+    private ?ContentRepository $contentRepository = null;
+
+    private ?ContentRepositoryId $resolvedContentRepositoryId = null;
+
     protected function initializeAction(): void
     {
         $this->response->setContentType('application/json');
@@ -49,12 +53,12 @@ abstract class AbstractApiController extends ActionController
 
     protected function getContentRepository(): ContentRepository
     {
-        return $this->contentRepositoryRegistry->get(ContentRepositoryId::fromString($this->contentRepositoryId));
+        return $this->contentRepository ??= $this->contentRepositoryRegistry->get($this->getContentRepositoryId());
     }
 
     protected function getContentRepositoryId(): ContentRepositoryId
     {
-        return ContentRepositoryId::fromString($this->contentRepositoryId);
+        return $this->resolvedContentRepositoryId ??= ContentRepositoryId::fromString($this->contentRepositoryId);
     }
 
     /**
