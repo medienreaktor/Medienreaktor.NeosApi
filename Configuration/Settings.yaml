@@ -19,8 +19,11 @@ Medienreaktor:
 
       # OAuth 2.1 dynamic client registration (RFC 7591). Public clients only
       # (MCP clients etc.); confidential clients are created via CLI.
+      # Disabled by default: the endpoint is unauthenticated and unlimited, so
+      # leaving it open in production invites anonymous client creation.
+      # Enable it deliberately (the Development context ships it enabled).
       dynamicClientRegistration:
-        enabled: true
+        enabled: false
 
       # Scopes this authorization server hands out. Requested scopes are
       # intersected with the client's allowed scopes; actual authorization is

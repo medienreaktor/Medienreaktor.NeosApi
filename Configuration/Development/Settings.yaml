@@ -1,0 +1,7 @@
+Medienreaktor:
+  NeosApi:
+    oauth:
+      # Registering MCP clients and other public clients on the fly is a
+      # development convenience; production must opt in explicitly.
+      dynamicClientRegistration:
+        enabled: true

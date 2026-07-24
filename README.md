@@ -78,6 +78,36 @@ Medienreaktor:
         'importer': 'importer@example.com'
 ```
 
+### Housekeeping
+
+Every issued token leaves a lifecycle record; prune expired ones periodically
+(e.g. via cron), and revoke active tokens when a client or account is
+compromised:
+
+```sh
+# delete expired token records (safe: an expired token stays dead)
+./flow neosapi:prunetokens
+
+# revoke all active tokens of a client and/or account, effective immediately
+./flow neosapi:revoketokens --client my-app
+./flow neosapi:revoketokens --account editor@example.com
+```
+
+### Dynamic client registration
+
+`POST /oauth/register` (RFC 7591) is **disabled by default** — it is an
+unauthenticated endpoint, so leaving it open in production invites anonymous
+client creation. The Development context enables it for local MCP-client
+onboarding; to offer it in production, opt in deliberately:
+
+```yaml
+Medienreaktor:
+  NeosApi:
+    oauth:
+      dynamicClientRegistration:
+        enabled: true
+```
+
 ## OAuth endpoints
 
 | Endpoint                                      | Purpose                                                          |
