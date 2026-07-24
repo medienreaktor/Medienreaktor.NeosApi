@@ -10,6 +10,9 @@ No GraphQL ceremony, no coupling to the legacy backend, no community-package dep
 - **Read API** over the ContentGraph (nodes, relations, search, sites,
   workspaces, node types, dimensions, data sources) plus out-of-band
   **HTML fragment rendering** through the real Fusion pipeline
+- **Change review** — pending changes per node and per document, net
+  document diffs against the base workspace, and the pending event history
+  since the branch point with per-event before/after detail
 - **Write API** for content repository commands (single + batch) plus use-case
   operations (publish / discard / rebase workspaces)
 - **Media API** for full asset management: assets, variants, tags, collections,
@@ -162,11 +165,34 @@ payloads.
 | `PATCH /api/workspaces/{name}`                | Update title and/or description (requires the manage permission)                           |
 | `DELETE /api/workspaces/{name}`               | Delete a workspace incl. metadata and role assignments; pending changes block deletion unless `{"force": true}` |
 | `GET /api/workspaces/{name}/changes`          | Pending changes (per node)                                                                 |
-| `GET /api/workspaces/{name}/document-changes` | Pending changes aggregated per document                                                    |
+| `GET /api/workspaces/{name}/document-changes` | Pending changes aggregated per document (counts distinct changed nodes)                    |
+| `GET /api/workspaces/{name}/document-diff`    | Net diff of one document against the base workspace (`?documentAggregateId=`)              |
+| `GET /api/workspaces/{name}/pending-events`   | The workspace's pending history: every event since it forked off its base                  |
+| `GET /api/workspaces/{name}/pending-events/diff` | Before/after detail for a slice of the pending history (`?from=`, `?to=`)               |
 | `POST /api/workspaces/{name}/publish`         | Publish all changes; body `{"site": "<id>"}` or `{"document": "<id>"}` for partial publish |
 | `POST /api/workspaces/{name}/discard`         | Discard (same filters)                                                                     |
 | `POST /api/workspaces/{name}/rebase`          | Rebase (body `{"strategy": "force"}` optional)                                             |
 | `POST /api/workspaces/{name}/base-workspace`  | Change the base workspace                                                                  |
+
+Two complementary views answer "what changed here":
+
+- **`document-diff`** compares **state**: each changed node's current
+  properties, references, type, name, parent and visibility against the base
+  workspace's version — what publishing the document would actually apply.
+  Five edits of the same text arrive squashed into one old → new row.
+- **`pending-events`** replays **history**: the events recorded in the
+  workspace's current content stream, which exists exactly since the last
+  publish/discard/rebase forked it off the base — so this is every change
+  since the branch point, oldest first, enriched with the affected node's
+  label/type/icon and the initiating user. The response includes the fork
+  point (`forkedFrom`: base content stream + version — base events above that
+  version are what makes the workspace `OUTDATED`) and returns the newest 100
+  events (`truncated: true` when older ones were dropped). Consecutive events
+  of one command form a contiguous sequence-number range; feed such a range to
+  **`pending-events/diff`** (span < 200) to get per-property old/new values,
+  old/new reference targets, node type, parent and visibility per event. "Old"
+  values are resolved by scanning the same stream backwards, falling back to
+  what the base workspace holds now.
 
 Role assignments control who may view, collaborate in or manage a workspace.
 All three endpoints require the manage permission (owner, manager role or
@@ -209,7 +235,7 @@ Presence is deliberately ephemeral cache state and requires a user-bound token
 
 | Endpoint                                           | Description                                                                                                                   |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/nodetypes` / `GET /api/nodetypes/{name}` | Node type schema                                                                                                              |
+| `GET /api/nodetypes` / `GET /api/nodetypes/{name}` | Node type schema (`?includeProperties=1` on the listing also serializes each type's merged property + reference declarations) |
 | `GET /api/dimensions`                              | Dimension config + allowed dimension space points                                                                             |
 | `GET /api/datasources/{identifier}`                | Query a `DataSourceInterface` implementation (`?node=` node address, additional query params are passed through as arguments) |
 
