@@ -53,7 +53,7 @@ class NodesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
         $address = $this->decodeNodeAddress($nodeAddress);
-        $subgraph = $this->getSubgraph($address, $this->wantsFrontendVisibility());
+        $subgraph = $this->getSubgraph($address, $this->wantsFrontendVisibility(), $this->wantsDeletedNodes());
 
         $node = $subgraph->findNodeById($address->aggregateId);
         if ($node === null) {
@@ -74,7 +74,7 @@ class NodesController extends AbstractApiController
     {
         $this->requireScope('neos.read');
         $address = $this->decodeNodeAddress($nodeAddress);
-        $subgraph = $this->getSubgraph($address, $this->wantsFrontendVisibility());
+        $subgraph = $this->getSubgraph($address, $this->wantsFrontendVisibility(), $this->wantsDeletedNodes());
 
         $nodeTypes = $this->getStringQueryParam('nodeTypes');
         $pagination = $this->getPagination();
@@ -220,7 +220,9 @@ class NodesController extends AbstractApiController
             $this->throwJsonStatus(400, 'invalid_rendering_mode', sprintf('Unknown rendering mode "%s".', $modeName));
         }
 
-        $subgraph = $this->getSubgraph($address, !$renderingMode->isEdit);
+        // ?includeDeleted=1 renders a DELETED page (what it looked like), the
+        // same opt-in the node reads take - see wantsDeletedNodes().
+        $subgraph = $this->getSubgraph($address, !$renderingMode->isEdit, $this->wantsDeletedNodes());
         $node = $subgraph->findNodeById($address->aggregateId);
         if ($node === null) {
             $this->throwJsonStatus(404, 'node_not_found', 'The node does not exist in this subgraph or is not visible for this account.');
@@ -315,6 +317,17 @@ class NodesController extends AbstractApiController
     private function wantsFrontendVisibility(): bool
     {
         return $this->getStringQueryParam('visibility') === 'frontend';
+    }
+
+    /**
+     * ?includeDeleted=1 - deliberately address a deleted (soft removed) node
+     * or read inside one, e.g. to show a trash entry or preview a page before
+     * restoring it. Deleted nodes are invisible everywhere else, so a client
+     * that does not ask never sees them.
+     */
+    private function wantsDeletedNodes(): bool
+    {
+        return $this->getStringQueryParam('includeDeleted') !== null;
     }
 
     private function getStringQueryParam(string $name): ?string

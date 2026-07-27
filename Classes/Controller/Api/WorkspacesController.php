@@ -17,6 +17,7 @@ use Neos\ContentRepository\Core\SharedModel\Node\NodeAddress;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\Workspace;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
+use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceStatus;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Mvc\Exception\StopActionException;
 use Neos\Neos\Domain\Model\UserId;
@@ -37,6 +38,7 @@ use Medienreaktor\NeosApi\Service\WorkspaceEventFeedFactory;
 use Medienreaktor\NeosApi\Service\WorkspaceHistoryService;
 use Medienreaktor\NeosApi\Service\WorkspaceReadContext;
 use Medienreaktor\NeosApi\Service\WorkspaceSerializer;
+use Medienreaktor\NeosApi\Service\WorkspaceTrashService;
 use Neos\Cache\Frontend\VariableFrontend;
 use Neos\Flow\Cache\CacheManager;
 use Neos\Neos\Fusion\Cache\CacheFlushingStrategy;
@@ -90,6 +92,9 @@ class WorkspacesController extends AbstractApiController
 
     #[Flow\Inject]
     protected WorkspaceDiffService $workspaceDiffService;
+
+    #[Flow\Inject]
+    protected WorkspaceTrashService $workspaceTrashService;
 
     /** Seconds a presence heartbeat stays valid; clients beat every ~5s. */
     private const PRESENCE_LIFETIME = 30;
@@ -412,6 +417,79 @@ class WorkspacesController extends AbstractApiController
             'baseWorkspace' => $workspace->baseWorkspaceName?->value,
             'documentAggregateId' => $documentAggregateId,
             'nodes' => $nodes,
+        ]);
+    }
+
+    /**
+     * The workspace's trash bin: what was deleted in it, newest first.
+     *
+     * Deleting is a soft removal, so a deleted node is intact until the
+     * deletion is published and the content repository's garbage collector
+     * erases it in live - until then this lists it with everything needed to
+     * recognise it (label, type, icon, breadcrumb, the dimensions it was
+     * deleted in, when and by whom) and to warn about what a restore brings
+     * back with it. `isDocument` separates deleted pages from deleted content
+     * elements, which share the resource.
+     *
+     * `status` mirrors the workspace resource: restoring requires an
+     * UP_TO_DATE workspace (see restoreFromTrashAction), so clients can offer
+     * a synchronize instead of a restore that would be refused.
+     */
+    public function trashAction(string $workspaceName): string
+    {
+        $this->requireScope('neos.read');
+
+        $workspace = $this->requireReadableWorkspace($workspaceName);
+        $trash = $this->workspaceTrashService->listItems($this->readContext($workspace));
+
+        return $this->json([
+            'workspace' => $workspace->workspaceName->value,
+            'status' => $workspace->status->value,
+            'items' => $trash['items'],
+            // true when more was deleted than this resource enriches at once.
+            'truncated' => $trash['truncated'],
+        ]);
+    }
+
+    /**
+     * Restore a deleted node: it becomes part of the workspace's content again,
+     * together with any deleted ancestor it lives inside (restoring only the
+     * node would leave it invisible in a deleted parent).
+     *
+     * Requires an UP_TO_DATE workspace, like the classic Workspaces module:
+     * an outdated workspace may not know about a hard removal already published
+     * in its base, and restoring into that state produces a node the next
+     * rebase drops again. Synchronize first.
+     */
+    #[Flow\SkipCsrfProtection]
+    public function restoreFromTrashAction(string $workspaceName, string $nodeAggregateId): string
+    {
+        $this->requireScope('neos.write');
+
+        $workspace = $this->requireWorkspaceObject($workspaceName);
+        $this->requireWritePermission($workspace->workspaceName);
+        if ($workspace->status !== WorkspaceStatus::UP_TO_DATE) {
+            $this->throwJsonStatus(409, 'workspace_outdated', 'Synchronize the workspace before restoring.');
+        }
+        try {
+            $aggregateId = NodeAggregateId::fromString($nodeAggregateId);
+        } catch (\InvalidArgumentException $exception) {
+            $this->throwJsonStatus(400, 'invalid_node_aggregate_id', $exception->getMessage());
+        }
+
+        try {
+            $restored = $this->workspaceTrashService->restore($this->readContext($workspace), $aggregateId);
+        } catch (AccessDenied $exception) {
+            $this->throwJsonStatus(403, 'access_denied', $exception->getMessage());
+        }
+        if ($restored === []) {
+            $this->throwJsonStatus(409, 'not_deleted', 'The node is not deleted in this workspace.');
+        }
+
+        return $this->json([
+            'workspace' => $workspace->workspaceName->value,
+            // The node itself first, then the ancestors restored along with it.
+            'restored' => $restored,
         ]);
     }
 
@@ -1011,6 +1089,14 @@ class WorkspacesController extends AbstractApiController
         }
 
         return $workspace;
+    }
+
+    /** 403 unless the account may write in the workspace (its own, or a shared one it collaborates in). */
+    private function requireWritePermission(WorkspaceName $workspaceName): void
+    {
+        if (!$this->workspaceSerializer->permissions($this->getContentRepositoryId(), $workspaceName)->write) {
+            $this->throwJsonStatus(403, 'access_denied', 'You are not allowed to change this workspace.');
+        }
     }
 
     /** 403 unless the account may manage the workspace (owner, manager role, administrator). */

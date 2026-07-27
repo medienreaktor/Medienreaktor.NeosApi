@@ -326,6 +326,26 @@
   httpMethods: ['GET']
 
 -
+  name: 'API: Workspace trash bin'
+  uriPattern: 'api/workspaces/{workspaceName}/trash'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'trash'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Workspace trash restore'
+  uriPattern: 'api/workspaces/{workspaceName}/trash/{nodeAggregateId}/restore'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Workspaces'
+    '@action': 'restoreFromTrash'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
   name: 'API: Workspace publish'
   uriPattern: 'api/workspaces/{workspaceName}/publish'
   defaults:

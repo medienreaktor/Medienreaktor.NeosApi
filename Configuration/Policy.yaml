@@ -103,11 +103,18 @@ privilegeTargets:
 
     # Inspect workspaces and their pending changes/history.
     'Medienreaktor.NeosApi:Api.Workspaces.Read':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show|changes|documentChanges|documentDiff|pendingEvents|pendingEventsDiff)Action())'
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(index|show|changes|documentChanges|documentDiff|pendingEvents|pendingEventsDiff|trash)Action())'
 
     # Publish, discard, rebase a workspace and change its base workspace.
     'Medienreaktor.NeosApi:Api.Workspaces.Publish':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->(publish|discard|rebase|changeBaseWorkspace)Action())'
+
+    # Restore a node deleted in a workspace (undo a soft removal). A content
+    # write, so it is a feature of its own rather than part of the reads;
+    # write access on the workspace is checked in the controller and again by
+    # the content repository when it handles the untag command.
+    'Medienreaktor.NeosApi:Api.Workspaces.Restore':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\WorkspacesController->restoreFromTrashAction())'
 
     # Collaboration: tail a workspace's change feed and exchange presence
     # heartbeats. Both re-check read access on the workspace themselves.
@@ -171,6 +178,9 @@ roles:
         permission: GRANT
       -
         privilegeTarget: 'Medienreaktor.NeosApi:Api.Workspaces.Publish'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Workspaces.Restore'
         permission: GRANT
       -
         privilegeTarget: 'Medienreaktor.NeosApi:Api.Workspaces.Collaboration'

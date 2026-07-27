@@ -203,6 +203,27 @@ payloads.
 | `POST /api/workspaces/{name}/discard`         | Discard (same filters)                                                                     |
 | `POST /api/workspaces/{name}/rebase`          | Rebase (body `{"strategy": "force"}` optional)                                             |
 | `POST /api/workspaces/{name}/base-workspace`  | Change the base workspace                                                                  |
+| `GET /api/workspaces/{name}/trash`            | The workspace's trash bin: what was deleted in it, newest first                            |
+| `POST /api/workspaces/{name}/trash/{nodeAggregateId}/restore` | Restore a deleted node (and any deleted ancestor it lives inside)           |
+
+Deleting is a soft removal (see *Commands* above), so a deleted node is intact
+until the deletion is published and the content repository erases it in live.
+Reads normally pretend a deleted node does not exist. `?includeDeleted=1` on
+the node reads (`/api/nodes/{nodeAddress}`, its relations and `/render`) opts
+into one deliberately — how a client shows a trash entry, or renders a deleted
+page before restoring it. Only the "removed" tag is dropped from the account's
+own visibility constraints, so nothing else it may not read becomes visible.
+
+That window is the **trash bin**: `trash` lists the deleted nodes with what it
+takes to recognise them (label, node type, icon, breadcrumb, the dimensions they
+were deleted in, when and by whom) plus `isDocument` — deleted pages and deleted
+content elements share the resource — plus `nodeAddress` (readable with
+`?includeDeleted=1`, so a client can show the page itself) and
+`restoresAncestors`, the deleted ancestors a restore would bring back too. Restoring untags the node in all its
+variants, along with those ancestors, or it would stay invisible inside a
+deleted parent. It requires an `UP_TO_DATE` workspace (409 `workspace_outdated`
+otherwise, so synchronize first) and write access; a node that is not deleted
+answers 409 `not_deleted`.
 
 Two complementary views answer "what changed here":
 
