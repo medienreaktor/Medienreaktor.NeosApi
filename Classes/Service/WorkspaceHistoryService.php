@@ -106,6 +106,10 @@ class WorkspaceHistoryService
                 ? $payload['parentNodeAggregateId']
                 : (is_string($payload['newParentNodeAggregateId'] ?? null) ? $payload['newParentNodeAggregateId'] : null),
             'dimensionSpacePoints' => $dimensionSpacePoints,
+            // Which subtree tag a Subtree(Un)Tagged event carries: the
+            // difference between hiding a node ("disabled") and deleting it
+            // ("removed" - a soft removal) is one event type, two user actions.
+            'tag' => is_string($payload['tag'] ?? null) ? $payload['tag'] : null,
             'initiatingUserId' => $envelope->event->metadata?->get('initiatingUserId'),
             'recordedAt' => $envelope->recordedAt->format(\DateTimeInterface::ATOM),
             // The originating command (short class name) and the moment it was

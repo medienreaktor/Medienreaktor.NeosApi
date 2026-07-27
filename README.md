@@ -283,6 +283,15 @@ the commands controller dispatches it to the `NodeDuplicationService` while
 keeping the same envelope; pin the copy root's id via
 `nodeAggregateIdMapping` to address the copy afterwards.
 
+**Deleting nodes:** use `TagSubtree` with `{"tag": "removed"}`, the soft
+removal Neos performs in a non-live workspace. The node stays in the graph but
+is excluded from every read, so the deletion is a reviewable pending change of
+a node that can still be named, published or discarded per document — and
+publishing lets the content repository hard-remove it in live once no other
+workspace needs it. `RemoveNodeAggregate` (a hard removal) remains available
+and is scoped to the deleted node's closest surviving document, but its change
+cannot name what it removed.
+
 ### Media
 
 | Endpoint                                                                      | Description                                                                                                 |

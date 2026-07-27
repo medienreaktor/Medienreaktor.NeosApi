@@ -10,8 +10,11 @@ use Neos\ContentRepository\Core\NodeType\NodeTypeName;
 use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
+use Neos\ContentRepository\Core\Projection\ContentGraph\VisibilityConstraints;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\Workspace;
+use Neos\Neos\Domain\SubtreeTagging\NeosSubtreeTag;
+use Neos\Neos\PendingChangesProjection\Change;
 
 /**
  * Per-request read context for one workspace: caches every repeated lookup the
@@ -45,6 +48,9 @@ final class WorkspaceReadContext
     /** @var array<string, array<string, mixed>|null> */
     private array $nodeTypeConfigurations = [];
 
+    /** The account's visibility constraints with soft removals made visible. */
+    private ?VisibilityConstraints $visibilityConstraints = null;
+
     public function __construct(
         public readonly ContentRepository $contentRepository,
         public readonly Workspace $workspace,
@@ -54,10 +60,9 @@ final class WorkspaceReadContext
 
     public function subgraph(DimensionSpacePoint $dimensionSpacePoint): ContentSubgraphInterface
     {
-        return $this->subgraphs[$dimensionSpacePoint->hash] ??= $this->contentRepository->getContentSubgraph(
-            $this->workspace->workspaceName,
-            $dimensionSpacePoint
-        );
+        return $this->subgraphs[$dimensionSpacePoint->hash] ??= $this->contentRepository
+            ->getContentGraph($this->workspace->workspaceName)
+            ->getSubgraph($dimensionSpacePoint, $this->visibilityConstraints($dimensionSpacePoint));
     }
 
     /** The base workspace's subgraph, or null for a root workspace. */
@@ -67,9 +72,32 @@ final class WorkspaceReadContext
             return null;
         }
 
-        return $this->baseSubgraphs[$dimensionSpacePoint->hash] ??= $this->contentRepository->getContentSubgraph(
-            $this->workspace->baseWorkspaceName,
-            $dimensionSpacePoint
+        return $this->baseSubgraphs[$dimensionSpacePoint->hash] ??= $this->contentRepository
+            ->getContentGraph($this->workspace->baseWorkspaceName)
+            ->getSubgraph($dimensionSpacePoint, $this->visibilityConstraints($dimensionSpacePoint));
+    }
+
+    /**
+     * Deleting is a SOFT removal in Neos: the node keeps existing, tagged
+     * "removed", until publishing lets the garbage collector turn it into a
+     * hard removal in live. Those nodes are excluded from the default backend
+     * constraints - which is right everywhere except here: a change listing
+     * that cannot resolve the node it reports has nothing to show but a raw
+     * id, and it would attribute the change to a different document than the
+     * content repository does when publishing it (which resolves soft removals
+     * too, see WorkspacePublishingService::isChangePublishableWithinAncestorScope).
+     * So the change resources drop the "removed" tag from the account's own
+     * constraints and keep everything else - node-type read privileges stay
+     * enforced, unlike with VisibilityConstraints::createEmpty().
+     */
+    private function visibilityConstraints(DimensionSpacePoint $dimensionSpacePoint): VisibilityConstraints
+    {
+        return $this->visibilityConstraints ??= VisibilityConstraints::excludeSubtreeTags(
+            $this->contentRepository
+                ->getContentSubgraph($this->workspace->workspaceName, $dimensionSpacePoint)
+                ->getVisibilityConstraints()
+                ->excludedSubtreeTags
+                ->without(NeosSubtreeTag::removed())
         );
     }
 
@@ -132,13 +160,14 @@ final class WorkspaceReadContext
     }
 
     /**
-     * The containing document and site of a changed node, resolved in the
-     * workspace with the base-workspace fallback for removed nodes - the
-     * shared resolution of the changes, document-changes and review resources.
-     * A node removed in this workspace is gone from its subgraph, but still
-     * exists in the base; resolving there keeps a deletion attributed to its
-     * document and site (a base-resolved document is display-only, not
-     * navigable - hence the inWorkspace flag).
+     * The containing document and site of a node, resolved in the workspace
+     * with a base-workspace fallback - the shared resolution of the changes,
+     * document-changes and review resources. Soft removals resolve in the
+     * workspace like anything else (see visibilityConstraints()); the fallback
+     * is for HARD removals, where the node is gone from the workspace but still
+     * exists in the base - resolving there keeps such a deletion attributed to
+     * a document and site instead of dropping it (a base-resolved document is
+     * display-only, not navigable - hence the inWorkspace flag).
      *
      * @return array{document: ?Node, site: ?Node, inWorkspace: bool}
      */
@@ -153,6 +182,37 @@ final class WorkspaceReadContext
         }
 
         return ['document' => $document, 'site' => $site, 'inWorkspace' => $inWorkspace];
+    }
+
+    /**
+     * The document and site a PENDING CHANGE belongs to - the bucket every
+     * change resource groups by, and the one publish/discard scoped to a
+     * document acts on.
+     *
+     * Resolved from the same anchor the content repository uses when it scopes
+     * a publish (see WorkspacePublishingService::isChangePublishableWithinAncestorScope):
+     * the legacy removal attachment point when the change carries one,
+     * the changed node otherwise. Only hard removals (RemoveNodeAggregate)
+     * carry an attachment point, and it names a SURVIVING ancestor precisely
+     * because the removed node itself is gone - so a hard removal is attributed
+     * to the document that outlived it. Anything else, soft removals included,
+     * resolves through the node itself. Grouping by anything else would list
+     * changes under a document that publishing them does not accept.
+     *
+     * @return array{document: ?Node, site: ?Node, inWorkspace: bool}
+     */
+    public function changeDocumentAndSite(Change $change, DimensionSpacePoint $dimensionSpacePoint): array
+    {
+        return $this->closestDocumentAndSite(
+            $change->getLegacyRemovalAttachmentPoint() ?? $change->nodeAggregateId,
+            $dimensionSpacePoint
+        );
+    }
+
+    /** Whether the node is soft removed (deleted, pending publication). */
+    public function isSoftRemoved(Node $node): bool
+    {
+        return $node->tags->contain(NeosSubtreeTag::removed());
     }
 
     /** The canonical plain-text node label (see NodeSerializer::label()). */
