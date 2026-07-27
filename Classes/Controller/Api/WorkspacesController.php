@@ -341,6 +341,11 @@ class WorkspacesController extends AbstractApiController
      * the document-changes listing counts), deduplicated per node VARIANT:
      * the projection fans rows out per covered dimension, but rows resolving
      * to the same origin variant describe one and the same difference.
+     *
+     * A node's `status` is "created", "removed", "moved", "changed" - or
+     * "variant" for a dimension variant added on top of content the base
+     * workspace already has, which the projection alone cannot tell from a
+     * creation (see below).
      */
     public function documentDiffAction(string $workspaceName, string $documentAggregateId): string
     {
@@ -385,9 +390,24 @@ class WorkspacesController extends AbstractApiController
             }
             $seenVariants[$variantKey] = true;
 
-            $status = $change->deleted
-                ? 'removed'
-                : ($change->created ? 'created' : ($change->moved ? 'moved' : 'changed'));
+            // Neos' pending-changes projection marks a created node aggregate
+            // and a created dimension VARIANT of an existing one the same way
+            // (see ChangeProjection::whenNodePeerVariantWasCreated and its
+            // siblings). They are told apart here by what the base workspace
+            // holds: an aggregate that already exists there cannot have been
+            // created in this workspace - what was added is a variant of it.
+            // Coverage makes the per-dimension read useless for this (a
+            // specialization's base subgraph resolves the generalization it
+            // specializes), so the question goes to the whole graph.
+            $isVariant = $change->created
+                && $context->baseContentGraph()?->findNodeAggregateById($nodeId) !== null;
+            $status = match (true) {
+                $change->deleted => 'removed',
+                $isVariant => 'variant',
+                $change->created => 'created',
+                $change->moved => 'moved',
+                default => 'changed',
+            };
             // A removal needs no rows - the status says it all, and a page
             // created and then deleted again would otherwise list every
             // property of a node that will never exist in the base.

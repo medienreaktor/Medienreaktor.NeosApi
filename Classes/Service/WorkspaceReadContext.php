@@ -54,6 +54,8 @@ final class WorkspaceReadContext
 
     private ?ContentGraphInterface $contentGraph = null;
 
+    private ?ContentGraphInterface $baseContentGraph = null;
+
     public function __construct(
         public readonly ContentRepository $contentRepository,
         public readonly Workspace $workspace,
@@ -78,15 +80,31 @@ final class WorkspaceReadContext
             ->getSubgraph($dimensionSpacePoint, $this->visibilityConstraints($dimensionSpacePoint));
     }
 
-    /** The base workspace's subgraph, or null for a root workspace. */
-    public function baseSubgraph(DimensionSpacePoint $dimensionSpacePoint): ?ContentSubgraphInterface
+    /**
+     * The base workspace's content graph - dimension-independent lookups in
+     * what this workspace publishes to, e.g. "does this node aggregate exist
+     * there at all". null for a root workspace (nothing underneath it).
+     * Cached like the own graph, for the same reason.
+     */
+    public function baseContentGraph(): ?ContentGraphInterface
     {
         if ($this->workspace->baseWorkspaceName === null) {
             return null;
         }
 
-        return $this->baseSubgraphs[$dimensionSpacePoint->hash] ??= $this->contentRepository
-            ->getContentGraph($this->workspace->baseWorkspaceName)
+        return $this->baseContentGraph ??= $this->contentRepository
+            ->getContentGraph($this->workspace->baseWorkspaceName);
+    }
+
+    /** The base workspace's subgraph, or null for a root workspace. */
+    public function baseSubgraph(DimensionSpacePoint $dimensionSpacePoint): ?ContentSubgraphInterface
+    {
+        $baseContentGraph = $this->baseContentGraph();
+        if ($baseContentGraph === null) {
+            return null;
+        }
+
+        return $this->baseSubgraphs[$dimensionSpacePoint->hash] ??= $baseContentGraph
             ->getSubgraph($dimensionSpacePoint, $this->visibilityConstraints($dimensionSpacePoint));
     }
 
