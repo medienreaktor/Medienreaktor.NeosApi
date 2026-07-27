@@ -6,6 +6,7 @@ namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Neos\ContentRepository\Core\EventStore\EventInterface;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
+use Neos\ContentRepository\Core\Feature\SubtreeTagging\Event\SubtreeWasTagged;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\ConflictingEvents;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Dto\RebaseErrorHandlingStrategy;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\PartialWorkspaceRebaseFailed;
@@ -171,20 +172,17 @@ class WorkspacesController extends AbstractApiController
             // Resolve the containing document and site, so tree UIs can mark
             // documents whose content (not just the document itself) has
             // changes, and clients can scope publish/discard to one site.
-            // (The change's removal attachment point is not reliably
-            // populated, so the resolution does not depend on it.)
             $documentNode = null;
             $siteNode = null;
             if ($change->originDimensionSpacePoint !== null) {
-                $resolved = $context->closestDocumentAndSite(
-                    $change->nodeAggregateId,
+                $resolved = $context->changeDocumentAndSite(
+                    $change,
                     $change->originDimensionSpacePoint->toDimensionSpacePoint()
                 );
                 $documentNode = $resolved['document'];
                 $siteNode = $resolved['site'];
             }
-            $documentAggregateId = $documentNode?->aggregateId->value
-                ?? $change->getLegacyRemovalAttachmentPoint()?->value;
+            $documentAggregateId = $documentNode?->aggregateId->value;
             $siteAggregateId = $siteNode?->aggregateId->value;
 
             $changes[] = [
@@ -244,12 +242,14 @@ class WorkspacesController extends AbstractApiController
             $documentSubgraph = null;
             if ($change->originDimensionSpacePoint !== null) {
                 $dimensionSpacePoint = $change->originDimensionSpacePoint->toDimensionSpacePoint();
-                // Shared document/site resolution incl. the base-workspace
-                // fallback for removed nodes: without it a deleted page would
-                // never appear in the review list. A base-resolved document is
-                // display-only (label/icon/breadcrumb) - not navigable, hence
-                // no subgraph (and a null address below).
-                $resolved = $context->closestDocumentAndSite($change->nodeAggregateId, $dimensionSpacePoint);
+                // Shared document/site resolution: the anchor the content
+                // repository itself scopes a publish by, plus a base-workspace
+                // fallback for hard-removed nodes that named no surviving
+                // ancestor - without it such a deletion would vanish from the
+                // review list. A base-resolved document is display-only
+                // (label/icon/breadcrumb) - not navigable, hence no subgraph
+                // (and a null address below).
+                $resolved = $context->changeDocumentAndSite($change, $dimensionSpacePoint);
                 $documentNode = $resolved['document'];
                 $siteNode = $resolved['site'];
                 if ($documentNode !== null && $resolved['inWorkspace']) {
@@ -257,10 +257,12 @@ class WorkspacesController extends AbstractApiController
                 }
             }
 
-            $documentId = $documentNode?->aggregateId->value
-                ?? $change->getLegacyRemovalAttachmentPoint()?->value;
-            // A change we cannot attribute to any document (no origin, no
-            // removal attachment point) - skip rather than invent a bucket.
+            $documentId = $documentNode?->aggregateId->value;
+            // A change no document can be resolved for: no origin dimension, or
+            // a hard removal of a node that neither named a surviving ancestor
+            // nor exists in the base any more. The content repository cannot
+            // scope such a change to a document either (only a full publish or
+            // discard covers it), so there is no bucket to invent here.
             if ($documentId === null) {
                 continue;
             }
@@ -268,20 +270,23 @@ class WorkspacesController extends AbstractApiController
             if (!isset($documents[$documentId])) {
                 $documents[$documentId] = [
                     'documentAggregateId' => $documentId,
-                    // Only workspace-resolved documents are navigable; a deleted
-                    // (base-resolved) one gets a null address.
+                    // Only workspace-resolved documents are navigable - and a
+                    // soft-removed one is not: it is deleted as far as every
+                    // other resource is concerned. Base-resolved documents
+                    // (display-only) get a null address as well.
                     'documentAddress' => $documentSubgraph !== null && $documentNode !== null
+                        && !$context->isSoftRemoved($documentNode)
                         ? NodeAddressCodec::encode(NodeAddress::fromNode($documentNode))
                         : null,
                     'siteAggregateId' => $siteNode?->aggregateId->value,
                     'siteLabel' => $siteNode !== null ? $context->label($siteNode) : null,
-                    'label' => $documentNode !== null ? $context->label($documentNode) : $documentId,
-                    'nodeType' => $documentNode?->nodeTypeName->value,
-                    'icon' => $documentNode !== null ? $context->icon($documentNode->nodeTypeName) : null,
-                    'breadcrumb' => $documentNode !== null && $documentSubgraph !== null
+                    'label' => $context->label($documentNode),
+                    'nodeType' => $documentNode->nodeTypeName->value,
+                    'icon' => $context->icon($documentNode->nodeTypeName),
+                    'breadcrumb' => $documentSubgraph !== null
                         ? $this->nodeSerializer->breadcrumb($documentNode, $documentSubgraph)
                         : [],
-                    'hidden' => $documentNode?->tags->contain(NeosSubtreeTag::disabled()) ?? false,
+                    'hidden' => $documentNode->tags->contain(NeosSubtreeTag::disabled()),
                     'created' => false,
                     'changed' => false,
                     'moved' => false,
@@ -296,13 +301,15 @@ class WorkspacesController extends AbstractApiController
             }
             // The document node's own change gives the page-level verbs; any
             // change on a descendant is content that changed within the page.
-            if ($documentNode !== null && $change->nodeAggregateId->equals($documentNode->aggregateId)) {
-                $documents[$documentId]['created'] = $change->created;
-                $documents[$documentId]['moved'] = $change->moved;
-                $documents[$documentId]['deleted'] = $change->deleted;
-                if ($change->changed) {
-                    $documents[$documentId]['changed'] = true;
-                }
+            // OR-ed, never assigned: the projection keeps one row per node AND
+            // dimension, and the verbs differ between them (a page created in
+            // one dimension and then deleted carries "created" only on the row
+            // of its origin, "deleted" on every covered one).
+            if ($change->nodeAggregateId->equals($documentNode->aggregateId)) {
+                $documents[$documentId]['created'] = $documents[$documentId]['created'] || $change->created;
+                $documents[$documentId]['moved'] = $documents[$documentId]['moved'] || $change->moved;
+                $documents[$documentId]['deleted'] = $documents[$documentId]['deleted'] || $change->deleted;
+                $documents[$documentId]['changed'] = $documents[$documentId]['changed'] || $change->changed;
             } else {
                 $documents[$documentId]['changed'] = true;
             }
@@ -355,13 +362,11 @@ class WorkspacesController extends AbstractApiController
                 continue;
             }
 
-            // Belongs to the requested document? Removed nodes resolve their
-            // document in the base (same fallback the listing uses).
-            $documentNode = $wsNode !== null
-                ? $context->closestNode($nodeId, $dimensionSpacePoint, 'Neos.Neos:Document')
-                : $context->closestNode($nodeId, $dimensionSpacePoint, 'Neos.Neos:Document', inBase: true);
-            $documentId = $documentNode?->aggregateId->value
-                ?? $change->getLegacyRemovalAttachmentPoint()?->value;
+            // Belongs to the requested document? Grouped exactly like the
+            // listing that offered this document, so expanding a row shows the
+            // changes publishing it would apply - no more, no less.
+            $documentId = $context->changeDocumentAndSite($change, $dimensionSpacePoint)['document']
+                ?->aggregateId->value;
             if ($documentId !== $documentAggregateId) {
                 continue;
             }
@@ -378,7 +383,12 @@ class WorkspacesController extends AbstractApiController
             $status = $change->deleted
                 ? 'removed'
                 : ($change->created ? 'created' : ($change->moved ? 'moved' : 'changed'));
-            $changes = $this->workspaceDiffService->diffNodeAgainstBase($wsNode, $baseNode, $change->moved, $subgraph, $baseSubgraph, $context);
+            // A removal needs no rows - the status says it all, and a page
+            // created and then deleted again would otherwise list every
+            // property of a node that will never exist in the base.
+            $changes = $status === 'removed'
+                ? []
+                : $this->workspaceDiffService->diffNodeAgainstBase($wsNode, $baseNode, $change->moved, $subgraph, $baseSubgraph, $context);
 
             // A "changed" node whose state does not differ visibly (e.g.
             // edited and manually reverted) would render as an empty block.
@@ -1105,6 +1115,10 @@ class WorkspacesController extends AbstractApiController
     private function serializeRebaseConflicts(WorkspaceName $workspaceName, ConflictingEvents $conflictingEvents): array
     {
         $contentRepository = $this->getContentRepository();
+        $workspace = $contentRepository->findWorkspaceByName($workspaceName);
+        // Resolves soft-removed (deleted) nodes as well, so a conflict on
+        // something the editor deleted is still named, not just numbered.
+        $context = $workspace !== null ? $this->readContext($workspace) : null;
         $conflicts = [];
         $seen = [];
         foreach ($conflictingEvents as $conflictingEvent) {
@@ -1129,7 +1143,8 @@ class WorkspacesController extends AbstractApiController
                 try {
                     $nodeAggregate = $contentRepository->getContentGraph($workspaceName)->findNodeAggregateById($nodeAggregateId);
                     foreach ($nodeAggregate?->coveredDimensionSpacePoints ?? [] as $dimensionSpacePoint) {
-                        $subgraph = $contentRepository->getContentSubgraph($workspaceName, $dimensionSpacePoint);
+                        $subgraph = $context?->subgraph($dimensionSpacePoint)
+                            ?? $contentRepository->getContentSubgraph($workspaceName, $dimensionSpacePoint);
                         $affectedNode = $subgraph->findNodeById($nodeAggregateId);
                         $documentNode = $subgraph->findClosestNode(
                             $nodeAggregateId,
@@ -1154,7 +1169,10 @@ class WorkspacesController extends AbstractApiController
                 'nodeLabel' => $affectedNode !== null ? $this->nodeSerializer->label($affectedNode) : null,
                 'documentAggregateId' => $documentNode?->aggregateId->value,
                 'documentLabel' => $documentNode !== null ? $this->nodeSerializer->label($documentNode) : null,
-                'documentAddress' => $documentNode !== null ? NodeAddressCodec::encode(NodeAddress::fromNode($documentNode)) : null,
+                // No address for a deleted page - there is nothing to navigate to.
+                'documentAddress' => $documentNode !== null && !($context?->isSoftRemoved($documentNode) ?? false)
+                    ? NodeAddressCodec::encode(NodeAddress::fromNode($documentNode))
+                    : null,
                 'siteAggregateId' => $siteAggregateId,
                 'typeOfChange' => $this->conflictTypeOfChange($conflictingEvent->getEvent()),
                 'reason' => $this->conflictReason($conflictingEvent->getException()),
@@ -1173,9 +1191,15 @@ class WorkspacesController extends AbstractApiController
      */
     private function conflictTypeOfChange(EventInterface $event): ?string
     {
+        // Deleting tags a subtree "removed" (a soft removal), so the tagging
+        // event covers two different user actions - the tag tells them apart.
+        if ($event instanceof SubtreeWasTagged) {
+            return $event->tag->equals(NeosSubtreeTag::removed()) ? 'deleted' : 'changed';
+        }
+
         return match ($this->shortClassName($event)) {
             'NodeAggregateWithNodeWasCreated', 'NodePeerVariantWasCreated', 'NodeGeneralizationVariantWasCreated' => 'created',
-            'NodePropertiesWereSet', 'NodeReferencesWereSet', 'SubtreeWasTagged', 'SubtreeWasUntagged', 'NodeAggregateTypeWasChanged' => 'changed',
+            'NodePropertiesWereSet', 'NodeReferencesWereSet', 'SubtreeWasUntagged', 'NodeAggregateTypeWasChanged' => 'changed',
             'NodeAggregateWasMoved' => 'moved',
             'NodeAggregateWasRemoved' => 'deleted',
             default => null,
