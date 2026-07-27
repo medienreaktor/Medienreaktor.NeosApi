@@ -8,12 +8,14 @@ use Medienreaktor\NeosApi\Security\Authentication\Token\ApiBearerToken;
 use Medienreaktor\NeosApi\Service\NodeAddressCodec;
 use Neos\ContentRepository\Core\ContentRepository;
 use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
+use Neos\ContentRepository\Core\Projection\ContentGraph\VisibilityConstraints;
 use Neos\ContentRepository\Core\SharedModel\ContentRepository\ContentRepositoryId;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAddress;
 use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
 use Neos\Flow\Annotations as Flow;
 use Neos\Flow\Mvc\Controller\ActionController;
 use Neos\Flow\Security\Context as SecurityContext;
+use Neos\Neos\Domain\SubtreeTagging\NeosSubtreeTag;
 use Neos\Neos\Domain\SubtreeTagging\NeosVisibilityConstraints;
 
 /**
@@ -70,21 +72,40 @@ abstract class AbstractApiController extends ActionController
     /**
      * Resolve the security-aware subgraph for a node address. With
      * $frontendVisibility, additionally exclude disabled ("hidden") nodes -
-     * narrowing beyond the account's constraints is always safe, the reverse
-     * direction is not offered.
+     * narrowing beyond the account's constraints is always safe.
+     *
+     * $includeDeleted widens in exactly one respect: deleted nodes (soft
+     * removals, tagged "removed") become visible. They are excluded by default
+     * for good reason - they are deleted as far as trees, search and rendering
+     * are concerned - so this is an opt-in for clients that deliberately
+     * address one: a trash bin showing what a deletion would take with it, or
+     * a preview of a page before restoring it. Everything else the account
+     * cannot read stays invisible: only that one tag is dropped from its own
+     * constraints, never the constraints themselves.
      */
-    protected function getSubgraph(NodeAddress $address, bool $frontendVisibility = false): ContentSubgraphInterface
-    {
+    protected function getSubgraph(
+        NodeAddress $address,
+        bool $frontendVisibility = false,
+        bool $includeDeleted = false
+    ): ContentSubgraphInterface {
         $contentRepository = $this->getContentRepository();
         $subgraph = $contentRepository->getContentSubgraph($address->workspaceName, $address->dimensionSpacePoint);
+        if (!$frontendVisibility && !$includeDeleted) {
+            return $subgraph;
+        }
+
+        $constraints = $subgraph->getVisibilityConstraints();
         if ($frontendVisibility) {
-            $subgraph = $contentRepository->getContentGraph($address->workspaceName)->getSubgraph(
-                $address->dimensionSpacePoint,
-                $subgraph->getVisibilityConstraints()->merge(NeosVisibilityConstraints::excludeDisabled())
+            $constraints = $constraints->merge(NeosVisibilityConstraints::excludeDisabled());
+        }
+        if ($includeDeleted) {
+            $constraints = VisibilityConstraints::excludeSubtreeTags(
+                $constraints->excludedSubtreeTags->without(NeosSubtreeTag::removed())
             );
         }
 
-        return $subgraph;
+        return $contentRepository->getContentGraph($address->workspaceName)
+            ->getSubgraph($address->dimensionSpacePoint, $constraints);
     }
 
     protected function decodeNodeAddress(string $encoded): NodeAddress

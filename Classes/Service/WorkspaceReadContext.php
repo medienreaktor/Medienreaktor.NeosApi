@@ -7,6 +7,7 @@ namespace Medienreaktor\NeosApi\Service;
 use Neos\ContentRepository\Core\ContentRepository;
 use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\NodeType\NodeTypeName;
+use Neos\ContentRepository\Core\Projection\ContentGraph\ContentGraphInterface;
 use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
@@ -51,6 +52,8 @@ final class WorkspaceReadContext
     /** The account's visibility constraints with soft removals made visible. */
     private ?VisibilityConstraints $visibilityConstraints = null;
 
+    private ?ContentGraphInterface $contentGraph = null;
+
     public function __construct(
         public readonly ContentRepository $contentRepository,
         public readonly Workspace $workspace,
@@ -58,10 +61,20 @@ final class WorkspaceReadContext
     ) {
     }
 
+    /**
+     * The workspace's content graph - dimension-independent lookups (node
+     * aggregates, their parents, their subtree tags). Cached: every call
+     * re-checks the account's read permission on the workspace, which a loop
+     * over changes or trash entries would pay per item.
+     */
+    public function contentGraph(): ContentGraphInterface
+    {
+        return $this->contentGraph ??= $this->contentRepository->getContentGraph($this->workspace->workspaceName);
+    }
+
     public function subgraph(DimensionSpacePoint $dimensionSpacePoint): ContentSubgraphInterface
     {
-        return $this->subgraphs[$dimensionSpacePoint->hash] ??= $this->contentRepository
-            ->getContentGraph($this->workspace->workspaceName)
+        return $this->subgraphs[$dimensionSpacePoint->hash] ??= $this->contentGraph()
             ->getSubgraph($dimensionSpacePoint, $this->visibilityConstraints($dimensionSpacePoint));
     }
 
@@ -264,6 +277,13 @@ final class WorkspaceReadContext
     public function icon(NodeTypeName $nodeTypeName): ?string
     {
         return $this->nodeTypeConfiguration($nodeTypeName)['ui']['icon'] ?? null;
+    }
+
+    /** Whether the node type is (a subtype of) the given one; false if unknown. */
+    public function isOfType(NodeTypeName $nodeTypeName, string $superTypeName): bool
+    {
+        return $this->contentRepository->getNodeTypeManager()
+            ->getNodeType($nodeTypeName)?->isOfType($superTypeName) ?? false;
     }
 
     /**
