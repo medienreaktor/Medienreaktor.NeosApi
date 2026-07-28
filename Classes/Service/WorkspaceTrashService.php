@@ -67,9 +67,17 @@ class WorkspaceTrashService
      * it was deleted in), when, by whom, and which additional ancestors a
      * restore would bring back with it.
      *
+     * $documentsOnly drops deleted content elements before they are enriched,
+     * for clients that restore pages only. It is a real filter, not a hint the
+     * client could apply itself: the trash of a workspace also holds everything
+     * its base ever deleted (publishing a deletion moves the entry to the base
+     * and copies the base's entries back down), so content elements accumulate
+     * without bound and would otherwise eat the enrichment budget below - and
+     * push the deleted pages out of the response entirely.
+     *
      * @return array{items: list<array<string, mixed>>, truncated: bool}
      */
-    public function listItems(WorkspaceReadContext $context): array
+    public function listItems(WorkspaceReadContext $context, bool $documentsOnly = false): array
     {
         $contentGraph = $context->contentGraph();
         $rows = $context->contentRepository->projectionState(TrashItemFinder::class)
@@ -85,14 +93,25 @@ class WorkspaceTrashService
         $items = [];
         $userLabels = [];
         $truncated = false;
+        $scanned = 0;
         foreach ($rows as $row) {
-            if (count($items) >= self::ITEM_LIMIT) {
+            $scanned++;
+            // Two ways to run out: more rows exist than were fetched (the row
+            // past the limit is the sentinel), or the enrichment cap is full.
+            // Skipped rows must not count towards either, or a filtered list
+            // would report a truncation it did not suffer - and an unfiltered
+            // one would report none while rows went unread.
+            if ($scanned > self::ITEM_LIMIT || count($items) >= self::ITEM_LIMIT) {
                 $truncated = true;
                 break;
             }
             $nodeAggregate = $contentGraph->findNodeAggregateById($row->nodeAggregateId);
             if ($nodeAggregate === null) {
                 // Hard removed meanwhile (published deletion, garbage collected).
+                continue;
+            }
+            $isDocument = $context->isOfType($nodeAggregate->nodeTypeName, 'Neos.Neos:Document');
+            if ($documentsOnly && !$isDocument) {
                 continue;
             }
             $deletedIn = $this->deletedCoverage($nodeAggregate);
@@ -124,8 +143,8 @@ class WorkspaceTrashService
                 'nodeType' => $nodeAggregate->nodeTypeName->value,
                 'icon' => $context->icon($nodeAggregate->nodeTypeName),
                 // Documents (pages) are the entries a page-level trash lists;
-                // deleted content elements share the resource.
-                'isDocument' => $context->isOfType($nodeAggregate->nodeTypeName, 'Neos.Neos:Document'),
+                // deleted content elements share the resource unless filtered out.
+                'isDocument' => $isDocument,
                 // Site node down to the deleted node itself, like the
                 // document-changes resource - clients drop the last entry to
                 // show only where it lived.
