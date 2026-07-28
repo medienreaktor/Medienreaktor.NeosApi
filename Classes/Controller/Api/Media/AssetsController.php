@@ -33,6 +33,7 @@ use Neos\Media\Domain\Service\AssetSourceService;
 use Neos\Media\TypeConverter\AssetInterfaceConverter;
 use Neos\Neos\AssetUsage\Dto\AssetUsageReference;
 use Neos\Neos\Domain\Service\NodeTypeNameFactory;
+use Neos\Utility\MediaTypes;
 
 /**
  * Assets as a REST resource across all configured asset sources.
@@ -319,18 +320,42 @@ class AssetsController extends AbstractApiController
 
     /**
      * Replace the binary resource of a local asset (multipart/form-data, field
-     * "resource"), keeping its identity, metadata and usages. Cross-media-type
-     * replacement (e.g. image -> pdf) is rejected by the AssetService.
+     * "resource"), keeping its identity, metadata and usages.
+     *
+     * Both guards mirror the classic Media.Browser: an image, audio or video
+     * asset may only be replaced by a file of the same media type family (a PDF
+     * dropped onto an image would break every rendering of it), and a cropped
+     * ImageVariant has no file of its own - its resource is derived from the
+     * original, so the original is what has to be replaced.
+     *
+     * keepOriginalFilename keeps the asset's current filename, with only the
+     * extension adjusted when the new file's type differs. generateRedirects
+     * asks Neos.RedirectHandler - when installed - to point the old resource
+     * URI at the new one; it is a no-op without that package, so it defaults to
+     * on like the old UI's pre-checked box.
      */
     #[Flow\SkipCsrfProtection]
-    public function replaceResourceAction(string $assetSource, string $assetIdentifier, PersistentResource $resource): string
+    public function replaceResourceAction(string $assetSource, string $assetIdentifier, PersistentResource $resource, bool $keepOriginalFilename = false, bool $generateRedirects = true): string
     {
         $this->requireScope('neos.media');
         $this->requireWritableAssetSource($assetSource);
         $asset = $this->requireLocalAsset($assetIdentifier);
 
+        if ($asset instanceof ImageVariant) {
+            $this->throwJsonStatus(400, 'asset_is_variant', 'A cropped image variant has no file of its own; replace the original image instead.');
+        }
+
+        $currentType = MediaTypes::parseMediaType($asset->getMediaType())['type'];
+        $replacementType = MediaTypes::parseMediaType($resource->getMediaType())['type'];
+        if ($currentType !== $replacementType && in_array($currentType, ['image', 'audio', 'video'], true)) {
+            $this->throwJsonStatus(400, 'media_type_mismatch', sprintf('An asset of type "%s" can only be replaced by another "%s" file, not by "%s".', $currentType, $currentType, $resource->getMediaType()));
+        }
+
         try {
-            $this->assetService->replaceAssetResource($asset, $resource);
+            $this->assetService->replaceAssetResource($asset, $resource, [
+                'keepOriginalFilename' => $keepOriginalFilename,
+                'generateRedirects' => $generateRedirects,
+            ]);
         } catch (\Exception $exception) {
             $this->logger->info(sprintf('Replacing the resource of asset "%s" failed: %s', $assetIdentifier, $exception->getMessage()), ['exception' => $exception]);
             $this->throwJsonStatus(400, 'replace_failed', $exception->getMessage());
