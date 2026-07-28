@@ -449,18 +449,20 @@ class WorkspacesController extends AbstractApiController
      * recognise it (label, type, icon, breadcrumb, the dimensions it was
      * deleted in, when and by whom) and to warn about what a restore brings
      * back with it. `isDocument` separates deleted pages from deleted content
-     * elements, which share the resource.
+     * elements, which share the resource; `documentsOnly=1` narrows it to the
+     * pages, which a page-level trash should ask for rather than filter itself
+     * (the list is capped, so unwanted entries can crowd out wanted ones).
      *
      * `status` mirrors the workspace resource: restoring requires an
      * UP_TO_DATE workspace (see restoreFromTrashAction), so clients can offer
      * a synchronize instead of a restore that would be refused.
      */
-    public function trashAction(string $workspaceName): string
+    public function trashAction(string $workspaceName, bool $documentsOnly = false): string
     {
         $this->requireScope('neos.read');
 
         $workspace = $this->requireReadableWorkspace($workspaceName);
-        $trash = $this->workspaceTrashService->listItems($this->readContext($workspace));
+        $trash = $this->workspaceTrashService->listItems($this->readContext($workspace), $documentsOnly);
 
         return $this->json([
             'workspace' => $workspace->workspaceName->value,

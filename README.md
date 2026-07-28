@@ -217,9 +217,18 @@ own visibility constraints, so nothing else it may not read becomes visible.
 That window is the **trash bin**: `trash` lists the deleted nodes with what it
 takes to recognise them (label, node type, icon, breadcrumb, the dimensions they
 were deleted in, when and by whom) plus `isDocument` — deleted pages and deleted
-content elements share the resource — plus `nodeAddress` (readable with
+content elements share the resource, and `?documentsOnly=1` narrows it to the
+pages — plus `nodeAddress` (readable with
 `?includeDeleted=1`, so a client can show the page itself) and
-`restoresAncestors`, the deleted ancestors a restore would bring back too. Restoring untags the node in all its
+`restoresAncestors`, the deleted ancestors a restore would bring back too.
+
+Note that a workspace's trash is not only its own pending deletions. Publishing
+a deletion does not empty the trash — it moves the entry to the base workspace
+and copies the base's entries back down (Neos' `TrashBinProjection` does the
+same on rebase and discard), and the node itself stays soft-removed in live
+until the content repository prunes it. So a fully published workspace still
+lists everything its base ever deleted, which is what makes those entries
+restorable at all. Restoring untags the node in all its
 variants, along with those ancestors, or it would stay invisible inside a
 deleted parent. It requires an `UP_TO_DATE` workspace (409 `workspace_outdated`
 otherwise, so synchronize first) and write access; a node that is not deleted
