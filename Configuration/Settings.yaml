@@ -42,6 +42,18 @@ Medienreaktor:
     # The authentication provider name whose accounts API users authenticate as
     accountAuthenticationProviderName: 'Neos.Neos:Backend'
 
+    # Packages can contribute additional data to the workspace JSON without
+    # this API knowing their shape: each registered enricher (implementing
+    # WorkspaceDataEnricherInterface) adds its contribution to the workspace's
+    # "extensions" object under the registration key. Set an entry to null to
+    # disable it; "position" (PositionalArraySorter) orders evaluation.
+    #
+    # workspaceDataEnrichers:
+    #   'Vendor.Package:Something':
+    #     enricher: 'Vendor\Package\Api\SomethingWorkspaceDataEnricher'
+    #     position: 'end'
+    workspaceDataEnrichers: {}
+
     # Capability flags reported by /api/me: name => Flow privilege target that
     # must be granted to the account's roles. Uses the same checks the classic
     # backend menu uses to show/hide modules, so clients can mirror the module

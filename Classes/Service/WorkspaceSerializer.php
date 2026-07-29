@@ -8,7 +8,9 @@ use Neos\ContentRepository\Core\SharedModel\ContentRepository\ContentRepositoryI
 use Neos\ContentRepository\Core\SharedModel\Workspace\Workspace;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
 use Neos\Flow\Annotations as Flow;
+use Neos\Flow\ObjectManagement\ObjectManagerInterface;
 use Neos\Flow\Security\Context as SecurityContext;
+use Neos\Utility\PositionalArraySorter;
 use Neos\Neos\Domain\Model\UserId;
 use Neos\Neos\Domain\Model\WorkspaceRoleSubjectType;
 use Neos\Neos\Domain\Service\UserService;
@@ -41,10 +43,24 @@ class WorkspaceSerializer
     #[Flow\Inject]
     protected SecurityContext $securityContext;
 
+    #[Flow\Inject]
+    protected ObjectManagerInterface $objectManager;
+
+    /**
+     * @var array<string, array{enricher: string, position?: string}|null>
+     */
+    #[Flow\InjectConfiguration(package: 'Medienreaktor.NeosApi', path: 'workspaceDataEnrichers')]
+    protected ?array $enricherConfiguration;
+
     /**
      * @var array<string, WorkspacePermissions>
      */
     private array $permissionsCache = [];
+
+    /**
+     * @var array<string, WorkspaceDataEnricherInterface>|null
+     */
+    private ?array $enrichers = null;
 
     public function permissions(ContentRepositoryId $contentRepositoryId, WorkspaceName $workspaceName): WorkspacePermissions
     {
@@ -92,7 +108,42 @@ class WorkspaceSerializer
                 'publish' => $workspace->baseWorkspaceName !== null
                     && $this->permissions($contentRepositoryId, $workspace->baseWorkspaceName)->write,
             ],
+            // Namespaced contributions from registered enrichers - the API
+            // itself knows nothing about their shape. Serialized as {} when
+            // empty, never [].
+            'extensions' => ($extensions = $this->collectExtensions($contentRepositoryId, $workspace)) === []
+                ? new \stdClass()
+                : $extensions,
         ];
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function collectExtensions(ContentRepositoryId $contentRepositoryId, Workspace $workspace): array
+    {
+        if ($this->enrichers === null) {
+            $this->enrichers = [];
+            // Entries set to null in the settings are disabled registrations.
+            $configuration = array_filter($this->enricherConfiguration ?? [], is_array(...));
+            foreach ((new PositionalArraySorter($configuration))->toArray() as $key => $entry) {
+                $enricher = $this->objectManager->get($entry['enricher']);
+                if (!$enricher instanceof WorkspaceDataEnricherInterface) {
+                    throw new \RuntimeException(sprintf('The workspace data enricher "%s" (%s) does not implement %s.', $key, $entry['enricher'], WorkspaceDataEnricherInterface::class), 1753776001);
+                }
+                $this->enrichers[$key] = $enricher;
+            }
+        }
+
+        $extensions = [];
+        foreach ($this->enrichers as $key => $enricher) {
+            $contribution = $enricher->enrich($contentRepositoryId, $workspace);
+            if ($contribution !== null) {
+                $extensions[$key] = $contribution;
+            }
+        }
+
+        return $extensions;
     }
 
     /**
