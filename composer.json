@@ -19,7 +19,7 @@
       "package-key": "Medienreaktor.NeosApi"
     },
     "branch-alias": {
-      "dev-main": "1.8.x-dev"
+      "dev-main": "1.9.x-dev"
     }
   }
 }
