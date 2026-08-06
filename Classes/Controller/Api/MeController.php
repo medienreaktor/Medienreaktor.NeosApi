@@ -20,12 +20,18 @@ use Neos\Party\Domain\Model\ElectronicAddress;
  * request act with? Useful for clients to introspect their effective access.
  *
  * Additionally the self-service profile: every authenticated user (not just
- * administrators) may read and edit their OWN name, email, interface language
- * and password here - the Api.Me privilege target covers all actions of this
- * controller and is granted to every editor.
+ * administrators) may read and edit their OWN name, email, interface language,
+ * password and free-form client preferences here - the Api.Me privilege target
+ * covers all actions of this controller and is granted to every editor.
  */
 class MeController extends AbstractApiController
 {
+    /**
+     * Preference keys that are NOT part of the generic `preferences` object
+     * because they are managed through dedicated, validated profile fields.
+     */
+    private const RESERVED_PREFERENCES = ['interfaceLanguage'];
+
     #[Flow\Inject]
     protected PrivilegeManagerInterface $privilegeManager;
 
@@ -104,14 +110,19 @@ class MeController extends AbstractApiController
 
     /**
      * Partial update of the own profile. JSON body: firstName, lastName,
-     * email, interfaceLanguage - absent keys are left as-is.
+     * email, interfaceLanguage, preferences - absent keys are left as-is.
+     * `preferences` is itself partial: only the keys present are written,
+     * a null value deletes its key (see mergePreferences for the contract).
+     *
+     * @param array<string, mixed>|null $preferences
      */
     #[Flow\SkipCsrfProtection]
     public function updateProfileAction(
         ?string $firstName = null,
         ?string $lastName = null,
         ?string $email = null,
-        ?string $interfaceLanguage = null
+        ?string $interfaceLanguage = null,
+        ?array $preferences = null
     ): string {
         $this->requireScope('neos.write');
         $user = $this->requireCurrentUser();
@@ -154,6 +165,10 @@ class MeController extends AbstractApiController
                 $this->throwJsonStatus(400, 'invalid_interface_language', sprintf('"%s" is not an available interface language.', $interfaceLanguage));
             }
             $user->getPreferences()->setInterfaceLanguage($interfaceLanguage);
+        }
+
+        if ($preferences !== null) {
+            $this->mergePreferences($user, $preferences);
         }
 
         $this->userService->updateUser($user);
@@ -229,6 +244,41 @@ class MeController extends AbstractApiController
             'email' => $user->getPrimaryElectronicAddress()?->getIdentifier(),
             'interfaceLanguage' => $user->getPreferences()->getInterfaceLanguage() ?: $this->defaultLanguage,
             'availableLanguages' => $this->availableLanguages,
+            'preferences' => (object)array_diff_key(
+                $user->getPreferences()->getPreferences(),
+                array_flip(self::RESERVED_PREFERENCES)
+            ),
         ];
+    }
+
+    /**
+     * Merge a partial preferences update into the user's schema-less
+     * preferences array: keys are arbitrary (clients bring their own,
+     * namespaced like "studio.uiMode"), values are stored verbatim, null
+     * deletes a key. Only the reserved keys with dedicated profile fields
+     * are refused so their validation cannot be bypassed.
+     *
+     * @param array<string, mixed> $preferences
+     */
+    private function mergePreferences(User $user, array $preferences): void
+    {
+        $reserved = array_intersect(array_keys($preferences), self::RESERVED_PREFERENCES);
+        if ($reserved !== []) {
+            $this->throwJsonStatus(400, 'reserved_preference', sprintf('The preference key(s) %s are managed through their dedicated profile fields.', implode(', ', $reserved)));
+        }
+
+        $container = $user->getPreferences();
+        $merged = $container->getPreferences();
+        foreach ($preferences as $key => $value) {
+            if (trim((string)$key) === '') {
+                $this->throwJsonStatus(400, 'invalid_preference_key', 'Preference keys must be non-empty strings.');
+            }
+            if ($value === null) {
+                unset($merged[$key]);
+            } else {
+                $merged[$key] = $value;
+            }
+        }
+        $container->setPreferences($merged);
     }
 }
