@@ -16,7 +16,7 @@ Verify before committing:
 npx --yes @redocly/cli@latest lint Resources/Private/OpenApi/openapi.yaml
 
 # every route documented, no phantom operations (needs PyYAML)
-python3 Tests/check-openapi-sync.py
+python3 .github/scripts/check-openapi-sync.py
 ```
 
 CI (`.github/workflows/api-docs.yml`) runs both on every push/PR and
@@ -47,4 +47,6 @@ change what a serializer emits or what an action reads, update the matching
   the Neos catch-all then denies them - either way, be explicit).
 - Load resources via the `resource://` stream wrapper, never `__DIR__`
   (Flow proxy classes resolve to the cache directory).
-- E2E testing runs against ddev; smoke tests live in `Tests/*.sh`.
+- E2E testing runs against ddev; smoke tests live in `Tests/*.sh` — note
+  `Tests/` is gitignored (local dev tooling only), which is why the sync
+  check lives in `.github/scripts/` instead.
