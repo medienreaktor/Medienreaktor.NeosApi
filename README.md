@@ -126,8 +126,8 @@ Browse it:
 
 Keep the document in sync with `Routes.yaml` and the controllers — the same
 discipline as `Policy.yaml`. CI enforces it on every push: the document is
-linted and `Tests/check-openapi-sync.py` fails the build when a route and its
-documented operations diverge.
+linted and `.github/scripts/check-openapi-sync.py` fails the build when a
+route and its documented operations diverge.
 
 ## Concepts
 

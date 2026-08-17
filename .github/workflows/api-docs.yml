@@ -26,7 +26,7 @@ jobs:
       - name: Check route coverage (Routes.yaml <-> OpenAPI)
         run: |
           python3 -m pip install --quiet pyyaml
-          python3 Tests/check-openapi-sync.py
+          python3 .github/scripts/check-openapi-sync.py
 
   deploy-pages:
     name: Publish reference to GitHub Pages
