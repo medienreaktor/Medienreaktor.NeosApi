@@ -68,6 +68,29 @@
   httpMethods: ['GET']
 
 #
+# API documentation (public, like the OAuth discovery documents)
+#
+-
+  name: 'API: OpenAPI document'
+  uriPattern: 'api/openapi.json'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Docs'
+    '@action': 'spec'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Interactive reference (Scalar)'
+  uriPattern: 'api/docs'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Docs'
+    '@action': 'docs'
+    '@format': 'html'
+  httpMethods: ['GET']
+
+#
 # Read API
 #
 -

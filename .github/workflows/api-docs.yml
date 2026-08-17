@@ -1,0 +1,67 @@
+# Lints the OpenAPI document on every push/PR and publishes the interactive
+# API reference to GitHub Pages on pushes to main. The Pages site uses the
+# same self-hosted Scalar bundle as GET /api/docs, so both render identically.
+#
+# One-time repository setup: Settings -> Pages -> Source: "GitHub Actions".
+name: API docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint OpenAPI document
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx --yes @redocly/cli@latest lint Resources/Private/OpenApi/openapi.yaml
+
+  deploy-pages:
+    name: Publish reference to GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assemble static site
+        run: |
+          mkdir _site
+          cp Resources/Private/OpenApi/openapi.yaml _site/
+          cp Resources/Public/Docs/scalar-api-reference-*.min.js _site/scalar.min.js
+          cat > _site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Neos API Reference</title>
+          </head>
+          <body style="margin: 0">
+          <script id="api-reference" data-url="openapi.yaml" data-configuration='{"hideClientButton":true}'></script>
+          <script src="scalar.min.js"></script>
+          </body>
+          </html>
+          HTML
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

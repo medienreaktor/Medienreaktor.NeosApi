@@ -36,6 +36,13 @@ privilegeTargets:
     'Medienreaktor.NeosApi:OAuth.PublicEndpoints':
       matcher: 'method(Medienreaktor\NeosApi\Controller\OAuth\TokenController->tokenAction()) || method(Medienreaktor\NeosApi\Controller\OAuth\RegistrationController->registerAction()) || method(Medienreaktor\NeosApi\Controller\OAuth\DiscoveryController->.*Action()) || method(Medienreaktor\NeosApi\Controller\OAuth\AuthorizeController->(authorize|approve)Action())'
 
+    # The API description: the OpenAPI document and the interactive reference
+    # page. Public like the OAuth discovery documents - they describe the API
+    # surface but expose no content, and developers need them before they have
+    # a token.
+    'Medienreaktor.NeosApi:Api.Docs':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\DocsController->.*Action())'
+
     # --- Read features -----------------------------------------------------
 
     # The authenticated account's own profile and permissions - including the
@@ -136,6 +143,9 @@ roles:
     privileges:
       -
         privilegeTarget: 'Medienreaktor.NeosApi:OAuth.PublicEndpoints'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Docs'
         permission: GRANT
 
   # Every editor gets the full editing surface: read everything, write content
