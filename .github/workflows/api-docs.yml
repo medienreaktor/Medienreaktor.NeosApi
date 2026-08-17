@@ -23,6 +23,10 @@ jobs:
         with:
           node-version: 22
       - run: npx --yes @redocly/cli@latest lint Resources/Private/OpenApi/openapi.yaml
+      - name: Check route coverage (Routes.yaml <-> OpenAPI)
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 Tests/check-openapi-sync.py
 
   deploy-pages:
     name: Publish reference to GitHub Pages
