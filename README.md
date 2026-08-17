@@ -125,7 +125,9 @@ Browse it:
   `openapi-typescript`) and response validation in tests.
 
 Keep the document in sync with `Routes.yaml` and the controllers — the same
-discipline as `Policy.yaml`; CI lints it on every push.
+discipline as `Policy.yaml`. CI enforces it on every push: the document is
+linted and `Tests/check-openapi-sync.py` fails the build when a route and its
+documented operations diverge.
 
 ## Concepts
 
