@@ -108,238 +108,57 @@ Medienreaktor:
         enabled: true
 ```
 
-## OAuth endpoints
+## API documentation
 
-| Endpoint                                      | Purpose                                                          |
-| --------------------------------------------- | ---------------------------------------------------------------- |
-| `GET/POST /oauth/authorize`                   | Authorization + consent (requires a logged-in Neos backend user) |
-| `POST /oauth/token`                           | Token endpoint (auth code + PKCE, refresh, client credentials)   |
-| `POST /oauth/register`                        | Dynamic client registration, RFC 7591 (public clients only)      |
-| `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata                                                |
-| `GET /.well-known/oauth-protected-resource`   | RFC 9728 metadata                                                |
+The API's contract — every endpoint (including the OAuth protocol endpoints),
+schema, error code and scope — is the hand-maintained OpenAPI 3.1 document at
+[`Resources/Private/OpenApi/openapi.yaml`](Resources/Private/OpenApi/openapi.yaml).
+Browse it:
 
-## API endpoints
+- **[Hosted API reference](https://medienreaktor.github.io/Medienreaktor.NeosApi/)** —
+  rebuilt from `main` by the `API docs` workflow (GitHub Actions → Pages).
+- **On any installation:** `GET /api/docs` renders the same reference
+  (self-hosted Scalar, no CDN), backed by `GET /api/openapi.json`, which
+  serves the document with the server URL, OAuth endpoint URLs and scope
+  catalog stamped in. Both are public, like the OAuth discovery documents.
+- **The raw document** is the input for typed client generation (e.g.
+  `openapi-typescript`) and response validation in tests.
 
-All responses are JSON (except `/render`, which returns HTML). `{nodeAddress}`
-is a base64url-encoded NodeAddress (content repository + workspace + dimension
-space point + aggregate id) — treat it as opaque; you obtain addresses from
-`/api/sites` and node responses.
+Keep the document in sync with `Routes.yaml` and the controllers — the same
+discipline as `Policy.yaml`; CI lints it on every push.
 
-### Account
+## Concepts
 
-| Endpoint                | Description                                         |
-| ----------------------- | --------------------------------------------------- |
-| `GET /api/me`           | Account, roles, scopes of this request              |
-| `GET /api/me/profile`   | Own profile (name, email, interface language)       |
-| `PATCH /api/me/profile` | Update own profile                                  |
-| `PUT /api/me/password`  | Change own password (requires the current password) |
+The conventions behind the endpoint reference:
 
-### Users
-
-Listing users is available to every editor (for ownership / attribution
-displays); creating, updating and deleting is user administration. Updates
-guard against self-lockout: you cannot deactivate or delete your own user or
-drop your own Administrator role.
-
-| Endpoint                     | Description                                                                                                                                                 |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /api/users`             | Backend users with their accounts and roles                                                                                                                  |
-| `POST /api/users`            | Create a user: `{"username", "password", "firstName", "lastName", "roles"?, "email"?}`                                                                       |
-| `GET /api/users/roles`       | Assignable roles (every non-abstract role known to the policy framework)                                                                                     |
-| `GET /api/users/{userId}`    | One user                                                                                                                                                     |
-| `PATCH /api/users/{userId}`  | Partial update: `firstName`, `lastName`, `email` (empty string removes it), `roles` (replaces), `active`, `password` (administrative reset, no old password) |
-| `DELETE /api/users/{userId}` | Delete a user incl. accounts and personal workspaces                                                                                                         |
-
-### Content reads
-
-| Endpoint                                                | Description                                                                                                                                    |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/sites`                                        | Sites with their entry node addresses (`?workspace=`, `?dimensions=`)                                                                          |
-| `GET /api/nodes/{nodeAddress}`                          | A single node                                                                                                                                  |
-| `GET /api/nodes/{nodeAddress}/children`                 | Child nodes (`?nodeTypes=`, `?limit=`, `?offset=`)                                                                                             |
-| `GET /api/nodes/{nodeAddress}/descendants`              | Descendants (same filters, plus `?search=` fulltext, `?searchProperty=` to match a single property, `?breadcrumbs=` to include ancestor paths) |
-| `GET /api/nodes/{nodeAddress}/ancestors`                | Ancestors                                                                                                                                      |
-| `GET /api/nodes/{nodeAddress}/parent`                   | Parent node                                                                                                                                    |
-| `GET /api/nodes/{nodeAddress}/references`               | Outgoing references incl. reference properties                                                                                                 |
-| `GET /api/nodes/{nodeAddress}/allowed-child-node-types` | Node types allowed below this node (constraints + auto-created children)                                                                       |
-| `GET /api/nodes/{nodeAddress}/variants`                 | Occupied + covered dimension space points of the aggregate                                                                                     |
-| `GET /api/nodes/{nodeAddress}/uri-path-segment`         | Build a URL path segment from `?text=`                                                                                                         |
-| `GET /api/nodes/{nodeAddress}/render`                   | HTML through the real Fusion pipeline (`?mode=` rendering mode, `?fusionPath=` for a single content fragment)                                  |
-
-Node reads include disabled ("hidden") nodes — this is an editing API. Pass
-`?visibility=frontend` to preview what the public sees. Property values are
-returned in serialized `{value, type}` form and round-trip with the command
-payloads.
-
-### Sites administration
-
-`{siteNodeName}` is the site's node name as returned by `GET /api/sites`.
-
-| Endpoint                                                | Description                                                                                                       |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `GET /api/sites/options`                                | Site creation options: installed site packages + node types usable for a site node                                  |
-| `POST /api/sites`                                       | Create a site with a fresh site node in live: `{"packageKey", "name", "nodeTypeName", "nodeName"?, "inactive"?}`    |
-| `PATCH /api/sites/{siteNodeName}`                       | Partial update: `name`, `state` (`"online"`/`"offline"`), `primaryDomainId` (empty string = first active domain)    |
-| `DELETE /api/sites/{siteNodeName}`                      | Delete a site incl. content, domains and asset collection (the classic module's "prune")                            |
-| `POST /api/sites/{siteNodeName}/domains`                | Add a domain: `{"hostname", "scheme"?, "port"?, "active"?}`                                                          |
-| `PATCH /api/sites/{siteNodeName}/domains/{domainId}`    | Partial domain update: `hostname`, `scheme` (empty string clears), `port` (`0` clears), `active`                     |
-| `DELETE /api/sites/{siteNodeName}/domains/{domainId}`   | Remove a domain (an explicit primary falls back to the first active domain)                                          |
-
-### Workspaces
-
-| Endpoint                                      | Description                                                                                |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `GET /api/workspaces`                         | Workspaces readable by this account, with permissions                                      |
-| `POST /api/workspaces`                        | Create a workspace: `{"title", "description"?, "baseWorkspaceName"?, "visibility"?}` — visibility `"shared"` (default, every editor may collaborate) or `"private"` |
-| `GET /api/workspaces/{name}`                  | One workspace incl. pending change count                                                   |
-| `PATCH /api/workspaces/{name}`                | Update title and/or description (requires the manage permission)                           |
-| `DELETE /api/workspaces/{name}`               | Delete a workspace incl. metadata and role assignments; pending changes block deletion unless `{"force": true}` |
-| `GET /api/workspaces/{name}/changes`          | Pending changes (per node)                                                                 |
-| `GET /api/workspaces/{name}/document-changes` | Pending changes aggregated per document (counts distinct changed nodes)                    |
-| `GET /api/workspaces/{name}/document-diff`    | Net diff of one document against the base workspace (`?documentAggregateId=`)              |
-| `GET /api/workspaces/{name}/pending-events`   | The workspace's pending history: every event since it forked off its base                  |
-| `GET /api/workspaces/{name}/pending-events/diff` | Before/after detail for a slice of the pending history (`?from=`, `?to=`)               |
-| `POST /api/workspaces/{name}/publish`         | Publish all changes; body `{"site": "<id>"}` or `{"document": "<id>"}` for partial publish |
-| `POST /api/workspaces/{name}/discard`         | Discard (same filters)                                                                     |
-| `POST /api/workspaces/{name}/rebase`          | Rebase (body `{"strategy": "force"}` optional)                                             |
-| `POST /api/workspaces/{name}/base-workspace`  | Change the base workspace                                                                  |
-| `GET /api/workspaces/{name}/trash`            | The workspace's trash bin: what was deleted in it, newest first                            |
-| `POST /api/workspaces/{name}/trash/{nodeAggregateId}/restore` | Restore a deleted node (and any deleted ancestor it lives inside)           |
-
-Deleting is a soft removal (see *Commands* above), so a deleted node is intact
-until the deletion is published and the content repository erases it in live.
-Reads normally pretend a deleted node does not exist. `?includeDeleted=1` on
-the node reads (`/api/nodes/{nodeAddress}`, its relations and `/render`) opts
-into one deliberately — how a client shows a trash entry, or renders a deleted
-page before restoring it. Only the "removed" tag is dropped from the account's
-own visibility constraints, so nothing else it may not read becomes visible.
-
-That window is the **trash bin**: `trash` lists the deleted nodes with what it
-takes to recognise them (label, node type, icon, breadcrumb, the dimensions they
-were deleted in, when and by whom) plus `isDocument` — deleted pages and deleted
-content elements share the resource, and `?documentsOnly=1` narrows it to the
-pages — plus `nodeAddress` (readable with
-`?includeDeleted=1`, so a client can show the page itself) and
-`restoresAncestors`, the deleted ancestors a restore would bring back too.
-
-Note that a workspace's trash is not only its own pending deletions. Publishing
-a deletion does not empty the trash — it moves the entry to the base workspace
-and copies the base's entries back down (Neos' `TrashBinProjection` does the
-same on rebase and discard), and the node itself stays soft-removed in live
-until the content repository prunes it. So a fully published workspace still
-lists everything its base ever deleted, which is what makes those entries
-restorable at all. Restoring untags the node in all its
-variants, along with those ancestors, or it would stay invisible inside a
-deleted parent. It requires an `UP_TO_DATE` workspace (409 `workspace_outdated`
-otherwise, so synchronize first) and write access; a node that is not deleted
-answers 409 `not_deleted`.
-
-Two complementary views answer "what changed here":
-
-- **`document-diff`** compares **state**: each changed node's current
-  properties, references, type, name, parent and visibility against the base
-  workspace's version — what publishing the document would actually apply.
-  Five edits of the same text arrive squashed into one old → new row.
-- **`pending-events`** replays **history**: the events recorded in the
-  workspace's current content stream, which exists exactly since the last
-  publish/discard/rebase forked it off the base — so this is every change
-  since the branch point, oldest first, enriched with the affected node's
-  label/type/icon and the initiating user. The response includes the fork
-  point (`forkedFrom`: base content stream + version — base events above that
-  version are what makes the workspace `OUTDATED`) and returns the newest 100
-  events (`truncated: true` when older ones were dropped). Consecutive events
-  of one command form a contiguous sequence-number range; feed such a range to
-  **`pending-events/diff`** (span < 200) to get per-property old/new values,
-  old/new reference targets, node type, parent and visibility per event. "Old"
-  values are resolved by scanning the same stream backwards, falling back to
-  what the base workspace holds now.
-
-Role assignments control who may view, collaborate in or manage a workspace.
-All three endpoints require the manage permission (owner, manager role or
-administrator); a subject holds at most one role at a time.
-
-| Endpoint                             | Description                                                                                                             |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `GET /api/workspaces/{name}/roles`   | The workspace's role assignments                                                                                          |
-| `POST /api/workspaces/{name}/roles`  | Assign a role: `{"subjectType": "USER"\|"GROUP", "subject": <user id / Flow role identifier>, "role": "VIEWER"\|"COLLABORATOR"\|"MANAGER"}` |
-| `DELETE /api/workspaces/{name}/roles/{subjectType}/{subject}` | Remove an assignment (subject addressed in the path)                                             |
-
-### Collaborative editing
-
-Two polling endpoints make shared-workspace multiplayer work over plain HTTP —
-no WebSocket server to deploy. Clients editing a shared workspace poll both
-every 1–2 seconds.
-
-| Endpoint                               | Description                                                                                                          |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/workspaces/{name}/events`     | Change feed: everything that happened in the workspace since the client's cursor (`?stream=` content stream id, `?since=` last seen sequence number) |
-| `POST /api/workspaces/{name}/presence`  | Presence heartbeat: announce your position and get everyone currently present back in one call                          |
-
-The **event feed** is cursor-based: call it without parameters once to obtain
-the baseline (`contentStreamId` + `sequenceNumber`), then pass both back as
-`?stream=` and `?since=`. When the workspace has moved to a different content
-stream in the meantime (publish, discard and rebase fork streams) the response
-sets `reset: true` and enumerates no events — refresh everything and continue
-from the new cursor. A full page sets `truncated: true` with the same client
-remedy.
-
-The **presence heartbeat** takes a JSON body of
-`{"documentAggregateId"?, "focusedAggregateId"?, "dimensionSpacePoint"?}` and
-answers with all users currently in the workspace, so one poll both announces
-and observes. Entries expire 30 seconds after the last beat (a closed tab
-disappears on its own); `{"leave": true}` removes the own entry immediately.
-Presence is deliberately ephemeral cache state and requires a user-bound token
-(`client_credentials` clients get a 403).
-
-### Schema & data
-
-| Endpoint                                           | Description                                                                                                                   |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/node-types` / `GET /api/node-types/{name}` | Node type schema (`?includeProperties=1` on the listing also serializes each type's merged property + reference declarations) |
-| `GET /api/dimensions`                              | Dimension config + allowed dimension space points                                                                             |
-| `GET /api/data-sources/{identifier}`                | Query a `DataSourceInterface` implementation (`?node=` node address, additional query params are passed through as arguments) |
-
-### Commands (writes)
-
-| Endpoint                   | Description                                                               |
-| -------------------------- | ------------------------------------------------------------------------- |
-| `POST /api/commands`       | Execute one CR command: `{"type": "SetNodeProperties", "payload": {...}}` |
-| `POST /api/commands/batch` | Execute a sequence: `{"commands": [...]}`                                 |
-
-Supported command types: see `Service/CommandRegistry.php` (all deserialized
-via the commands' own `::fromArray()`), plus the synthetic
-`CopyNodesRecursively` — recursive node copy is no CR command in Neos 9, so
-the commands controller dispatches it to the `NodeDuplicationService` while
-keeping the same envelope; pin the copy root's id via
-`nodeAggregateIdMapping` to address the copy afterwards.
-
-**Deleting nodes:** use `TagSubtree` with `{"tag": "removed"}`, the soft
-removal Neos performs in a non-live workspace. The node stays in the graph but
-is excluded from every read, so the deletion is a reviewable pending change of
-a node that can still be named, published or discarded per document — and
-publishing lets the content repository hard-remove it in live once no other
-workspace needs it. `RemoveNodeAggregate` (a hard removal) remains available
-and is scoped to the deleted node's closest surviving document, but its change
-cannot name what it removed.
-
-### Media
-
-| Endpoint                                                                      | Description                                                                                                 |
-| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `GET /api/media/asset-sources`                                                | Available asset sources                                                                                     |
-| `GET /api/media/assets`                                                       | Browse/search assets (`?search=`, `?tag=`, `?collection=`, `?type=`, `?assetSource=`, sorting + pagination) |
-| `POST /api/media/assets`                                                      | Upload a new asset (multipart)                                                                              |
-| `GET /api/media/assets/{source}/{id}`                                         | One asset with metadata and variants                                                                        |
-| `PATCH /api/media/assets/{source}/{id}`                                                | Update title, caption, copyright, tags, collections                                                         |
-| `DELETE /api/media/assets/{source}/{id}`                                               | Delete an asset                                                                                             |
-| `POST /api/media/assets/import`                                               | Import an asset from a remote asset source                                                                  |
-| `POST /api/media/assets/{source}/{id}/resource`                                        | Replace the underlying resource (re-upload)                                                                 |
-| `POST /api/media/assets/{source}/{id}/variants`                                        | Create a crop variant                                                                                       |
-| `PUT` / `DELETE /api/media/assets/{source}/{id}/tags/{tagId}`                                 | Tag / untag an asset                                                                                        |
-| `PUT` / `DELETE /api/media/assets/{source}/{id}/collections/{collectionId}`                          | Add to / remove from a collection                                                                           |
-| `GET /api/media/assets/{source}/{id}/usage`                                   | Where an asset is used                                                                                      |
-| `GET/POST /api/media/collections`, `PATCH/DELETE /api/media/collections/{id}` | Manage asset collections                                                                                    |
-| `GET/POST /api/media/tags`, `PATCH/DELETE /api/media/tags/{id}`               | Manage tags                                                                                                 |
+- **Node addressing.** `{nodeAddress}` is a base64url-encoded NodeAddress
+  (content repository + workspace + dimension space point + aggregate id) —
+  treat it as opaque. You obtain addresses from `/api/sites` and node
+  responses.
+- **Editing visibility.** Node reads include disabled ("hidden") nodes — this
+  is an editing API. Pass `?visibility=frontend` to preview what the public
+  sees. Property values are returned in serialized `{value, type}` form and
+  round-trip with the command payloads.
+- **Writes are commands.** `POST /api/commands` executes one content
+  repository command as `{"type": ..., "payload": ...}`;
+  `POST /api/commands/batch` runs an ordered sequence, stopping at the first
+  failure without rolling back. Node aggregate ids are client-supplied —
+  generate one and keep it. Recursive copy is the synthetic
+  `CopyNodesRecursively` command.
+- **Deleting is a soft removal.** Use `TagSubtree` with `{"tag": "removed"}`:
+  the node stays in the graph as a reviewable, publishable pending change, and
+  live erases it once the deletion is published. Deleted nodes are invisible
+  to reads unless a client opts in with `?includeDeleted=1`; the per-workspace
+  **trash bin** (`GET /api/workspaces/{name}/trash` + `/restore`) lists and
+  undoes deletions.
+- **Two views of "what changed".** `document-diff` compares *state* against
+  the base workspace (what publishing would apply, squashed old → new);
+  `pending-events` replays *history* since the workspace forked off its base,
+  with `pending-events/diff` adding per-event before/after detail.
+- **Collaboration is plain polling.** The per-workspace event feed
+  (`/events`, cursor-based via `?stream=` + `?since=`) and presence heartbeats
+  (`/presence`, entries expire after 30 seconds) power multiplayer editing
+  over HTTP — no WebSocket server to deploy.
 
 ## License
 

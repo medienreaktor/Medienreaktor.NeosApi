@@ -1,0 +1,4279 @@
+# OpenAPI 3.1 description of the Medienreaktor.NeosApi HTTP API.
+#
+# This file is the hand-maintained source of truth for the API contract.
+# It is served as JSON at GET /api/openapi.json (DocsController::specAction),
+# which stamps in the request-dependent parts at serve time:
+#   - "servers" is replaced with the actual base URI
+#   - the oauth2 security scheme's authorizationUrl/tokenUrl/refreshUrl are
+#     rewritten to the configured issuer
+#   - the oauth2 scopes are replaced with the configured scope catalog
+# Everything else is static. Keep this file in sync with Routes.yaml and the
+# controllers (same discipline as Policy.yaml).
+openapi: 3.1.0
+
+info:
+  title: Neos API
+  version: '1.9'
+  summary: The missing HTTP API for Neos 9.
+  description: |
+    An OAuth 2.1 protected HTTP API for the Neos 9 content repository: read the
+    content graph, write through an explicit command bus, manage workspaces,
+    media, sites and users.
+
+    ## Authentication
+
+    All `/api` endpoints (except this document and `/api/docs`) require a
+    bearer access token obtained via OAuth 2.1 - authorization code + PKCE for
+    user-bound clients, or `client_credentials` for machine clients. Endpoint
+    discovery follows RFC 8414 (`/.well-known/oauth-authorization-server`).
+
+    Authorization is layered: OAuth scopes narrow what a token may do, Flow
+    policy roles gate each endpoint, and the content repository enforces
+    node/workspace-level permissions structurally on every read and command.
+    Scopes can only narrow access, never widen it.
+
+    ## Conventions
+
+    - Every `/api` response is JSON (`render` returns HTML) and is marked
+      `Cache-Control: private, no-store` - responses are per-account.
+    - Errors share one body shape: `{"error": "<machine_code>",
+      "error_description": "<human message>", ...detail fields}`.
+    - Nodes are addressed by an opaque, URL-safe encoded node address that
+      carries content repository, workspace, dimension space point and node
+      aggregate id. Treat it as a token: obtained from the API, passed back
+      verbatim.
+  license:
+    name: GPL-3.0-or-later
+    identifier: GPL-3.0-or-later
+
+# Replaced at serve time with the actual request base URI.
+servers:
+  - url: 'http://localhost:8080'
+
+# Default: any valid bearer token; operations override this with the specific
+# scope they require. Public endpoints override with an empty array.
+security:
+  - oauth2: []
+
+tags:
+  - name: OAuth
+    description: |
+      OAuth 2.1 protocol endpoints (public). Authorization code + PKCE,
+      refresh tokens, client credentials, RFC 7591 dynamic client
+      registration and RFC 8414 / RFC 9728 discovery metadata.
+  - name: Meta
+    description: This OpenAPI document and the interactive reference.
+  - name: Me
+    description: The authenticated account - identity, permissions, self-service profile.
+  - name: Nodes
+    description: Read the content graph - nodes, their relations, rendered HTML.
+  - name: NodeTypes
+    description: The node type schema.
+  - name: Dimensions
+    description: The configured content dimensions.
+  - name: Sites
+    description: Sites and their domains.
+  - name: Users
+    description: Backend user administration.
+  - name: DataSources
+    description: Invoke Neos data sources (select-box style editor options).
+  - name: Workspaces
+    description: |
+      Workspaces - inspecting pending changes, diffs, trash, publishing,
+      role assignments, the change event feed and collaboration presence.
+  - name: Commands
+    description: |
+      The write API - a discriminated union of content repository commands,
+      executed one at a time or as an atomic-per-command batch.
+  - name: Media
+    description: Media assets, asset sources, collections and tags.
+
+paths:
+  # --- API documentation --------------------------------------------------
+
+  /api/openapi.json:
+    get:
+      tags: [Meta]
+      operationId: getOpenApiDocument
+      summary: This OpenAPI document
+      description: >
+        The OpenAPI 3.1 description of this API, with server URL, OAuth
+        endpoint URLs and scope catalog stamped in for the serving host.
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI document.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: An OpenAPI 3.1 document.
+
+  /api/docs:
+    get:
+      tags: [Meta]
+      operationId: getApiReference
+      summary: Interactive API reference
+      description: A self-hosted Scalar page rendering this document.
+      security: []
+      responses:
+        '200':
+          description: The reference page.
+          content:
+            text/html:
+              schema: { type: string }
+  # --- OAuth 2.1 protocol endpoints --------------------------------------
+
+  /oauth/authorize:
+    get:
+      tags: [OAuth]
+      operationId: oauthAuthorize
+      summary: Authorization endpoint (browser flow)
+      description: |
+        Starts the authorization code + PKCE flow. Requires a logged-in Neos
+        backend session; without one the request is intercepted by the Neos
+        login and resumed afterwards. First-party clients are auto-approved
+        (302 straight to the redirect URI); third-party clients get an HTML
+        consent screen whose form posts back to this URL.
+      security: []
+      parameters:
+        - name: response_type
+          in: query
+          required: true
+          schema: { type: string, enum: [code] }
+        - name: client_id
+          in: query
+          required: true
+          schema: { type: string }
+        - name: redirect_uri
+          in: query
+          required: true
+          schema: { type: string, format: uri }
+          description: Must exactly match one of the client's registered redirect URIs.
+        - name: scope
+          in: query
+          required: false
+          schema: { type: string }
+          description: Space-separated scopes; intersected with the client's allowed scopes.
+        - name: state
+          in: query
+          required: false
+          schema: { type: string }
+        - name: code_challenge
+          in: query
+          required: true
+          schema: { type: string }
+          description: PKCE code challenge (required - public clients only support S256).
+        - name: code_challenge_method
+          in: query
+          required: false
+          schema: { type: string, enum: [S256] }
+      responses:
+        '200':
+          description: HTML consent screen (third-party clients).
+          content:
+            text/html:
+              schema: { type: string }
+        '302':
+          description: >
+            Redirect to the client's redirect URI with `code` and `state`
+            (first-party auto-approval), or to the Neos backend login when no
+            session exists.
+        '400':
+          description: OAuth protocol error (league/oauth2-server error body).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthProtocolError' }
+    post:
+      tags: [OAuth]
+      operationId: oauthAuthorizeApprove
+      summary: Authorization approval (consent form submission)
+      description: |
+        Browser-only - the consent screen posts its decision here together with
+        the original authorization parameters and a CSRF token. Not called by
+        API clients directly.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                decision: { type: string, enum: [approve, deny] }
+                __csrfToken: { type: string }
+              additionalProperties: true
+              description: Also carries the original query parameters of the GET request as hidden fields.
+      responses:
+        '302':
+          description: Redirect to the client's redirect URI with `code` (approved) or an `error` parameter (denied).
+        '401':
+          description: The backend session expired during authorization (HTML page).
+          content:
+            text/html:
+              schema: { type: string }
+
+  /oauth/token:
+    post:
+      tags: [OAuth]
+      operationId: oauthToken
+      summary: Token endpoint
+      description: |
+        Issues access tokens (JWT, RSA-signed). Supports `authorization_code`
+        (+ PKCE), `refresh_token` and `client_credentials` grants. Confidential
+        clients authenticate via `client_secret_basic` or `client_secret_post`;
+        public clients send only their `client_id`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type]
+              properties:
+                grant_type:
+                  type: string
+                  enum: [authorization_code, refresh_token, client_credentials]
+                code:
+                  type: string
+                  description: Required for `authorization_code`.
+                redirect_uri:
+                  type: string
+                  format: uri
+                  description: Required for `authorization_code`; must match the authorization request.
+                code_verifier:
+                  type: string
+                  description: PKCE verifier, required for `authorization_code` with public clients.
+                refresh_token:
+                  type: string
+                  description: Required for `refresh_token`.
+                client_id: { type: string }
+                client_secret:
+                  type: string
+                  description: Confidential clients only (alternatively HTTP Basic auth).
+                scope:
+                  type: string
+                  description: Space-separated scopes; may only narrow the granted set.
+      responses:
+        '200':
+          description: Token issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400':
+          description: 'OAuth protocol error, e.g. `invalid_grant`, `invalid_request`, `unsupported_grant_type`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthProtocolError' }
+        '401':
+          description: 'Client authentication failed (`invalid_client`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthProtocolError' }
+
+  /oauth/register:
+    post:
+      tags: [OAuth]
+      operationId: oauthRegisterClient
+      summary: Dynamic client registration (RFC 7591)
+      description: |
+        Self-registration for PUBLIC clients only (PKCE, no secret) - used by
+        MCP clients. Disabled by default
+        (`Medienreaktor.NeosApi.oauth.dynamicClientRegistration.enabled`);
+        confidential clients are created via `./flow neosapi:createclient`.
+        A registered client gains no permissions by itself: every token it
+        acquires is bound to the approving user's account and policies.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [redirect_uris]
+              properties:
+                redirect_uris:
+                  type: array
+                  minItems: 1
+                  items: { type: string, format: uri }
+                  description: Each URI must use https (http is allowed on loopback hosts only).
+                client_name:
+                  type: string
+                  maxLength: 200
+                token_endpoint_auth_method:
+                  type: string
+                  enum: [none]
+                  default: none
+                  description: Only `none` (public client) is accepted.
+                grant_types:
+                  type: array
+                  items: { type: string, enum: [authorization_code, refresh_token] }
+                  description: Intersected with the allowed set; defaults to both.
+                scope:
+                  type: string
+                  description: Space-separated; intersected with the configured scope catalog. Defaults to all configured scopes.
+      responses:
+        '201':
+          description: Client registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [client_id, client_id_issued_at, client_name, redirect_uris, grant_types, response_types, token_endpoint_auth_method, scope]
+                properties:
+                  client_id: { type: string }
+                  client_id_issued_at: { type: integer, description: Unix timestamp. }
+                  client_name: { type: string }
+                  redirect_uris:
+                    type: array
+                    items: { type: string }
+                  grant_types:
+                    type: array
+                    items: { type: string }
+                  response_types:
+                    type: array
+                    items: { type: string, enum: [code] }
+                  token_endpoint_auth_method: { type: string, enum: [none] }
+                  scope: { type: string, description: Space-separated granted scopes. }
+        '400':
+          description: '`invalid_client_metadata` (body not a JSON object, or a non-`none` auth method) or `invalid_redirect_uri`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: '`access_denied` - dynamic client registration is disabled.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [OAuth]
+      operationId: oauthAuthorizationServerMetadata
+      summary: Authorization server metadata (RFC 8414)
+      security: []
+      responses:
+        '200':
+          description: Discovery document.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [issuer, authorization_endpoint, token_endpoint, registration_endpoint, scopes_supported, response_types_supported, response_modes_supported, grant_types_supported, token_endpoint_auth_methods_supported, code_challenge_methods_supported]
+                properties:
+                  issuer: { type: string, format: uri }
+                  authorization_endpoint: { type: string, format: uri }
+                  token_endpoint: { type: string, format: uri }
+                  registration_endpoint:
+                    type: [string, 'null']
+                    format: uri
+                    description: '`null` while dynamic client registration is disabled.'
+                  scopes_supported:
+                    type: array
+                    items: { type: string }
+                  response_types_supported:
+                    type: array
+                    items: { type: string, enum: [code] }
+                  response_modes_supported:
+                    type: array
+                    items: { type: string, enum: [query] }
+                  grant_types_supported:
+                    type: array
+                    items: { type: string, enum: [authorization_code, refresh_token, client_credentials] }
+                  token_endpoint_auth_methods_supported:
+                    type: array
+                    items: { type: string, enum: [client_secret_basic, client_secret_post, none] }
+                  code_challenge_methods_supported:
+                    type: array
+                    items: { type: string, enum: [S256] }
+
+  /.well-known/oauth-protected-resource:
+    get:
+      tags: [OAuth]
+      operationId: oauthProtectedResourceMetadata
+      summary: Protected resource metadata (RFC 9728)
+      security: []
+      responses:
+        '200':
+          description: Discovery document.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [resource, authorization_servers, scopes_supported, bearer_methods_supported]
+                properties:
+                  resource: { type: string, format: uri }
+                  authorization_servers:
+                    type: array
+                    items: { type: string, format: uri }
+                  scopes_supported:
+                    type: array
+                    items: { type: string }
+                  bearer_methods_supported:
+                    type: array
+                    items: { type: string, enum: [header] }
+  # --- Me -------------------------------------------------------------------
+
+  /api/me:
+    get:
+      tags: [Me]
+      operationId: getMe
+      summary: The authenticated identity
+      description: >
+        Account, associated Neos user, effective roles, token scopes, OAuth
+        client and the capability flags configured under
+        `Medienreaktor.NeosApi.accountPermissions` (mirroring classic backend
+        module visibility).
+      security:
+        - oauth2: [neos.read]
+      responses:
+        '200':
+          description: The authenticated identity.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [account, user, roles, scopes, client, contentRepository, permissions]
+                properties:
+                  account:
+                    type: [string, 'null']
+                    description: Flow account identifier (username); `null` when no account is present.
+                  user:
+                    oneOf:
+                      - type: 'null'
+                      - type: object
+                        required: [id, label]
+                        properties:
+                          id: { type: string }
+                          label: { type: string, description: Full name. }
+                    description: '`null` when the account has no associated Neos user.'
+                  roles:
+                    type: array
+                    items: { type: string }
+                    description: Role identifiers including implicit ones (`Neos.Flow:Everybody`, ...).
+                  scopes:
+                    type: array
+                    items: { type: string }
+                    description: Scopes of the bearer token.
+                  client:
+                    type: [string, 'null']
+                    description: OAuth client identifier of the bearer token.
+                  contentRepository: { type: string }
+                  permissions:
+                    type: object
+                    additionalProperties: { type: boolean }
+                    description: >
+                      Capability flags; keys are configured per distribution
+                      (default: media, users, sites, workspaces, administration).
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/me/profile:
+    get:
+      tags: [Me]
+      operationId: getMyProfile
+      summary: Own profile
+      security:
+        - oauth2: [neos.read]
+      responses:
+        '200':
+          description: The profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [profile]
+                properties:
+                  profile: { $ref: '#/components/schemas/Profile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`no_user` - the account has no associated Neos user.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      tags: [Me]
+      operationId: updateMyProfile
+      summary: Update own profile
+      description: >
+        Partial update; absent keys stay unchanged. `preferences` merges
+        per key - a `null` value deletes that key, anything else is stored
+        verbatim (free-form client preferences).
+      security:
+        - oauth2: [neos.write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstName: { type: string, description: Must not be blank. }
+                lastName: { type: string, description: Must not be blank. }
+                email: { type: string, format: email }
+                interfaceLanguage:
+                  type: string
+                  description: Must be one of the configured available languages.
+                preferences:
+                  type: object
+                  additionalProperties: true
+                  description: >
+                    Partial merge; `null` deletes a key. The reserved key
+                    `interfaceLanguage` is refused here.
+      responses:
+        '200':
+          description: The updated profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [profile]
+                properties:
+                  profile: { $ref: '#/components/schemas/Profile' }
+        '400':
+          description: >
+            `invalid_name`, `invalid_email`, `invalid_interface_language`,
+            `reserved_preference` or `invalid_preference_key`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`no_user` - the account has no associated Neos user.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/me/password:
+    put:
+      tags: [Me]
+      operationId: changeMyPassword
+      summary: Change own password
+      security:
+        - oauth2: [neos.write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Password changed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Success' }
+        '400':
+          description: '`invalid_password` (new password empty) or `invalid_current_password`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`no_user` - the account has no associated Neos user.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  # --- Nodes, node types, dimensions, data sources -------------------------
+
+  /api/nodes/{nodeAddress}:
+    get:
+      tags: [Nodes]
+      operationId: getNode
+      summary: A single node
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/nodeAddress'
+        - $ref: '#/components/parameters/nodeTypesFilter'
+        - $ref: '#/components/parameters/visibility'
+        - $ref: '#/components/parameters/includeDeleted'
+      responses:
+        '200':
+          description: The node.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node]
+                properties:
+                  node: { $ref: '#/components/schemas/Node' }
+        '400': { $ref: '#/components/responses/InvalidNodeAddress' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`node_not_found` - the node does not exist in this subgraph or is not visible for this account.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/nodes/{nodeAddress}/render:
+    get:
+      tags: [Nodes]
+      operationId: renderNode
+      summary: Render a node through Fusion
+      description: >
+        Returns rendered HTML - the whole page for a document node (no
+        `fusionPath`), or the addressed fragment for a content node. Edit
+        modes render with editing metadata and the account's own visibility;
+        non-edit modes render with frontend visibility (disabled nodes
+        excluded).
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/nodeAddress'
+        - name: mode
+          in: query
+          required: false
+          schema: { type: string, default: frontend }
+          description: >
+            `frontend` or any configured edit/preview mode key
+            (`Neos.Neos.Interface.editPreviewModes`), e.g. `inPlace`,
+            `rawContent`.
+        - name: fusionPath
+          in: query
+          required: false
+          schema: { type: string, pattern: '^[a-zA-Z0-9_/<>.:@\-]+$' }
+          description: Required for content (non-document) nodes.
+        - $ref: '#/components/parameters/includeDeleted'
+      responses:
+        '200':
+          description: 'The rendered HTML (`Cache-Control: no-cache`).'
+          content:
+            text/html:
+              schema: { type: string }
+        '400':
+          description: >
+            `invalid_node_address`, `invalid_rendering_mode`,
+            `invalid_fusion_path` or `missing_fusion_path`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`node_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: '`rendering_failed` - Fusion threw while rendering (stale fusion path, runtime error).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/nodes/{nodeAddress}/{relation}:
+    get:
+      tags: [Nodes]
+      operationId: getNodeRelation
+      summary: Related nodes and node facts
+      description: |
+        One endpoint for everything reachable *from* a node. The response
+        shape depends on `relation`:
+
+        | relation | response |
+        |---|---|
+        | `children`, `ancestors` | `{"nodes": [Node]}` |
+        | `descendants` | `{"nodes": [Node]}`, each with a `breadcrumb` when `search` or `breadcrumbs` is used |
+        | `parent` | `{"node": Node}` |
+        | `references` | `{"references": [Reference]}` |
+        | `variants` | `{"variants": {occupied/covered dimension space points}}` |
+        | `allowed-child-node-types` | `{"nodeTypes": [string]}` |
+        | `uri-path-segment` | `{"slug": string}` |
+
+        `children` and `descendants` paginate only when `limit` is given.
+        `ancestors` returns nearest-first and ignores pagination.
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/nodeAddress'
+        - name: relation
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [children, descendants, ancestors, parent, references, variants, allowed-child-node-types, uri-path-segment]
+        - $ref: '#/components/parameters/nodeTypesFilter'
+        - $ref: '#/components/parameters/visibility'
+        - $ref: '#/components/parameters/includeDeleted'
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1 }
+          description: 'Enables pagination for `children`/`descendants`.'
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+          description: Only effective together with `limit`.
+        - name: search
+          in: query
+          required: false
+          schema: { type: string }
+          description: '`descendants` only - fulltext term, or a property match with `searchProperty`.'
+        - name: searchProperty
+          in: query
+          required: false
+          schema: { type: string }
+          description: '`descendants` only - match `search` case-insensitively against this single property.'
+        - name: breadcrumbs
+          in: query
+          required: false
+          schema: { type: string }
+          description: '`descendants` only - any non-empty value adds a `breadcrumb` to every node.'
+        - name: text
+          in: query
+          required: false
+          schema: { type: string }
+          description: '`uri-path-segment` only - source text for the slug (defaults to the node label).'
+      responses:
+        '200':
+          description: The relation result (shape depends on `relation`, see above).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - title: Nodes
+                    type: object
+                    required: [nodes]
+                    properties:
+                      nodes:
+                        type: array
+                        items: { $ref: '#/components/schemas/NodeWithBreadcrumb' }
+                  - title: Node
+                    type: object
+                    required: [node]
+                    properties:
+                      node: { $ref: '#/components/schemas/Node' }
+                  - title: References
+                    type: object
+                    required: [references]
+                    properties:
+                      references:
+                        type: array
+                        items: { $ref: '#/components/schemas/Reference' }
+                  - title: Variants
+                    type: object
+                    required: [variants]
+                    properties:
+                      variants:
+                        type: object
+                        required: [occupiedDimensionSpacePoints, coveredDimensionSpacePoints]
+                        properties:
+                          occupiedDimensionSpacePoints:
+                            type: array
+                            items: { $ref: '#/components/schemas/DimensionSpacePoint' }
+                          coveredDimensionSpacePoints:
+                            type: array
+                            items: { $ref: '#/components/schemas/DimensionSpacePoint' }
+                  - title: AllowedChildNodeTypes
+                    type: object
+                    required: [nodeTypes]
+                    properties:
+                      nodeTypes:
+                        type: array
+                        items: { type: string }
+                        description: Non-abstract node type names allowed below this node.
+                  - title: UriPathSegment
+                    type: object
+                    required: [slug]
+                    properties:
+                      slug: { type: string }
+        '400': { $ref: '#/components/responses/InvalidNodeAddress' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`node_not_found` or `unknown_relation`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/node-types:
+    get:
+      tags: [NodeTypes]
+      operationId: listNodeTypes
+      summary: All node types
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - name: includeProperties
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Add `properties` and `references` to every entry.
+      responses:
+        '200':
+          description: Node types (including abstract ones) and the configured creation-dialog groups.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodeTypes, groups]
+                properties:
+                  nodeTypes:
+                    type: array
+                    items: { $ref: '#/components/schemas/NodeTypeSummary' }
+                  groups:
+                    type: object
+                    description: '`Neos.Neos.nodeTypes.groups` passed through verbatim.'
+                    additionalProperties:
+                      type: object
+                      properties:
+                        label: { type: string, description: Typically an untranslated XLIFF id. }
+                        position: {}
+                        collapsed: { type: boolean }
+                      additionalProperties: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/node-types/{nodeTypeName}:
+    get:
+      tags: [NodeTypes]
+      operationId: getNodeType
+      summary: One node type with its full configuration
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - name: nodeTypeName
+          in: path
+          required: true
+          schema: { type: string }
+          description: 'Fully qualified name, e.g. `Neos.Neos:Document`.'
+      responses:
+        '200':
+          description: The node type.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, abstract, superTypes, configuration]
+                properties:
+                  name: { type: string }
+                  abstract: { type: boolean }
+                  superTypes:
+                    type: array
+                    items: { type: string }
+                  configuration:
+                    type: object
+                    additionalProperties: true
+                    description: The full merged node type configuration (ui, properties, references, constraints, options, ...).
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`nodetype_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/dimensions:
+    get:
+      tags: [Dimensions]
+      operationId: listDimensions
+      summary: The configured content dimensions
+      security:
+        - oauth2: [neos.read]
+      responses:
+        '200':
+          description: Dimensions (labels translated) and every allowed combination.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dimensions, allowedDimensionSpacePoints]
+                properties:
+                  dimensions:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, label, values]
+                      properties:
+                        id: { type: string }
+                        label: { type: string }
+                        icon: { type: [string, 'null'] }
+                        values:
+                          type: array
+                          description: Configuration order, depth-first - specializations follow their generalization.
+                          items:
+                            type: object
+                            required: [value, label, specializationDepth]
+                            properties:
+                              value: { type: string }
+                              label: { type: string }
+                              specializationDepth: { type: integer, minimum: 0 }
+                  allowedDimensionSpacePoints:
+                    type: array
+                    items: { $ref: '#/components/schemas/DimensionSpacePoint' }
+                    description: 'For a dimension-less repository this is `[{}]`.'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/data-sources/{dataSourceIdentifier}:
+    get:
+      tags: [DataSources]
+      operationId: invokeDataSource
+      summary: Invoke a Neos data source
+      description: >
+        Calls a registered `DataSourceInterface` implementation (the ones
+        backing select-box editors). All query parameters other than `node`
+        are forwarded verbatim to the data source as its arguments
+        (`editorOptions.dataSourceAdditionalData` contract).
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - name: dataSourceIdentifier
+          in: path
+          required: true
+          schema: { type: string }
+        - name: node
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/NodeAddress' }
+          description: Optional node context for the data source.
+      responses:
+        '200':
+          description: The data source result.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    description: >
+                      The raw `getData()` return value - schema is data-source
+                      specific; conventionally a list of `{value, label}`
+                      options.
+        '400': { $ref: '#/components/responses/InvalidNodeAddress' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`unknown_data_source` or `node_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: '`data_source_failed` - the data source threw (message logged, not exposed).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  # --- Sites ----------------------------------------------------------------
+
+  /api/sites:
+    get:
+      tags: [Sites]
+      operationId: listSites
+      summary: All sites
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - name: workspace
+          in: query
+          required: false
+          schema: { type: string, default: live }
+        - name: dimensions
+          in: query
+          required: false
+          schema: { type: string }
+          description: 'JSON-encoded dimension coordinates, e.g. `{"language":"de"}`. Defaults to the first root generalization.'
+      responses:
+        '200':
+          description: All sites (including offline ones) with their site node resolved in the requested subgraph.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, dimensionSpacePoint, sites]
+                properties:
+                  workspace: { type: string }
+                  dimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+                  sites:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/Site'
+                        - type: object
+                          required: [aggregateId, nodeAddress]
+                          properties:
+                            aggregateId:
+                              type: [string, 'null']
+                              description: '`null` when the site node is absent from the requested subgraph.'
+                            nodeAddress:
+                              oneOf:
+                                - $ref: '#/components/schemas/NodeAddress'
+                                - type: 'null'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Sites]
+      operationId: createSite
+      summary: Create a site
+      description: Creates the site plus a fresh site node in the live workspace. Administrators only.
+      security:
+        - oauth2: [neos.write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [packageKey, name, nodeTypeName]
+              properties:
+                packageKey: { type: string, description: 'An installed package of type `neos-site`.' }
+                name: { type: string, description: Human readable site name. }
+                nodeTypeName: { type: string, description: 'Must be based on `Neos.Neos:Site`.' }
+                nodeName:
+                  type: string
+                  description: Site node name; derived from `name` when omitted.
+                inactive: { type: boolean, default: false }
+      responses:
+        '201':
+          description: The created site.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [site]
+                properties:
+                  site: { $ref: '#/components/schemas/Site' }
+        '400':
+          description: '`invalid_name`, `invalid_package` or `invalid_node_type`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`site_exists` - a site with this site node name already exists.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/sites/options:
+    get:
+      tags: [Sites]
+      operationId: getSiteCreationOptions
+      summary: Site creation options
+      description: Available site packages and site node types. Administrators only.
+      security:
+        - oauth2: [neos.read]
+      responses:
+        '200':
+          description: The options catalog.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [packages, nodeTypes]
+                properties:
+                  packages:
+                    type: array
+                    items:
+                      type: object
+                      required: [packageKey]
+                      properties:
+                        packageKey: { type: string }
+                  nodeTypes:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, label]
+                      properties:
+                        name: { type: string }
+                        label: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/sites/{siteNodeName}:
+    patch:
+      tags: [Sites]
+      operationId: updateSite
+      summary: Update a site
+      description: Administrators only. Absent keys stay unchanged.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/siteNodeName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, description: Must not be blank. }
+                state: { type: string, enum: [online, offline] }
+                primaryDomainId:
+                  type: string
+                  description: A domain id of this site; empty string clears the explicit primary domain.
+      responses:
+        '200':
+          description: The updated site.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [site]
+                properties:
+                  site: { $ref: '#/components/schemas/Site' }
+        '400':
+          description: '`invalid_name`, `invalid_state` or `invalid_domain`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`site_not_found` or `domain_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Sites]
+      operationId: deleteSite
+      summary: Delete a site
+      description: Prunes the site - its node in all workspaces, domains and asset collection. Administrators only.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/siteNodeName'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Success' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`site_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/sites/{siteNodeName}/domains:
+    post:
+      tags: [Sites]
+      operationId: createDomain
+      summary: Add a domain to a site
+      description: Administrators only. Returns the whole site, never a bare domain.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/siteNodeName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hostname]
+              properties:
+                hostname:
+                  type: string
+                  description: Lowercased; must not contain a scheme, port or path.
+                scheme: { type: [string, 'null'], enum: [http, https, null] }
+                port: { type: [integer, 'null'], minimum: 1, maximum: 65535 }
+                active: { type: boolean, default: true }
+      responses:
+        '201':
+          description: The site including the new domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [site]
+                properties:
+                  site: { $ref: '#/components/schemas/Site' }
+        '400':
+          description: '`invalid_hostname`, `invalid_scheme` or `invalid_port`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`site_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: '`domain_exists`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/sites/{siteNodeName}/domains/{domainId}:
+    patch:
+      tags: [Sites]
+      operationId: updateDomain
+      summary: Update a domain
+      description: >
+        Administrators only. Absent keys stay unchanged; an empty `scheme`
+        clears the scheme, `port: 0` clears the port.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/siteNodeName'
+        - $ref: '#/components/parameters/domainId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hostname: { type: string }
+                scheme: { type: [string, 'null'], enum: [http, https, '', null] }
+                port: { type: [integer, 'null'], minimum: 0, maximum: 65535 }
+                active: { type: boolean }
+      responses:
+        '200':
+          description: The site including the updated domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [site]
+                properties:
+                  site: { $ref: '#/components/schemas/Site' }
+        '400':
+          description: '`invalid_domain`, `invalid_hostname`, `invalid_scheme` or `invalid_port`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`site_not_found` or `domain_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: '`domain_exists`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Sites]
+      operationId: deleteDomain
+      summary: Remove a domain
+      description: >
+        Administrators only. If the removed domain was the explicit primary,
+        the effective primary falls back to the first active domain.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/siteNodeName'
+        - $ref: '#/components/parameters/domainId'
+      responses:
+        '200':
+          description: The site without the removed domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [site]
+                properties:
+                  site: { $ref: '#/components/schemas/Site' }
+        '400':
+          description: '`invalid_domain` - the domain belongs to another site.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`site_not_found` or `domain_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  # --- Users ------------------------------------------------------------------
+
+  /api/users:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: All users
+      security:
+        - oauth2: [neos.read]
+      responses:
+        '200':
+          description: All users (no pagination).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users]
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Create a user
+      description: Administrators only.
+      security:
+        - oauth2: [neos.write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, firstName, lastName]
+              properties:
+                username: { type: string }
+                password: { type: string, minLength: 1 }
+                firstName: { type: string }
+                lastName: { type: string }
+                roles:
+                  type: array
+                  items: { type: string }
+                  description: >
+                    Role identifiers; short names are prefixed with
+                    `Neos.Neos:`. Omitted = Neos default roles, `[]` =
+                    explicitly none.
+                email: { type: string, format: email }
+      responses:
+        '201':
+          description: The created user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '400':
+          description: '`invalid_username`, `invalid_password`, `invalid_name`, `invalid_role` or `invalid_email`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`user_exists`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/users/roles:
+    get:
+      tags: [Users]
+      operationId: listAssignableRoles
+      summary: Assignable roles
+      description: All non-abstract Flow roles, for the admin role picker. Administrators only.
+      security:
+        - oauth2: [neos.read]
+      responses:
+        '200':
+          description: The role catalog, sorted by label.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [roles]
+                properties:
+                  roles:
+                    type: array
+                    items:
+                      type: object
+                      required: [identifier, label, packageKey]
+                      properties:
+                        identifier: { type: string }
+                        label: { type: string }
+                        packageKey: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/users/{userId}:
+    get:
+      tags: [Users]
+      operationId: getUser
+      summary: One user
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/userId'
+      responses:
+        '200':
+          description: The user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '400':
+          description: '`invalid_user_id`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`user_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      tags: [Users]
+      operationId: updateUser
+      summary: Update a user
+      description: >
+        Administrators only. Absent keys stay unchanged. `email: ""` removes
+        the address, `roles` replaces the role set on every account,
+        `password` is an administrative reset. Self-lockout is refused
+        (`cannot_demote_self`, `cannot_deactivate_self`).
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/userId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                email: { type: string }
+                roles:
+                  type: array
+                  items: { type: string }
+                active: { type: boolean }
+                password: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: The updated user.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user]
+                properties:
+                  user: { $ref: '#/components/schemas/User' }
+        '400':
+          description: >
+            `invalid_user_id`, `invalid_name`, `invalid_email`,
+            `invalid_role`, `invalid_password`, `cannot_demote_self` or
+            `cannot_deactivate_self`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`user_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Users]
+      operationId: deleteUser
+      summary: Delete a user
+      description: >
+        Administrators only. Deletes the user, their accounts and their
+        personal workspaces including pending changes. Deleting yourself is
+        refused (`cannot_delete_self`).
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/userId'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Success' }
+        '400':
+          description: '`invalid_user_id` or `cannot_delete_self`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`user_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  # --- Workspaces -------------------------------------------------------------
+
+  /api/workspaces:
+    get:
+      tags: [Workspaces]
+      operationId: listWorkspaces
+      summary: All readable workspaces
+      description: >
+        Lists every workspace the account may read (others are omitted).
+        Creates the user's personal workspace on the fly when it is missing.
+      security:
+        - oauth2: [neos.read]
+      responses:
+        '200':
+          description: The workspaces.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspaces]
+                properties:
+                  workspaces:
+                    type: array
+                    items: { $ref: '#/components/schemas/Workspace' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Workspaces]
+      operationId: createWorkspace
+      summary: Create a workspace
+      description: >
+        The workspace name is derived from the title. `shared` workspaces are
+        collaborative for every editor with the creator managing; `private`
+        ones belong to the creator alone.
+      security:
+        - oauth2: [neos.write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, description: Must not be blank. }
+                description: { type: string }
+                baseWorkspaceName: { type: string, default: live }
+                visibility: { type: string, enum: [shared, private], default: shared }
+      responses:
+        '201':
+          description: The created workspace.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace]
+                properties:
+                  workspace: { $ref: '#/components/schemas/Workspace' }
+        '400':
+          description: '`invalid_title`, `invalid_visibility` or `invalid_base_workspace`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`no_user` - the account is not associated with a Neos user.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          description: '`workspace_not_ready` - created but not readable back yet.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/workspaces/{workspaceName}:
+    get:
+      tags: [Workspaces]
+      operationId: getWorkspace
+      summary: One workspace
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      responses:
+        '200':
+          description: The workspace with its pending-changes count.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace]
+                properties:
+                  workspace:
+                    allOf:
+                      - $ref: '#/components/schemas/Workspace'
+                      - type: object
+                        required: [pendingChanges]
+                        properties:
+                          pendingChanges: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+    patch:
+      tags: [Workspaces]
+      operationId: updateWorkspace
+      summary: Update title/description
+      description: Requires the manage permission on the workspace.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, description: Must not be blank. }
+                description: { type: string, description: Empty string clears it. }
+      responses:
+        '200':
+          description: The updated workspace.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace]
+                properties:
+                  workspace: { $ref: '#/components/schemas/Workspace' }
+        '400':
+          description: '`invalid_title`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+    delete:
+      tags: [Workspaces]
+      operationId: deleteWorkspace
+      summary: Delete a workspace
+      description: >
+        Requires the manage permission. Root and personal workspaces cannot
+        be deleted. A workspace with pending changes requires `force=true`.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+        - name: force
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: 'Also accepted in a JSON body as `{"force": true}`.'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Success' }
+        '400':
+          description: '`cannot_delete_root` or `cannot_delete_personal`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+        '409':
+          description: >
+            `workspace_has_dependents` (extra field `dependents`: string[]) or
+            `workspace_has_changes` (extra field `pendingChanges`: integer,
+            pass `force=true` to override).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/workspaces/{workspaceName}/roles:
+    get:
+      tags: [Workspaces]
+      operationId: listWorkspaceRoles
+      summary: Role assignments
+      description: Requires the manage permission on the workspace.
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      responses:
+        '200':
+          description: The assignments.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assignments]
+                properties:
+                  assignments:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkspaceRoleAssignment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+    post:
+      tags: [Workspaces]
+      operationId: assignWorkspaceRole
+      summary: Assign a role
+      description: Requires the manage permission. A subject can hold only one role per workspace.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subjectType, subject, role]
+              properties:
+                subjectType: { type: string, enum: [USER, GROUP] }
+                subject:
+                  type: string
+                  description: A user id for USER, a Flow role identifier for GROUP.
+                role: { type: string, enum: [VIEWER, COLLABORATOR, MANAGER] }
+      responses:
+        '201':
+          description: The full updated assignment list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assignments]
+                properties:
+                  assignments:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkspaceRoleAssignment' }
+        '400':
+          description: '`invalid_subject_type`, `invalid_subject` or `invalid_role`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+        '409':
+          description: '`subject_already_assigned` - remove the existing assignment first.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/workspaces/{workspaceName}/roles/{subjectType}/{subject}:
+    delete:
+      tags: [Workspaces]
+      operationId: unassignWorkspaceRole
+      summary: Remove a role assignment
+      description: >
+        Requires the manage permission. The assignment is addressed in the
+        path because DELETE request bodies are dropped by many intermediaries.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+        - name: subjectType
+          in: path
+          required: true
+          schema: { type: string, enum: [USER, GROUP] }
+        - name: subject
+          in: path
+          required: true
+          schema: { type: string }
+          description: A user id or a Flow role identifier (colons and dots are allowed).
+      responses:
+        '200':
+          description: The full remaining assignment list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assignments]
+                properties:
+                  assignments:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkspaceRoleAssignment' }
+        '400':
+          description: '`invalid_subject_type` or `invalid_subject`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`workspace_not_found` or `assignment_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/workspaces/{workspaceName}/changes:
+    get:
+      tags: [Workspaces]
+      operationId: listWorkspaceChanges
+      summary: Pending changes (per node and dimension)
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      responses:
+        '200':
+          description: One row per pending-changes-projection row (fanned out per node and dimension).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, baseWorkspace, status, changes]
+                properties:
+                  workspace: { type: string }
+                  baseWorkspace: { type: [string, 'null'] }
+                  status: { $ref: '#/components/schemas/WorkspaceStatus' }
+                  changes:
+                    type: array
+                    items:
+                      type: object
+                      required: [nodeAggregateId, documentAggregateId, siteAggregateId, originDimensionSpacePoint, created, changed, moved, deleted]
+                      properties:
+                        nodeAggregateId: { type: string }
+                        documentAggregateId: { type: [string, 'null'] }
+                        siteAggregateId: { type: [string, 'null'] }
+                        originDimensionSpacePoint:
+                          oneOf:
+                            - $ref: '#/components/schemas/DimensionSpacePoint'
+                            - type: 'null'
+                        created: { type: boolean }
+                        changed: { type: boolean }
+                        moved: { type: boolean }
+                        deleted: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+
+  /api/workspaces/{workspaceName}/document-changes:
+    get:
+      tags: [Workspaces]
+      operationId: listWorkspaceDocumentChanges
+      summary: Pending changes grouped by document
+      description: >
+        Aggregates the pending changes per document node with labels,
+        breadcrumbs and counts - the publish-dialog view. Changes whose
+        document cannot be resolved are omitted.
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      responses:
+        '200':
+          description: The changed documents, in first-seen order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, baseWorkspace, status, documents]
+                properties:
+                  workspace: { type: string }
+                  baseWorkspace: { type: [string, 'null'] }
+                  status: { $ref: '#/components/schemas/WorkspaceStatus' }
+                  documents:
+                    type: array
+                    items: { $ref: '#/components/schemas/DocumentChange' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+
+  /api/workspaces/{workspaceName}/document-diff:
+    get:
+      tags: [Workspaces]
+      operationId: getWorkspaceDocumentDiff
+      summary: Per-node diff of one document against the base workspace
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+        - name: documentAggregateId
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: >
+            The changed node variants of the document. `changes` is always
+            empty for status `removed`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, baseWorkspace, documentAggregateId, nodes]
+                properties:
+                  workspace: { type: string }
+                  baseWorkspace: { type: [string, 'null'] }
+                  documentAggregateId: { type: string }
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      required: [nodeAggregateId, dimensions, status, nodeLabel, nodeType, icon, changes]
+                      properties:
+                        nodeAggregateId: { type: string }
+                        dimensions: { $ref: '#/components/schemas/DimensionSpacePoint' }
+                        status: { type: string, enum: [created, removed, moved, changed, variant] }
+                        nodeLabel: { type: string }
+                        nodeType: { type: string }
+                        icon: { type: [string, 'null'] }
+                        changes:
+                          type: array
+                          items: { $ref: '#/components/schemas/ChangeRow' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+
+  /api/workspaces/{workspaceName}/trash:
+    get:
+      tags: [Workspaces]
+      operationId: listWorkspaceTrash
+      summary: Deleted-but-unpublished nodes (trash bin)
+      description: >
+        Soft-removed nodes whose deletion is still pending in this workspace,
+        newest first, capped at 500 items (`truncated` flags the cap).
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+        - name: documentsOnly
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The trash items.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, status, truncated, items]
+                properties:
+                  workspace: { type: string }
+                  status: { $ref: '#/components/schemas/WorkspaceStatus' }
+                  truncated: { type: boolean }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/TrashItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+
+  /api/workspaces/{workspaceName}/trash/{nodeAggregateId}/restore:
+    post:
+      tags: [Workspaces]
+      operationId: restoreFromTrash
+      summary: Restore a deleted node
+      description: >
+        Undoes a soft removal, restoring deleted ancestors as needed. The
+        workspace must be up to date.
+      security:
+        - oauth2: [neos.write]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+        - name: nodeAggregateId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The restored node first, then its restored ancestors.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, restored]
+                properties:
+                  workspace: { type: string }
+                  restored:
+                    type: array
+                    items:
+                      type: object
+                      required: [nodeAggregateId, label]
+                      properties:
+                        nodeAggregateId: { type: string }
+                        label: { type: [string, 'null'] }
+        '400':
+          description: '`invalid_node_aggregate_id`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+        '409':
+          description: '`workspace_outdated` (synchronize first) or `not_deleted`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/workspaces/{workspaceName}/publish:
+    post:
+      tags: [Workspaces]
+      operationId: publishWorkspace
+      summary: Publish changes to the base workspace
+      description: >
+        Publishes everything, or a subset selected via the filter body
+        (precedence: `documents` list, then `site`, then `document`). Whether
+        the account may publish into the base workspace (e.g. `live`) is
+        enforced by the content repository.
+      security:
+        - oauth2: [neos.publish]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceOperationFilter' }
+      responses:
+        '200':
+          description: Published.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, publishedChanges]
+                properties:
+                  workspace: { type: string }
+                  publishedChanges: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/WorkspaceOperationConflict' }
+
+  /api/workspaces/{workspaceName}/discard:
+    post:
+      tags: [Workspaces]
+      operationId: discardWorkspace
+      summary: Discard changes
+      description: Same filter body and semantics as publish.
+      security:
+        - oauth2: [neos.publish]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceOperationFilter' }
+      responses:
+        '200':
+          description: Discarded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, discardedChanges]
+                properties:
+                  workspace: { type: string }
+                  discardedChanges: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/WorkspaceOperationConflict' }
+
+  /api/workspaces/{workspaceName}/rebase:
+    post:
+      tags: [Workspaces]
+      operationId: rebaseWorkspace
+      summary: Rebase onto the current base workspace state
+      security:
+        - oauth2: [neos.publish]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                strategy:
+                  type: string
+                  enum: [force]
+                  description: '`force` drops the workspace''s own conflicting changes; default is to fail on conflicts.'
+      responses:
+        '200':
+          description: Rebased.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, rebased]
+                properties:
+                  workspace: { type: string }
+                  rebased: { type: boolean, const: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/WorkspaceOperationConflict' }
+
+  /api/workspaces/{workspaceName}/base-workspace:
+    post:
+      tags: [Workspaces]
+      operationId: changeBaseWorkspace
+      summary: Change the base workspace
+      description: >
+        Only possible while the workspace has no publishable changes. Flushes
+        the workspace's content cache on success.
+      security:
+        - oauth2: [neos.publish]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [baseWorkspace]
+              properties:
+                baseWorkspace: { type: string }
+      responses:
+        '200':
+          description: Changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, baseWorkspace]
+                properties:
+                  workspace: { type: string }
+                  baseWorkspace: { type: string }
+        '400':
+          description: '`missing_base_workspace`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: '`workspace_not_empty` (publish or discard first) or `operation_failed`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/workspaces/{workspaceName}/events:
+    get:
+      tags: [Workspaces]
+      operationId: tailWorkspaceEvents
+      summary: Tail the change event feed (collaboration polling)
+      description: |
+        Cursor-based tailing of the workspace's content stream. Call without
+        parameters to get a baseline cursor, then poll with `stream` and
+        `since`. When the content stream changed (publish/rebase), `reset` is
+        true and the client starts over from the new cursor. Events are the
+        base feed shape (not enriched), capped at 200 per call.
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+        - name: stream
+          in: query
+          required: false
+          schema: { type: string }
+          description: The content stream id the client is tailing.
+        - name: since
+          in: query
+          required: false
+          schema: { type: integer }
+          description: Last seen global sequence number.
+      responses:
+        '200':
+          description: New events (oldest first) and the next cursor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, contentStreamId, sequenceNumber, reset, truncated, events]
+                properties:
+                  workspace: { type: string }
+                  contentStreamId: { type: string }
+                  sequenceNumber: { type: integer, description: The new cursor. }
+                  reset: { type: boolean }
+                  truncated: { type: boolean }
+                  events:
+                    type: array
+                    items: { $ref: '#/components/schemas/FeedEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+
+  /api/workspaces/{workspaceName}/pending-events:
+    get:
+      tags: [Workspaces]
+      operationId: listWorkspacePendingEvents
+      summary: Pending events of the current content stream
+      description: >
+        The newest 100 events (oldest first), enriched with node/document
+        labels - the history view of unpublished work.
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      responses:
+        '200':
+          description: The enriched events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, baseWorkspace, status, contentStreamId, forkedFrom, truncated, events]
+                properties:
+                  workspace: { type: string }
+                  baseWorkspace: { type: [string, 'null'] }
+                  status: { $ref: '#/components/schemas/WorkspaceStatus' }
+                  contentStreamId: { type: string }
+                  forkedFrom:
+                    oneOf:
+                      - type: 'null'
+                      - type: object
+                        required: [contentStreamId, version]
+                        properties:
+                          contentStreamId: { type: string }
+                          version: { type: integer }
+                  truncated: { type: boolean }
+                  events:
+                    type: array
+                    items: { $ref: '#/components/schemas/EnrichedFeedEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+
+  /api/workspaces/{workspaceName}/pending-events/diff:
+    get:
+      tags: [Workspaces]
+      operationId: getWorkspacePendingEventsDiff
+      summary: Decomposed changes for an event range
+      description: >
+        Enriched events of an inclusive global-sequence-number range, each
+        with per-property/reference/structure `changes` rows. Old values are
+        resolved best-effort (backward scan, base-workspace fallback).
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+        - name: from
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - name: to
+          in: query
+          required: true
+          schema: { type: integer, minimum: 1 }
+          description: 'Constraint: `to >= from` and `to - from < 200`.'
+      responses:
+        '200':
+          description: The events with decomposed changes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, contentStreamId, from, to, events]
+                properties:
+                  workspace: { type: string }
+                  contentStreamId: { type: string }
+                  from: { type: integer }
+                  to: { type: integer }
+                  events:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/EnrichedFeedEvent'
+                        - type: object
+                          required: [changes]
+                          properties:
+                            changes:
+                              type: array
+                              items: { $ref: '#/components/schemas/ChangeRow' }
+        '400':
+          description: '`invalid_range` - provide 1 <= from <= to with a span below 200.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+
+  /api/workspaces/{workspaceName}/presence:
+    post:
+      tags: [Workspaces]
+      operationId: workspacePresence
+      summary: Presence heartbeat
+      description: >
+        Registers the caller as present (entries expire after 30 seconds) and
+        returns everyone currently in the workspace. Send `leave: true` to
+        deregister. Requires a user-bound token.
+      security:
+        - oauth2: [neos.read]
+      parameters:
+        - $ref: '#/components/parameters/workspaceName'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                leave: { type: boolean, description: '`true` removes the caller''s entry instead of heartbeating.' }
+                documentAggregateId: { type: string }
+                focusedAggregateId: { type: string }
+                dimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+      responses:
+        '200':
+          description: Everyone currently present (including the caller unless leaving).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, you, users]
+                properties:
+                  workspace: { type: string }
+                  you: { type: string, description: The caller's user id. }
+                  users:
+                    type: array
+                    items:
+                      type: object
+                      required: [userId, name, documentAggregateId, focusedAggregateId, dimensionSpacePoint, updatedAt]
+                      properties:
+                        userId: { type: string }
+                        name: { type: string }
+                        documentAggregateId: { type: [string, 'null'] }
+                        focusedAggregateId: { type: [string, 'null'] }
+                        dimensionSpacePoint:
+                          oneOf:
+                            - $ref: '#/components/schemas/DimensionSpacePoint'
+                            - type: 'null'
+                        updatedAt: { type: integer, description: Unix timestamp of the last heartbeat. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: '`insufficient_scope`, `access_denied` or `no_user` (client-credentials tokens have no user).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/WorkspaceNotFound' }
+  # --- Commands (write API) ---------------------------------------------------
+
+  /api/commands:
+    post:
+      tags: [Commands]
+      operationId: executeCommand
+      summary: Execute one content repository command
+      description: |
+        The single write entry point: a discriminated union of content
+        repository commands, `{"type": "...", "payload": {...}}`. The content
+        repository authorizes every command against the account's workspace
+        and node permissions.
+
+        Conventions that apply inside every payload:
+        - `workspaceName` addresses the workspace; dimension space points are
+          flat `{"dimensionName": "value"}` objects (`{}` for a dimension-less
+          repository).
+        - `nodeAggregateId`s are client-supplied - generate an id and keep it
+          to address the node afterwards. The response returns no ids.
+        - Property values of declared date types are accepted as strings and
+          parsed; persisted object references (assets etc.) are written as
+          `{"__flow_object_type": "<FQCN>", "__identifier": "<uuid>"}`.
+        - There is NO idempotency mechanism: retrying a request re-executes
+          the commands. A repeated create with the same `nodeAggregateId`
+          fails with 422 `command_failed`.
+      security:
+        - oauth2: [neos.write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommandEnvelope' }
+      responses:
+        '200':
+          description: Executed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, type]
+                properties:
+                  status: { type: string, const: ok }
+                  type: { type: string, description: The echoed command type. }
+        '400':
+          description: '`invalid_request` (malformed envelope), `unknown_command` or `invalid_payload` (the description carries the underlying message).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: '`insufficient_scope`, or `access_denied` from the content repository (workspace/node permissions).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: >
+            `command_failed` - the content repository rejected the command
+            (constraint violation, missing node, duplicate id, unknown
+            dimension, ...).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/commands/batch:
+    post:
+      tags: [Commands]
+      operationId: executeCommandBatch
+      summary: Execute commands sequentially
+      description: >
+        Executes the commands in order, stopping at the first failure.
+        NOT transactional: previously applied commands are not rolled back -
+        the failure body reports how far execution got. Later commands may
+        reference ids introduced by earlier ones (e.g. pinned
+        `tetheredDescendantNodeAggregateIds`).
+      security:
+        - oauth2: [neos.write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commands]
+              properties:
+                commands:
+                  type: array
+                  minItems: 1
+                  items: { $ref: '#/components/schemas/CommandEnvelope' }
+      responses:
+        '200':
+          description: All commands executed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, executed]
+                properties:
+                  status: { type: string, const: ok }
+                  executed: { type: integer }
+        '400':
+          description: >
+            `invalid_request`, `unknown_command` or `invalid_payload`. When a
+            command inside the batch fails, the body additionally carries
+            `executed` (commands applied before the failure - not rolled
+            back), `failedIndex` and `failedType`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: '`insufficient_scope` or `access_denied` (with batch failure fields when raised inside the batch).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchError' }
+        '422':
+          description: '`command_failed` with the batch failure fields.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BatchError' }
+  # --- Media --------------------------------------------------------------
+
+  /api/media/asset-sources:
+    get:
+      tags: [Media]
+      operationId: listAssetSources
+      summary: Configured asset sources
+      security:
+        - oauth2: [neos.media]
+      responses:
+        '200':
+          description: The asset sources with their capabilities.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assetSources]
+                properties:
+                  assetSources:
+                    type: array
+                    items:
+                      type: object
+                      required: [identifier, label, description, iconUri, isReadOnly, supportsTagging, supportsCollections, supportsSorting]
+                      properties:
+                        identifier: { type: string }
+                        label: { type: string }
+                        description: { type: string }
+                        iconUri: { type: string }
+                        isReadOnly: { type: boolean }
+                        supportsTagging: { type: boolean }
+                        supportsCollections: { type: boolean }
+                        supportsSorting: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/media/assets:
+    get:
+      tags: [Media]
+      operationId: listAssets
+      summary: Browse assets
+      description: >
+        Filters are lenient: unknown `tag`/`collection` identifiers and
+        unknown `type` values are silently ignored. `search` takes precedence
+        over `tagMode`/`tag`. Sorting and collection scoping apply only where
+        the asset source supports them.
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - name: assetSource
+          in: query
+          required: false
+          schema: { type: string, default: neos }
+        - name: type
+          in: query
+          required: false
+          schema: { type: string, enum: [All, Image, Document, Video, Audio], default: All }
+        - name: search
+          in: query
+          required: false
+          schema: { type: string }
+        - name: tag
+          in: query
+          required: false
+          schema: { type: string }
+          description: Tag identifier.
+        - name: tagMode
+          in: query
+          required: false
+          schema: { type: string, enum: [none] }
+          description: '`none` returns untagged assets.'
+        - name: collection
+          in: query
+          required: false
+          schema: { type: string }
+          description: Collection identifier.
+        - name: sortBy
+          in: query
+          required: false
+          schema: { type: string, enum: [name, lastModified], default: lastModified }
+        - name: sortDirection
+          in: query
+          required: false
+          schema: { type: string, enum: [asc, desc], default: desc }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 40 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: The assets page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assets, pagination]
+                properties:
+                  assets:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+                  pagination:
+                    type: object
+                    required: [total, limit, offset]
+                    properties:
+                      total: { type: integer, description: Total before offset/limit. }
+                      limit: { type: integer }
+                      offset: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_source_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    post:
+      tags: [Media]
+      operationId: uploadAsset
+      summary: Upload an asset
+      description: >
+        Multipart upload. Deduplicates by file content - uploading an
+        identical file returns the existing asset. Unknown `collection`/`tags`
+        identifiers are silently ignored.
+      security:
+        - oauth2: [neos.media]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [asset]
+              properties:
+                asset:
+                  type: object
+                  required: [resource]
+                  properties:
+                    resource:
+                      type: string
+                      contentEncoding: binary
+                      description: The file (`asset[resource]`).
+                    title:
+                      type: string
+                      description: 'Optional title (`asset[title]`).'
+                collection:
+                  type: string
+                  description: Collection identifier; replaces the asset's collections.
+                tags:
+                  type: array
+                  items: { type: string }
+                  description: 'Tag identifiers (`tags[]`); added to the asset.'
+      responses:
+        '201':
+          description: The created (or deduplicated existing) asset.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/media/assets/import:
+    post:
+      tags: [Media]
+      operationId: importAsset
+      summary: Import a remote asset
+      description: Imports an asset from a remote asset source into the local `neos` source.
+      security:
+        - oauth2: [neos.media]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assetSource, assetIdentifier]
+              properties:
+                assetSource: { type: string, description: The remote source identifier. }
+                assetIdentifier: { type: string }
+      responses:
+        '201':
+          description: The imported local asset.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '400':
+          description: '`import_failed`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500':
+          description: '`import_failed` - imported but could not be loaded back.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/media/assets/{assetSource}/{assetIdentifier}:
+    get:
+      tags: [Media]
+      operationId: getAsset
+      summary: One asset
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+      responses:
+        '200':
+          description: The asset.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_source_not_found` or `asset_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      tags: [Media]
+      operationId: updateAsset
+      summary: Update asset metadata
+      description: >
+        Local (`neos`) assets only. Absent keys stay unchanged; `tags` and
+        `collections` fully replace their sets (`[]` clears, unknown ids are
+        dropped silently).
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                caption: { type: string }
+                copyrightNotice: { type: string }
+                tags:
+                  type: array
+                  items: { type: string }
+                collections:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: The updated asset.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '400': { $ref: '#/components/responses/AssetSourceNotWritable' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Media]
+      operationId: deleteAsset
+      summary: Delete an asset
+      description: Local (`neos`) assets only; refused while the asset is in use.
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Success' }
+        '400': { $ref: '#/components/responses/AssetSourceNotWritable' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: '`asset_in_use`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/media/assets/{assetSource}/{assetIdentifier}/resource:
+    post:
+      tags: [Media]
+      operationId: replaceAssetResource
+      summary: Replace the asset's file
+      description: >
+        Local (`neos`) assets only. Identity, metadata, tags, collections and
+        usages are preserved. Images/audio/video can only be replaced by the
+        same media type family; documents accept any type. Variants have no
+        file of their own - replace the original image.
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [resource]
+              properties:
+                resource:
+                  type: string
+                  contentEncoding: binary
+                keepOriginalFilename: { type: boolean, default: false }
+                generateRedirects:
+                  type: boolean
+                  default: true
+                  description: No-op unless Neos.RedirectHandler is installed.
+      responses:
+        '200':
+          description: The asset with the new file.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '400':
+          description: '`asset_source_not_writable`, `asset_is_variant`, `media_type_mismatch` or `replace_failed`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/media/assets/{assetSource}/{assetIdentifier}/variants:
+    post:
+      tags: [Media]
+      operationId: createAssetVariant
+      summary: Create a cropped image variant
+      description: >
+        `{assetIdentifier}` must be the ORIGINAL image (when re-cropping,
+        resolve it from the variant's `originalAssetIdentifier`). The
+        response's identifier is what an image property references.
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [crop]
+              properties:
+                crop:
+                  type: object
+                  required: [width, height]
+                  properties:
+                    x: { type: integer, default: 0 }
+                    y: { type: integer, default: 0 }
+                    width: { type: integer, minimum: 1 }
+                    height: { type: integer, minimum: 1 }
+                  description: Original-image pixel coordinates.
+      responses:
+        '201':
+          description: The new variant (carries `originalAssetIdentifier` and `crop`).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '400':
+          description: '`asset_source_not_writable`, `not_an_image` or `invalid_crop`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/media/assets/{assetSource}/{assetIdentifier}/usage:
+    get:
+      tags: [Media]
+      operationId: getAssetUsage
+      summary: Where the asset is used
+      description: >
+        Usages the account cannot read are counted in `inaccessibleCount`
+        instead of being listed.
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+      responses:
+        '200':
+          description: The usages.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [usages, inaccessibleCount, total]
+                properties:
+                  usages:
+                    type: array
+                    items:
+                      type: object
+                      required: [node, documentNode, workspaceName, dimension]
+                      properties:
+                        node: { $ref: '#/components/schemas/Node' }
+                        documentNode:
+                          oneOf:
+                            - $ref: '#/components/schemas/Node'
+                            - type: 'null'
+                        workspaceName: { type: string }
+                        dimension: { $ref: '#/components/schemas/DimensionSpacePoint' }
+                  inaccessibleCount: { type: integer }
+                  total: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_source_not_found` or `asset_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/media/assets/{assetSource}/{assetIdentifier}/tags/{tag}:
+    put:
+      tags: [Media]
+      operationId: tagAsset
+      summary: Add a tag (idempotent)
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+        - name: tag
+          in: path
+          required: true
+          schema: { type: string }
+          description: Tag identifier.
+      responses:
+        '200':
+          description: The asset after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '400': { $ref: '#/components/responses/AssetSourceNotWritable' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_not_found` or `tag_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Media]
+      operationId: untagAsset
+      summary: Remove a tag
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+        - name: tag
+          in: path
+          required: true
+          schema: { type: string }
+          description: Tag identifier.
+      responses:
+        '200':
+          description: The asset after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '400': { $ref: '#/components/responses/AssetSourceNotWritable' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_not_found` or `tag_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/media/assets/{assetSource}/{assetIdentifier}/collections/{collection}:
+    put:
+      tags: [Media]
+      operationId: addAssetToCollection
+      summary: Add to a collection (idempotent)
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+        - name: collection
+          in: path
+          required: true
+          schema: { type: string }
+          description: Collection identifier.
+      responses:
+        '200':
+          description: The asset after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '400': { $ref: '#/components/responses/AssetSourceNotWritable' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_not_found` or `collection_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Media]
+      operationId: removeAssetFromCollection
+      summary: Remove from a collection
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/assetSource'
+        - $ref: '#/components/parameters/assetIdentifier'
+        - name: collection
+          in: path
+          required: true
+          schema: { type: string }
+          description: Collection identifier.
+      responses:
+        '200':
+          description: The asset after the change.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '400': { $ref: '#/components/responses/AssetSourceNotWritable' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`asset_not_found` or `collection_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/media/collections:
+    get:
+      tags: [Media]
+      operationId: listCollections
+      summary: All asset collections
+      security:
+        - oauth2: [neos.media]
+      responses:
+        '200':
+          description: The collections (no pagination).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [collections]
+                properties:
+                  collections:
+                    type: array
+                    items: { $ref: '#/components/schemas/MediaCollection' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Media]
+      operationId: createCollection
+      summary: Create a collection
+      security:
+        - oauth2: [neos.media]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+      responses:
+        '201':
+          description: The created collection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [collection]
+                properties:
+                  collection: { $ref: '#/components/schemas/MediaCollection' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/media/collections/{collectionIdentifier}:
+    patch:
+      tags: [Media]
+      operationId: updateCollection
+      summary: Rename a collection
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - name: collectionIdentifier
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+      responses:
+        '200':
+          description: The updated collection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [collection]
+                properties:
+                  collection: { $ref: '#/components/schemas/MediaCollection' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`collection_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Media]
+      operationId: deleteCollection
+      summary: Delete a collection
+      description: Assets are detached, not deleted; sites using the collection are detached first.
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - name: collectionIdentifier
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Success' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`collection_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/media/tags:
+    get:
+      tags: [Media]
+      operationId: listMediaTags
+      summary: The tag tree
+      security:
+        - oauth2: [neos.media]
+      responses:
+        '200':
+          description: Root tags with nested children.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tags]
+                properties:
+                  tags:
+                    type: array
+                    items: { $ref: '#/components/schemas/MediaTag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Media]
+      operationId: createMediaTag
+      summary: Create a tag
+      description: An unknown `parent` identifier is silently ignored (the tag is created at root).
+      security:
+        - oauth2: [neos.media]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label: { type: string }
+                parent: { type: [string, 'null'], description: Parent tag identifier; null or empty for a root tag. }
+      responses:
+        '201':
+          description: The created tag.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tag]
+                properties:
+                  tag: { $ref: '#/components/schemas/MediaTag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/media/tags/{tagIdentifier}:
+    patch:
+      tags: [Media]
+      operationId: updateMediaTag
+      summary: Rename or move a tag
+      description: 'Absent keys stay unchanged; `parent: ""` moves the tag to root.'
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - name: tagIdentifier
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string }
+                parent:
+                  type: string
+                  description: New parent tag identifier; empty string moves to root.
+      responses:
+        '200':
+          description: The updated tag with its subtree.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tag]
+                properties:
+                  tag: { $ref: '#/components/schemas/MediaTag' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`tag_not_found` - the tag itself or a non-empty `parent`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [Media]
+      operationId: deleteMediaTag
+      summary: Delete a tag
+      description: Detaches the tag from all assets; child tags are removed with it.
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - name: tagIdentifier
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Success' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`tag_not_found`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+components:
+
+  securitySchemes:
+    # The flow URLs and the scope catalog are stamped in at serve time from
+    # the configured issuer and Medienreaktor.NeosApi.oauth.scopes.
+    oauth2:
+      type: oauth2
+      description: >
+        OAuth 2.1 bearer tokens. Scopes can only narrow access - authorization
+        is always additionally bound to the account's roles and the content
+        repository's own permission checks.
+      flows:
+        authorizationCode:
+          authorizationUrl: 'http://localhost:8080/oauth/authorize'
+          tokenUrl: 'http://localhost:8080/oauth/token'
+          refreshUrl: 'http://localhost:8080/oauth/token'
+          scopes:
+            neos.read: 'Read nodes, workspaces, node types and dimensions'
+            neos.write: 'Execute content repository commands'
+            neos.publish: 'Publish, discard and rebase workspaces'
+            neos.media: 'Browse, upload and manage media assets'
+        clientCredentials:
+          tokenUrl: 'http://localhost:8080/oauth/token'
+          scopes:
+            neos.read: 'Read nodes, workspaces, node types and dimensions'
+            neos.write: 'Execute content repository commands'
+            neos.publish: 'Publish, discard and rebase workspaces'
+            neos.media: 'Browse, upload and manage media assets'
+
+  parameters:
+    nodeAddress:
+      name: nodeAddress
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/NodeAddress' }
+    nodeTypesFilter:
+      name: nodeTypes
+      in: query
+      required: false
+      schema: { type: string }
+      description: >
+        Node type filter string with comma lists and `!` negation, e.g.
+        `Neos.Neos:Document,!Neos.Neos:Shortcut`. On single-node reads it only
+        constrains the `hasChildren` computation.
+    visibility:
+      name: visibility
+      in: query
+      required: false
+      schema: { type: string, enum: [frontend] }
+      description: '`frontend` additionally excludes disabled (hidden) nodes.'
+    includeDeleted:
+      name: includeDeleted
+      in: query
+      required: false
+      schema: { type: string }
+      description: >
+        Any non-empty value (e.g. `1`) makes soft-removed nodes visible -
+        for trash previews and restore flows.
+    workspaceName:
+      name: workspaceName
+      in: path
+      required: true
+      schema: { type: string }
+    siteNodeName:
+      name: siteNodeName
+      in: path
+      required: true
+      schema: { type: string }
+      description: 'The site''s node name (`Site.nodeName`).'
+    domainId:
+      name: domainId
+      in: path
+      required: true
+      schema: { type: string }
+      description: The domain's identifier.
+    userId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-z0-9\-]{1,40}$' }
+    assetSource:
+      name: assetSource
+      in: path
+      required: true
+      schema: { type: string }
+      description: 'Asset source identifier; only `neos` is writable.'
+    assetIdentifier:
+      name: assetIdentifier
+      in: path
+      required: true
+      schema: { type: string }
+      description: The asset's identifier within its asset source.
+
+  responses:
+    Unauthorized:
+      description: '`unauthorized` - no authenticated bearer token present.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: >
+        `insufficient_scope` (the token lacks the required scope),
+        `access_denied` (workspace/content permissions), or a Flow policy
+        denial (accounts whose roles do not grant the endpoint; that body is
+        Flow's own error format, not this envelope).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InvalidNodeAddress:
+      description: '`invalid_node_address` - the address could not be parsed or belongs to another content repository.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    WorkspaceNotFound:
+      description: '`workspace_not_found`'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    WorkspaceOperationConflict:
+      description: >
+        `rebase_conflicts` or `partial_publish_conflicts` (both carry a
+        `conflicts` array; the former is retryable with a forced rebase, the
+        latter means the selection is not separable), or `operation_failed`
+        (any other failure, including an unknown workspace).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Error'
+              - type: object
+                properties:
+                  conflicts:
+                    type: array
+                    items: { $ref: '#/components/schemas/RebaseConflict' }
+    AssetSourceNotWritable:
+      description: '`asset_source_not_writable` - only `neos` assets can be modified.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+
+    # --- Cross-cutting ------------------------------------------------------
+
+    Error:
+      type: object
+      required: [error, error_description]
+      properties:
+        error:
+          type: string
+          description: Stable machine-readable code, e.g. `node_not_found`.
+        error_description:
+          type: string
+          description: Human-readable message.
+      additionalProperties: true
+      description: >
+        The uniform error body. Some errors merge extra detail fields at the
+        top level (e.g. `conflicts`, `dependents`, `pendingChanges`).
+
+    BatchError:
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            executed:
+              type: integer
+              description: Commands successfully applied before the failure - NOT rolled back.
+            failedIndex:
+              type: integer
+              description: 0-based index of the failing command.
+            failedType:
+              type: string
+              description: The failing command's type (`invalid` for a malformed element).
+      description: >
+        Batch failures carry the position of the failure; the envelope-level
+        `invalid_request` (missing/empty `commands`) has no such fields.
+
+    Success:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean, const: true }
+
+    NodeAddress:
+      type: string
+      pattern: '^[A-Za-z0-9_-]+$'
+      description: >
+        Opaque URL-safe token addressing one node: content repository,
+        workspace, dimension space point and node aggregate id. Obtained from
+        the API, passed back verbatim.
+
+    DimensionSpacePoint:
+      type: object
+      additionalProperties: { type: string }
+      description: 'Dimension coordinates, e.g. `{"language": "de"}`; `{}` for a dimension-less repository.'
+
+    # --- Nodes ----------------------------------------------------------------
+
+    PropertyValue:
+      oneOf:
+        - type: 'null'
+        - type: object
+          required: [value, type]
+          properties:
+            value:
+              description: JSON-safe serialized representation.
+            type:
+              type: string
+              description: 'Declared type, e.g. `string`, `DateTimeImmutable`, `Neos\Media\Domain\Model\ImageInterface`.'
+      description: '`null` means the property is explicitly unset.'
+
+    Node:
+      type: object
+      required: [address, aggregateId, nodeType, name, label, classification, hasChildren, workspace, dimensionSpacePoint, originDimensionSpacePoint, properties, tags, timestamps]
+      properties:
+        address: { $ref: '#/components/schemas/NodeAddress' }
+        aggregateId: { type: string }
+        nodeType: { type: string }
+        name:
+          type: [string, 'null']
+          description: '`null` for unnamed nodes.'
+        label:
+          type: string
+          description: Plain-text node label (entities decoded, tags stripped).
+        classification: { type: string, enum: [regular, root, tethered] }
+        hasChildren:
+          type: boolean
+          description: Constrained by the request's `nodeTypes` filter when one was given.
+        workspace: { type: string }
+        dimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        originDimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        properties:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/PropertyValue' }
+          description: 'Serialized property values. Caveat: serializes as `[]` for a property-less node.'
+        tags:
+          type: object
+          required: [all, inherited]
+          properties:
+            all:
+              type: array
+              items: { type: string }
+              description: All subtree tags (own + inherited), e.g. `removed`, `disabled`.
+            inherited:
+              type: array
+              items: { type: string }
+        timestamps:
+          type: object
+          required: [created, originalCreated, lastModified, originalLastModified]
+          properties:
+            created: { type: string, format: date-time }
+            originalCreated: { type: string, format: date-time }
+            lastModified: { type: [string, 'null'], format: date-time }
+            originalLastModified: { type: [string, 'null'], format: date-time }
+
+    NodeWithBreadcrumb:
+      allOf:
+        - $ref: '#/components/schemas/Node'
+        - type: object
+          properties:
+            breadcrumb:
+              type: array
+              items: { type: string }
+              description: >
+                Document labels from the site root down to the node itself.
+                Present on `descendants` results when `search` or
+                `breadcrumbs` is used.
+
+    Reference:
+      type: object
+      required: [referenceName, node, properties]
+      properties:
+        referenceName: { type: string }
+        node: { $ref: '#/components/schemas/Node' }
+        properties:
+          oneOf:
+            - type: 'null'
+            - type: object
+              additionalProperties: { $ref: '#/components/schemas/PropertyValue' }
+          description: Properties carried by the reference itself; `null` when it has none.
+
+    NodeTypeSummary:
+      type: object
+      required: [name, abstract, superTypes, label, icon, group, position]
+      properties:
+        name: { type: string }
+        abstract: { type: boolean }
+        superTypes:
+          type: array
+          items: { type: string }
+        label:
+          type: [string, 'null']
+          description: Raw `ui.label` - may be an untranslated XLIFF id.
+        icon:
+          type: [string, 'null']
+          description: Normalized Font Awesome class.
+        group:
+          type: [string, 'null']
+          description: '`null` means the type is not offered in creation dialogs.'
+        position:
+          oneOf:
+            - type: string
+            - type: number
+            - type: 'null'
+          description: Raw Neos position specification.
+        properties:
+          type: object
+          additionalProperties:
+            type: object
+            required: [type, label]
+            properties:
+              type: { type: [string, 'null'] }
+              label: { type: [string, 'null'] }
+          description: 'Only with `includeProperties=1`; underscore-prefixed internals are excluded.'
+        references:
+          type: object
+          additionalProperties:
+            type: object
+            required: [label, maxItems]
+            properties:
+              label: { type: [string, 'null'] }
+              maxItems:
+                type: [integer, 'null']
+                description: '`1` marks a singular reference.'
+          description: 'Only with `includeProperties=1`.'
+
+    # --- Me / users / sites -----------------------------------------------------
+
+    Profile:
+      type: object
+      required: [firstName, lastName, fullName, email, interfaceLanguage, availableLanguages, preferences]
+      properties:
+        firstName: { type: string }
+        lastName: { type: string }
+        fullName: { type: string }
+        email: { type: [string, 'null'] }
+        interfaceLanguage: { type: string }
+        availableLanguages:
+          type: object
+          additionalProperties: { type: string }
+          description: 'Locale id => label, from `Neos.Neos.userInterface.availableLanguages`.'
+        preferences:
+          type: object
+          additionalProperties: true
+          description: Free-form client preferences, stored verbatim per key.
+
+    User:
+      type: object
+      required: [id, label, firstName, lastName, fullName, email, active, roles, accounts, isCurrentUser]
+      properties:
+        id: { type: string, pattern: '^[a-z0-9\-]{1,40}$' }
+        label: { type: string, description: Full name. }
+        firstName: { type: [string, 'null'] }
+        lastName: { type: [string, 'null'] }
+        fullName: { type: string }
+        email: { type: [string, 'null'] }
+        active: { type: boolean }
+        roles:
+          type: array
+          items: { type: string }
+          description: Explicitly assigned role identifiers across all accounts (no implicit roles).
+        accounts:
+          type: array
+          items:
+            type: object
+            required: [accountIdentifier, authenticationProvider, active]
+            properties:
+              accountIdentifier: { type: string }
+              authenticationProvider: { type: string }
+              active: { type: boolean }
+        isCurrentUser: { type: boolean }
+
+    Domain:
+      type: object
+      required: [id, hostname, scheme, port, active, isPrimary, url]
+      properties:
+        id: { type: string }
+        hostname: { type: string }
+        scheme: { type: [string, 'null'], enum: [http, https, null] }
+        port: { type: [integer, 'null'] }
+        active: { type: boolean }
+        isPrimary:
+          type: boolean
+          description: True only for the explicitly configured primary domain.
+        url: { type: string }
+
+    Site:
+      type: object
+      required: [name, nodeName, state, siteResourcesPackageKey, domains, primaryDomain]
+      properties:
+        name: { type: string }
+        nodeName: { type: string }
+        state: { type: string, enum: [online, offline] }
+        siteResourcesPackageKey: { type: string }
+        domains:
+          type: array
+          items: { $ref: '#/components/schemas/Domain' }
+        primaryDomain:
+          type: [string, 'null']
+          description: The effective primary domain (explicit one if active, else the first active).
+
+    # --- Workspaces -------------------------------------------------------------
+
+    WorkspaceStatus:
+      type: string
+      enum: [UP_TO_DATE, OUTDATED]
+
+    Workspace:
+      type: object
+      required: [name, baseWorkspace, title, description, classification, owner, hasPublishableChanges, status, permissions, extensions]
+      properties:
+        name: { type: string }
+        baseWorkspace:
+          type: [string, 'null']
+          description: '`null` for root workspaces.'
+        title: { type: string }
+        description: { type: string }
+        classification: { type: string, enum: [PERSONAL, SHARED, ROOT, UNKNOWN] }
+        owner:
+          type: [string, 'null']
+          description: Owning user id for personal workspaces.
+        hasPublishableChanges: { type: boolean }
+        status: { $ref: '#/components/schemas/WorkspaceStatus' }
+        permissions:
+          type: object
+          required: [read, write, manage, publish]
+          properties:
+            read: { type: boolean }
+            write: { type: boolean }
+            manage: { type: boolean }
+            publish:
+              type: boolean
+              description: Write permission on the base workspace.
+        extensions:
+          type: object
+          additionalProperties: true
+          description: >
+            Contributions of registered workspace data enrichers
+            (`Medienreaktor.NeosApi.workspaceDataEnrichers`), keyed by
+            registration key. `{}` without enrichers.
+
+    WorkspaceRoleAssignment:
+      type: object
+      required: [subjectType, subject, label, role]
+      properties:
+        subjectType: { type: string, enum: [USER, GROUP] }
+        subject:
+          type: string
+          description: User id for USER, Flow role identifier for GROUP.
+        label: { type: string }
+        role: { type: string, enum: [VIEWER, COLLABORATOR, MANAGER] }
+
+    WorkspaceOperationFilter:
+      type: object
+      properties:
+        documents:
+          type: array
+          items: { type: string }
+          description: Document aggregate ids - highest precedence.
+        site:
+          type: string
+          description: Site aggregate id - used when `documents` is empty.
+        document:
+          type: string
+          description: Single document aggregate id - lowest precedence.
+      description: >
+        Optional scope for publish/discard. Precedence `documents` > `site` >
+        `document`; an empty body operates on the whole workspace.
+
+    RebaseConflict:
+      type: object
+      required: [nodeAggregateId, nodeLabel, documentAggregateId, documentLabel, documentAddress, siteAggregateId, typeOfChange, reason, message, sequenceNumber]
+      properties:
+        nodeAggregateId: { type: [string, 'null'] }
+        nodeLabel: { type: [string, 'null'] }
+        documentAggregateId: { type: [string, 'null'] }
+        documentLabel: { type: [string, 'null'] }
+        documentAddress:
+          oneOf:
+            - $ref: '#/components/schemas/NodeAddress'
+            - type: 'null'
+        siteAggregateId: { type: [string, 'null'] }
+        typeOfChange:
+          type: [string, 'null']
+          enum: [created, changed, moved, deleted, null]
+        reason:
+          type: [string, 'null']
+          enum: [node_has_been_deleted, null]
+        message: { type: string }
+        sequenceNumber: { type: integer }
+
+    DocumentChange:
+      type: object
+      required: [documentAggregateId, documentAddress, siteAggregateId, siteLabel, label, nodeType, icon, breadcrumb, hidden, created, changed, moved, deleted, changeCount]
+      properties:
+        documentAggregateId: { type: string }
+        documentAddress:
+          oneOf:
+            - $ref: '#/components/schemas/NodeAddress'
+            - type: 'null'
+          description: '`null` when the document only resolves in the base workspace or is soft-removed.'
+        siteAggregateId: { type: [string, 'null'] }
+        siteLabel: { type: [string, 'null'] }
+        label: { type: string }
+        nodeType: { type: string }
+        icon: { type: [string, 'null'] }
+        breadcrumb:
+          type: array
+          items: { type: string }
+        hidden: { type: boolean }
+        created: { type: boolean }
+        changed: { type: boolean }
+        moved: { type: boolean }
+        deleted: { type: boolean }
+        changeCount:
+          type: integer
+          description: Distinct changed node aggregates within this document.
+
+    TrashItem:
+      type: object
+      required: [nodeAggregateId, nodeAddress, label, nodeType, icon, isDocument, breadcrumb, siteAggregateId, siteLabel, dimensions, deletedAt, deletedBy, restoresAncestors]
+      properties:
+        nodeAggregateId: { type: string }
+        nodeAddress:
+          oneOf:
+            - $ref: '#/components/schemas/NodeAddress'
+            - type: 'null'
+          description: Address of the first deleted variant.
+        label: { type: string }
+        nodeType: { type: string }
+        icon: { type: [string, 'null'] }
+        isDocument: { type: boolean }
+        breadcrumb:
+          type: array
+          items: { type: string }
+        siteAggregateId: { type: [string, 'null'] }
+        siteLabel: { type: [string, 'null'] }
+        dimensions:
+          type: array
+          items: { $ref: '#/components/schemas/DimensionSpacePoint' }
+          description: One coordinates object per deleted variant.
+        deletedAt: { type: [string, 'null'], format: date-time }
+        deletedBy: { type: [string, 'null'], description: User label. }
+        restoresAncestors:
+          type: array
+          description: Deleted ancestors a restore would bring back, nearest first.
+          items:
+            type: object
+            required: [nodeAggregateId, label]
+            properties:
+              nodeAggregateId: { type: string }
+              label: { type: [string, 'null'] }
+
+    NodeRef:
+      type: object
+      required: [id, label]
+      properties:
+        id: { type: string }
+        label:
+          type: [string, 'null']
+          description: '`null` when the node cannot be resolved.'
+
+    ChangeRow:
+      type: object
+      required: [kind, property, label, old, new]
+      properties:
+        kind:
+          type: string
+          enum: [property, reference, nodeType, name, parent, position, tag, variant]
+        property:
+          type: [string, 'null']
+          description: Property/reference/tag name for those kinds, else `null`.
+        label:
+          type: [string, 'null']
+          description: UI label of the property (may be an XLIFF shorthand).
+        old:
+          description: >
+            Depends on `kind` - property value, `NodeRef[]` for references,
+            string for nodeType/name/tag, `NodeRef` for parent, dimension
+            coordinates for variant, `null` for position.
+        new:
+          description: Same shape as `old`.
+
+    FeedEvent:
+      type: object
+      required: [sequenceNumber, version, type, kind, nodeAggregateId, parentNodeAggregateId, dimensionSpacePoints, tag, initiatingUserId, recordedAt, command, initiatingTimestamp]
+      properties:
+        sequenceNumber:
+          type: integer
+          description: Global event store sequence number.
+        version:
+          type: integer
+          description: 0-based position within the content stream.
+        type:
+          type: string
+          enum: [NodePropertiesWereSet, NodeReferencesWereSet, NodeAggregateWithNodeWasCreated, NodeAggregateWasMoved, NodeAggregateWasRemoved, SubtreeWasTagged, SubtreeWasUntagged, NodeAggregateTypeWasChanged, NodeAggregateNameWasChanged, NodeSpecializationVariantWasCreated, NodeGeneralizationVariantWasCreated, NodePeerVariantWasCreated]
+        kind: { type: string, enum: [content, structure] }
+        nodeAggregateId: { type: [string, 'null'] }
+        parentNodeAggregateId: { type: [string, 'null'] }
+        dimensionSpacePoints:
+          type: array
+          items: { $ref: '#/components/schemas/DimensionSpacePoint' }
+          description: '`[]` means the event affects every dimension.'
+        tag:
+          type: [string, 'null']
+          description: 'For SubtreeWasTagged/Untagged, e.g. `disabled` or `removed`.'
+        initiatingUserId: { type: [string, 'null'] }
+        recordedAt: { type: string, format: date-time }
+        command:
+          type: [string, 'null']
+          description: Short class name of the originating command.
+        initiatingTimestamp: { type: [string, 'null'] }
+
+    EnrichedFeedEvent:
+      allOf:
+        - $ref: '#/components/schemas/FeedEvent'
+        - type: object
+          required: [nodeLabel, nodeType, icon, initiatingUserLabel, documentAggregateId, documentLabel, documentAddress]
+          properties:
+            nodeLabel: { type: [string, 'null'] }
+            nodeType: { type: [string, 'null'] }
+            icon: { type: [string, 'null'] }
+            initiatingUserLabel: { type: [string, 'null'] }
+            documentAggregateId: { type: [string, 'null'] }
+            documentLabel: { type: [string, 'null'] }
+            documentAddress:
+              oneOf:
+                - $ref: '#/components/schemas/NodeAddress'
+                - type: 'null'
+
+    # --- Commands -----------------------------------------------------------
+
+    CommandEnvelope:
+      type: object
+      required: [type, payload]
+      properties:
+        type:
+          type: string
+          enum: [CreateNodeAggregateWithNode, SetNodeProperties, SetNodeReferences, MoveNodeAggregate, RemoveNodeAggregate, DisableNodeAggregate, EnableNodeAggregate, TagSubtree, UntagSubtree, CreateNodeVariant, ChangeNodeAggregateType, ChangeNodeAggregateName, CopyNodesRecursively]
+        payload:
+          oneOf:
+            - $ref: '#/components/schemas/CreateNodeAggregateWithNode'
+            - $ref: '#/components/schemas/SetNodeProperties'
+            - $ref: '#/components/schemas/SetNodeReferences'
+            - $ref: '#/components/schemas/MoveNodeAggregate'
+            - $ref: '#/components/schemas/RemoveNodeAggregate'
+            - $ref: '#/components/schemas/SubtreeVisibilityPayload'
+            - $ref: '#/components/schemas/TagSubtreePayload'
+            - $ref: '#/components/schemas/CreateNodeVariant'
+            - $ref: '#/components/schemas/ChangeNodeAggregateType'
+            - $ref: '#/components/schemas/ChangeNodeAggregateName'
+            - $ref: '#/components/schemas/CopyNodesRecursively'
+          description: The payload matching `type`.
+      description: >
+        The discriminated command union. `DisableNodeAggregate` /
+        `EnableNodeAggregate` share the SubtreeVisibilityPayload shape;
+        `TagSubtree` / `UntagSubtree` share TagSubtreePayload.
+
+    WorkspaceNameValue:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9\-]{0,35}$'
+
+    NodeAggregateIdValue:
+      type: string
+      pattern: '^[a-z0-9\-]{1,64}$'
+
+    CreateNodeAggregateWithNode:
+      type: object
+      required: [workspaceName, nodeAggregateId, nodeTypeName, parentNodeAggregateId]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        nodeAggregateId:
+          allOf: [{ $ref: '#/components/schemas/NodeAggregateIdValue' }]
+          description: Client-supplied - generate an id and keep it.
+        nodeTypeName: { type: string }
+        parentNodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        originDimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        initialPropertyValues:
+          type: object
+          additionalProperties: true
+          description: Property name => value. Declared date-type properties accept strings.
+        succeedingSiblingNodeAggregateId:
+          allOf: [{ $ref: '#/components/schemas/NodeAggregateIdValue' }]
+          description: Omitted = the node becomes the FIRST child of the parent.
+        nodeName:
+          type: string
+          pattern: '^[a-z0-9\-]+$'
+          description: Deprecated concept for non-tethered nodes.
+        tetheredDescendantNodeAggregateIds:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+          description: >
+            Node path (e.g. `main`) => id. Pin tethered child ids here to
+            address them in later commands; unpinned ids are generated
+            randomly. References cannot be set with this command - use a
+            separate SetNodeReferences.
+
+    SetNodeProperties:
+      type: object
+      required: [workspaceName, nodeAggregateId, originDimensionSpacePoint, propertyValues]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        nodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        originDimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        propertyValues:
+          type: object
+          minProperties: 1
+          additionalProperties: true
+          description: >
+            Merged into existing properties; a `null` value unsets that
+            property. Declared date-type properties accept strings; asset
+            references are written as `{"__flow_object_type": "<FQCN>",
+            "__identifier": "<uuid>"}`.
+
+    SetNodeReferences:
+      type: object
+      required: [workspaceName, sourceNodeAggregateId, sourceOriginDimensionSpacePoint, references]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        sourceNodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        sourceOriginDimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        references:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [referenceName, targets]
+            properties:
+              referenceName: { type: string }
+              targets:
+                type: array
+                items: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+                description: An empty list clears the named reference.
+          description: Each named reference is replaced, not merged. A name may appear only once.
+
+    MoveNodeAggregate:
+      type: object
+      required: [workspaceName, dimensionSpacePoint, nodeAggregateId]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        dimensionSpacePoint:
+          allOf: [{ $ref: '#/components/schemas/DimensionSpacePoint' }]
+          description: A covered dimension space point (not necessarily occupied).
+        nodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        relationDistributionStrategy:
+          type: string
+          enum: [gatherAll, gatherSpecializations, scatter]
+          default: gatherAll
+        newParentNodeAggregateId:
+          allOf: [{ $ref: '#/components/schemas/NodeAggregateIdValue' }]
+          description: Omitted = keep the current parent (reorder only).
+        newPrecedingSiblingNodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        newSucceedingSiblingNodeAggregateId:
+          allOf: [{ $ref: '#/components/schemas/NodeAggregateIdValue' }]
+          description: Omitted = append as last sibling.
+
+    RemoveNodeAggregate:
+      type: object
+      required: [workspaceName, nodeAggregateId, coveredDimensionSpacePoint, nodeVariantSelectionStrategy]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        nodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        coveredDimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        nodeVariantSelectionStrategy:
+          type: string
+          enum: [allSpecializations, allVariants]
+        removalAttachmentPoint:
+          allOf: [{ $ref: '#/components/schemas/NodeAggregateIdValue' }]
+          description: >
+            Do not send - auto-filled with the closest document ancestor so
+            the deletion stays publishable per document.
+      description: >
+        HARD removal. Prefer a soft delete via TagSubtree with
+        `{"tag": "removed"}`, which is restorable from the workspace trash.
+
+    SubtreeVisibilityPayload:
+      type: object
+      required: [workspaceName, nodeAggregateId, coveredDimensionSpacePoint, nodeVariantSelectionStrategy]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        nodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        coveredDimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        nodeVariantSelectionStrategy:
+          type: string
+          enum: [allSpecializations, allVariants]
+      description: >
+        Payload of DisableNodeAggregate / EnableNodeAggregate - sugar for
+        (un)tagging the `disabled` subtree tag.
+
+    TagSubtreePayload:
+      allOf:
+        - $ref: '#/components/schemas/SubtreeVisibilityPayload'
+        - type: object
+          required: [tag]
+          properties:
+            tag:
+              type: string
+              pattern: '^[a-z0-9_.-]{1,36}$'
+              description: 'Neos-meaningful values: `removed` (soft delete), `disabled` (hidden).'
+      description: Payload of TagSubtree / UntagSubtree.
+
+    CreateNodeVariant:
+      type: object
+      required: [workspaceName, nodeAggregateId, sourceOrigin, targetOrigin]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        nodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        sourceOrigin: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        targetOrigin: { $ref: '#/components/schemas/DimensionSpacePoint' }
+
+    ChangeNodeAggregateType:
+      type: object
+      required: [workspaceName, nodeAggregateId, newNodeTypeName, strategy]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        nodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        newNodeTypeName: { type: string }
+        strategy:
+          type: string
+          description: >
+            `delete` (remove newly disallowed children), `happypath` (only
+            change when all constraints still hold), `promisedCascade`, or
+            `mark_with_tag:<tagName>` (soft-hide disallowed children).
+        tetheredDescendantNodeAggregateIds:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+
+    ChangeNodeAggregateName:
+      type: object
+      required: [workspaceName, nodeAggregateId, newNodeName]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        nodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        newNodeName: { type: string, pattern: '^[a-z0-9\-]+$' }
+
+    CopyNodesRecursively:
+      type: object
+      required: [workspaceName, sourceNodeAggregateId, targetParentNodeAggregateId, sourceDimensionSpacePoint, targetDimensionSpacePoint]
+      properties:
+        workspaceName: { $ref: '#/components/schemas/WorkspaceNameValue' }
+        sourceNodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        targetParentNodeAggregateId: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+        sourceDimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        targetDimensionSpacePoint: { $ref: '#/components/schemas/DimensionSpacePoint' }
+        targetSucceedingSiblingNodeAggregateId:
+          allOf: [{ $ref: '#/components/schemas/NodeAggregateIdValue' }]
+          description: Omitted = append as last child.
+        nodeAggregateIdMapping:
+          type: object
+          additionalProperties: { $ref: '#/components/schemas/NodeAggregateIdValue' }
+          description: >
+            Source id => new id. Pin the copy root's id to address the copy
+            afterwards; unpinned ids are generated.
+      description: >
+        Copies a subtree within one workspace. Not atomic - a mid-copy failure
+        leaves a partial copy. Document copies get a deduplicated
+        `uriPathSegment`.
+
+    # --- Media --------------------------------------------------------------
+
+    Asset:
+      type: object
+      required: [assetSource, identifier, localAssetIdentifier, label, filename, mediaType, assetType, fileSize, lastModified, width, height, thumbnailUri, previewUri, isImported, isRemote, isReadOnly]
+      properties:
+        assetSource: { type: string }
+        identifier:
+          type: string
+          description: Identifier within the asset source.
+        localAssetIdentifier:
+          type: [string, 'null']
+          description: '`null` for a remote proxy that was never imported.'
+        label: { type: string }
+        filename: { type: string }
+        mediaType: { type: string }
+        assetType: { type: string, enum: [Image, Document, Video, Audio] }
+        fileSize: { type: integer }
+        lastModified: { type: string, format: date-time }
+        width: { type: [integer, 'null'] }
+        height: { type: [integer, 'null'] }
+        thumbnailUri: { type: [string, 'null'] }
+        previewUri: { type: [string, 'null'] }
+        isImported: { type: boolean }
+        isRemote: { type: boolean }
+        isReadOnly: { type: boolean }
+        title:
+          type: string
+          description: Local (`neos`) assets only, like the following fields.
+        caption: { type: string }
+        copyrightNotice: { type: string }
+        tags:
+          type: array
+          items:
+            type: object
+            required: [identifier, label]
+            properties:
+              identifier: { type: string }
+              label: { type: string }
+        collections:
+          type: array
+          items:
+            type: object
+            required: [identifier, title]
+            properties:
+              identifier: { type: string }
+              title: { type: string }
+        originalAssetIdentifier:
+          type: string
+          description: Image variants only - the original image's identifier.
+        crop:
+          oneOf:
+            - type: 'null'
+            - type: object
+              required: [x, y, width, height]
+              properties:
+                x: { type: integer }
+                y: { type: integer }
+                width: { type: integer }
+                height: { type: integer }
+          description: Image variants only - original-image pixel coordinates.
+        iptc:
+          type: object
+          required: [title, caption, copyrightNotice]
+          properties:
+            title: { type: string }
+            caption: { type: string }
+            copyrightNotice: { type: string }
+          description: Remote proxies with IPTC support only.
+      description: >
+        Base fields are always present; `title`/`caption`/`copyrightNotice`/
+        `tags`/`collections` appear on local (`neos`) assets,
+        `originalAssetIdentifier`/`crop` on image variants, `iptc` on remote
+        proxies with IPTC metadata.
+
+    MediaCollection:
+      type: object
+      required: [identifier, title, assetCount]
+      properties:
+        identifier: { type: string }
+        title: { type: string }
+        assetCount: { type: integer }
+
+    MediaTag:
+      type: object
+      required: [identifier, label, parent, assetCount, children]
+      properties:
+        identifier: { type: string }
+        label: { type: string }
+        parent: { type: [string, 'null'] }
+        assetCount:
+          type: integer
+          description: Count for this tag only, excluding children.
+        children:
+          type: array
+          items: { $ref: '#/components/schemas/MediaTag' }
+
+    # --- OAuth --------------------------------------------------------------
+
+    TokenResponse:
+      type: object
+      required: [token_type, expires_in, access_token]
+      properties:
+        token_type: { type: string, enum: [Bearer] }
+        expires_in: { type: integer }
+        access_token: { type: string, description: A signed JWT. }
+        refresh_token:
+          type: string
+          description: Issued for authorization_code and refresh_token grants.
+
+    OAuthProtocolError:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: 'RFC 6749 error code, e.g. `invalid_grant`.' }
+        error_description: { type: string }
+        hint: { type: string }
+        message: { type: string }
+      additionalProperties: true
