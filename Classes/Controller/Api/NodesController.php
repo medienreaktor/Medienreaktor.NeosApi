@@ -271,7 +271,13 @@ class NodesController extends AbstractApiController
         }
 
         $this->response->setContentType('text/html');
-        $this->response->setHttpHeader('Cache-Control', 'no-cache');
+        // no-store, not no-cache: the fragment URL is identical for every
+        // re-render of the same element, and Safari serves "no-cache"
+        // responses from its HTTP cache without revalidating - an editing UI
+        // polling this endpoint after each edit would get the first render
+        // back forever. no-cache only demands revalidation; no-store forbids
+        // keeping the response at all (matches the base initializeAction).
+        $this->response->setHttpHeader('Cache-Control', 'private, no-store');
 
         return $result instanceof ResponseInterface ? (string)$result->getBody() : $result->getContents();
     }
