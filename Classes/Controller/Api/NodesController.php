@@ -233,15 +233,26 @@ class NodesController extends AbstractApiController
             if (!preg_match('#^[a-zA-Z0-9_/<>.:@\\\\-]+$#', $fusionPath)) {
                 $this->throwJsonStatus(400, 'invalid_fusion_path', 'The fusionPath contains unexpected characters.');
             }
-            // The DOM attribute addresses the concretely rendered prototype
-            // inside the ContentCase matcher; rendering re-enters at the
-            // ContentCase so the type resolution runs again (the classic UI's
-            // RenderedNodeDomAddress::getFusionPathForContentRendering).
-            $fusionPath = preg_replace(
-                '/(\/itemRenderer<Neos\.Neos:ContentCase>)\/([^<>\/]+)<Neos\.Fusion:Matcher>\/element(<[^>]+>)$/',
-                '$1',
-                $fusionPath
-            );
+            // The DOM attribute records where the metadata wrapper happened to
+            // render, and every segment below the collection's ContentCase was
+            // resolved from node state at that time: the matcher, the element
+            // prototype - and possibly deeper site-specific resolution, e.g. a
+            // renderer prototype picked from a node property (then the wrapper
+            // path runs through element<The.Old:Variant>). Rendering such a
+            // path verbatim pins the fragment to that stale resolution, so the
+            // property edit that triggered this re-render never shows. Re-enter
+            // at the LAST ContentCase (innermost, for nested elements) so the
+            // whole resolution runs fresh against the current node state - the
+            // generalized form of the classic UI's
+            // RenderedNodeDomAddress::getFusionPathForContentRendering, which
+            // only strips a matcher/element tail. Paths without a ContentCase
+            // (e.g. tethered collections rendered at a named path) render as
+            // given.
+            $contentCaseSegment = '/itemRenderer<Neos.Neos:ContentCase>';
+            $contentCasePosition = strrpos($fusionPath, $contentCaseSegment);
+            if ($contentCasePosition !== false) {
+                $fusionPath = substr($fusionPath, 0, $contentCasePosition + strlen($contentCaseSegment));
+            }
         } else {
             $isDocument = $this->getContentRepository()->getNodeTypeManager()
                 ->getNodeType($node->nodeTypeName)?->isOfType(NodeTypeNameFactory::NAME_DOCUMENT) ?? false;
