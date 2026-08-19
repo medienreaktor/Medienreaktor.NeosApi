@@ -9,6 +9,9 @@
     "league/oauth2-server": "^8.5",
     "guzzlehttp/psr7": "^2.4"
   },
+  "suggest": {
+    "neos/neos-ui": "Runs the node types' configured nodeCreationHandlers (e.g. Flowpack.NodeTemplates, promoted creation-dialog elements) for CreateNodeAggregateWithNode commands"
+  },
   "autoload": {
     "psr-4": {
       "Medienreaktor\\NeosApi\\": "Classes/"

@@ -3996,6 +3996,17 @@ components:
             address them in later commands; unpinned ids are generated
             randomly. References cannot be set with this command - use a
             separate SetNodeReferences.
+        elements:
+          type: object
+          additionalProperties: true
+          description: >
+            Creation-dialog element values (element name => value, serialized
+            form) - transport-only, not part of the CR command. Input to the
+            node type's configured `options.nodeCreationHandlers`, which run
+            server-side exactly as in the classic UI (promoted elements,
+            uriPathSegment generation, Flowpack.NodeTemplates templates, custom
+            handlers). Values set explicitly in `initialPropertyValues` always
+            win over handler output.
 
     SetNodeProperties:
       type: object
