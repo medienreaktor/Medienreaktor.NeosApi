@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Medienreaktor\NeosApi\Controller\Api;
 
 use Medienreaktor\NeosApi\Service\CommandRegistry;
+use Medienreaktor\NeosApi\Service\NodeCreationHandlerRunner;
 use Medienreaktor\NeosApi\Service\PropertyTypeCoercer;
 use Medienreaktor\NeosApi\Service\PropertyValueHydrator;
 use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
+use Neos\ContentRepository\Core\Feature\NodeCreation\Command\CreateNodeAggregateWithNode;
 use Neos\ContentRepository\Core\Feature\NodeReferencing\Dto\NodeReferencesForName;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\NodeType\NodeType;
@@ -51,6 +53,9 @@ class CommandsController extends AbstractApiController
 
     #[Flow\Inject]
     protected NodeDuplicationService $nodeDuplicationService;
+
+    #[Flow\Inject]
+    protected NodeCreationHandlerRunner $nodeCreationHandlerRunner;
 
     /**
      * Authenticated exclusively via sessionless bearer tokens - CSRF does not apply
@@ -128,6 +133,17 @@ class CommandsController extends AbstractApiController
             return $this->handleCopyNodesRecursively($payload);
         }
 
+        // Creation-dialog element values ride along a CreateNodeAggregateWithNode
+        // under the transport-only "elements" key: input to the node type's
+        // nodeCreationHandlers (Flowpack.NodeTemplates, promoted elements, ...),
+        // not part of the CR command - stripped before deserialization. Kept in
+        // serialized form here; the runner hydrates/converts per element schema.
+        $creationElements = [];
+        if ($type === 'CreateNodeAggregateWithNode' && is_array($payload['elements'] ?? null)) {
+            $creationElements = $payload['elements'];
+            unset($payload['elements']);
+        }
+
         // Object-typed property values (assets, images, ...) arrive as
         // serialized references and must be resolved to real objects before the
         // command's instanceof validation - see PropertyValueHydrator.
@@ -183,15 +199,34 @@ class CommandsController extends AbstractApiController
             return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 400];
         }
 
-        try {
-            $this->getContentRepository()->handle($command);
-        } catch (AccessDenied $exception) {
-            return ['error' => 'access_denied', 'message' => $exception->getMessage(), 'statusCode' => 403];
-        } catch (\Exception $exception) {
-            // \Exception, not \Throwable: the command is fully typed by now, so
-            // an \Error is a server bug and must surface as a logged 500.
-            $this->logger->warning(sprintf('Command "%s" failed: %s', $type, $exception->getMessage()), ['exception' => $exception]);
-            return ['error' => 'command_failed', 'message' => $exception->getMessage(), 'statusCode' => 422];
+        // A creation runs through the node type's nodeCreationHandlers (the
+        // seam the classic UI's Create change offers, used by e.g.
+        // Flowpack.NodeTemplates) and may expand into a command chain - see
+        // NodeCreationHandlerRunner. Everything else dispatches as-is.
+        if ($command instanceof CreateNodeAggregateWithNode) {
+            try {
+                $commands = $this->nodeCreationHandlerRunner->run($command, $creationElements, $this->getContentRepository());
+            } catch (\InvalidArgumentException $exception) {
+                return ['error' => 'invalid_payload', 'message' => $exception->getMessage(), 'statusCode' => 400];
+            } catch (\Exception $exception) {
+                $this->logger->warning(sprintf('Node creation handlers for "%s" failed: %s', $type, $exception->getMessage()), ['exception' => $exception]);
+                return ['error' => 'creation_handler_failed', 'message' => $exception->getMessage(), 'statusCode' => 422];
+            }
+        } else {
+            $commands = [$command];
+        }
+
+        foreach ($commands as $expandedCommand) {
+            try {
+                $this->getContentRepository()->handle($expandedCommand);
+            } catch (AccessDenied $exception) {
+                return ['error' => 'access_denied', 'message' => $exception->getMessage(), 'statusCode' => 403];
+            } catch (\Exception $exception) {
+                // \Exception, not \Throwable: the command is fully typed by now, so
+                // an \Error is a server bug and must surface as a logged 500.
+                $this->logger->warning(sprintf('Command "%s" failed: %s', $type, $exception->getMessage()), ['exception' => $exception]);
+                return ['error' => 'command_failed', 'message' => $exception->getMessage(), 'statusCode' => 422];
+            }
         }
 
         return [];

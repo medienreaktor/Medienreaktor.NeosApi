@@ -147,6 +147,13 @@ The conventions behind the endpoint reference:
   failure without rolling back. Node aggregate ids are client-supplied —
   generate one and keep it. Recursive copy is the synthetic
   `CopyNodesRecursively` command.
+- **Node creation runs the creation handlers.** A `CreateNodeAggregateWithNode`
+  executes the node type's configured `options.nodeCreationHandlers` (the same
+  seam the classic UI uses — this is what makes Flowpack.NodeTemplates and
+  promoted creation-dialog elements work through the API). Creation-dialog
+  element values can be passed in the payload under the transport-only
+  `elements` key `{"elements": {"title": "...", ...}}`. Property values set
+  explicitly in `initialPropertyValues` always win over handler output.
 - **Deleting is a soft removal.** Use `TagSubtree` with `{"tag": "removed"}`:
   the node stays in the graph as a reviewable, publishable pending change, and
   live erases it once the deletion is published. Deleted nodes are invisible
