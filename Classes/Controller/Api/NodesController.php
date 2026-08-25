@@ -105,7 +105,11 @@ class NodesController extends AbstractApiController
                 ));
                 if ($search !== null || $this->getStringQueryParam('breadcrumbs') !== null) {
                     $items = [];
-                    foreach ($nodes as $node) {
+                    // Assembles its own items (node + breadcrumb) instead of
+                    // going through serializeNodes(), so the registered read
+                    // filters have to be applied here explicitly - otherwise
+                    // search would be the one listing that ignores them.
+                    foreach ($this->nodeSerializer->filterReadableNodes($nodes, $subgraph) as $node) {
                         $items[] = $this->nodeSerializer->serializeNode($node, $subgraph, $nodeTypes)
                             + ['breadcrumb' => $this->nodeSerializer->breadcrumb($node, $subgraph)];
                     }

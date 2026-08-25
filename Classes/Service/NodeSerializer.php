@@ -10,6 +10,7 @@ use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\CountChildNodesFi
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\Flow\Annotations as Flow;
+use Neos\Flow\ObjectManagement\ObjectManagerInterface;
 use Neos\Neos\Domain\NodeLabel\NodeLabelGeneratorInterface;
 
 /**
@@ -30,6 +31,20 @@ class NodeSerializer
      */
     #[Flow\Inject]
     protected NodeLabelGeneratorInterface $nodeLabelGenerator;
+
+    #[Flow\Inject]
+    protected ObjectManagerInterface $objectManager;
+
+    /**
+     * @var array<string, array{filter: string}|null>
+     */
+    #[Flow\InjectConfiguration(package: 'Medienreaktor.NeosApi', path: 'nodeReadFilters')]
+    protected ?array $readFilterConfiguration;
+
+    /**
+     * @var array<string, NodeReadFilterInterface>|null
+     */
+    private ?array $readFilters = null;
 
     /**
      * The $subgraph is used to determine `hasChildren`, evaluated against the
@@ -99,11 +114,60 @@ class NodeSerializer
     public function serializeNodes(iterable $nodes, ContentSubgraphInterface $subgraph, ?string $childrenNodeTypes = null): array
     {
         $result = [];
-        foreach ($nodes as $node) {
+        foreach ($this->filterReadableNodes($nodes, $subgraph) as $node) {
             $result[] = $this->serializeNode($node, $subgraph, $childrenNodeTypes);
         }
 
         return $result;
+    }
+
+    /**
+     * Narrow a node listing by the registered read filters (see
+     * {@see NodeReadFilterInterface}). Applied by serializeNodes() itself;
+     * public because listings that assemble their own items - the search
+     * results, which pair each node with a breadcrumb - have to apply it
+     * before they start assembling, not after.
+     *
+     * Filters are asked in registration order and each sees what the previous
+     * one left. One that throws is skipped: a listing silently losing rows
+     * with no error anywhere is worse than one row too many, and the content
+     * repository's own constraints have already been applied regardless.
+     *
+     * @param iterable<Node> $nodes
+     * @return array<int, Node>
+     */
+    public function filterReadableNodes(iterable $nodes, ContentSubgraphInterface $subgraph): array
+    {
+        $result = $nodes instanceof \Traversable ? iterator_to_array($nodes, false) : array_values($nodes);
+        foreach ($this->resolveReadFilters() as $filter) {
+            try {
+                $result = $filter->filterReadableNodes($result, $subgraph);
+            } catch (\Throwable) {
+                // Leave the listing as the previous filter left it.
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * @return array<string, NodeReadFilterInterface>
+     */
+    private function resolveReadFilters(): array
+    {
+        if ($this->readFilters !== null) {
+            return $this->readFilters;
+        }
+        $this->readFilters = [];
+        foreach (array_filter($this->readFilterConfiguration ?? [], is_array(...)) as $key => $entry) {
+            $filter = $this->objectManager->get($entry['filter']);
+            if (!$filter instanceof NodeReadFilterInterface) {
+                throw new \RuntimeException(sprintf('The node read filter "%s" (%s) does not implement %s.', $key, $entry['filter'], NodeReadFilterInterface::class), 1756100001);
+            }
+            $this->readFilters[$key] = $filter;
+        }
+
+        return $this->readFilters;
     }
 
     /**

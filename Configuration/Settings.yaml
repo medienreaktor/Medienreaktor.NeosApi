@@ -54,6 +54,22 @@ Medienreaktor:
     #     position: 'end'
     workspaceDataEnrichers: {}
 
+    # Packages that narrow which nodes this API lists - an access-control
+    # package, a per-account visibility rule. Each registered filter
+    # (implementing NodeReadFilterInterface) is asked to reduce every node
+    # listing before it is serialized; the API never learns what the narrowing
+    # means, only that somebody narrows.
+    #
+    # Filters may only ever REMOVE nodes, and the content repository's own
+    # constraints (subtree tags, workspace permissions) have been applied long
+    # before they run. Single-node reads are deliberately not filtered - see
+    # the interface for why.
+    #
+    # nodeReadFilters:
+    #   'Vendor.Package:something':
+    #     filter: 'Vendor\Package\Service\SomethingNodeReadFilter'
+    nodeReadFilters: {}
+
     # Capability flags reported by /api/me: name => Flow privilege target that
     # must be granted to the account's roles. Uses the same checks the classic
     # backend menu uses to show/hide modules, so clients can mirror the module
