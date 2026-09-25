@@ -234,10 +234,13 @@ final class WorkspaceReadContext
      */
     public function changeDocumentAndSite(Change $change, DimensionSpacePoint $dimensionSpacePoint): array
     {
-        return $this->closestDocumentAndSite(
-            $change->getLegacyRemovalAttachmentPoint() ?? $change->nodeAggregateId,
-            $dimensionSpacePoint
-        );
+        // Neos 9.2 keeps removed nodes in the graph (tagged "removed") and dropped
+        // the removal attachment point; 9.1 still needs it for deleted nodes.
+        $anchor = method_exists($change, 'getLegacyRemovalAttachmentPoint')
+            ? ($change->getLegacyRemovalAttachmentPoint() ?? $change->nodeAggregateId)
+            : $change->nodeAggregateId;
+
+        return $this->closestDocumentAndSite($anchor, $dimensionSpacePoint);
     }
 
     /** Whether the node is soft removed (deleted, pending publication). */
