@@ -107,14 +107,23 @@ final class NodeCreationHandlerRunner
             $commands = $handler->handle($commands, $elements);
         }
 
-        // Client wins: re-apply the property values the command stated
-        // explicitly over whatever the handlers produced.
+        // Client wins: re-apply the property values and pinned tethered node
+        // ids the command stated explicitly over whatever the handlers produced.
+        // NodeCreationCommands::fromFirstCommand() regenerates every tethered id,
+        // so without this a client could not address a tethered child it pinned.
         $allCommands = iterator_to_array($commands, false);
+        $first = $commands->first;
         if ($command->initialPropertyValues->values !== []) {
-            $allCommands[0] = $commands->first->withInitialPropertyValues(
-                $commands->first->initialPropertyValues->merge($command->initialPropertyValues)
+            $first = $first->withInitialPropertyValues(
+                $first->initialPropertyValues->merge($command->initialPropertyValues)
             );
         }
+        if (!$command->tetheredDescendantNodeAggregateIds->isEmpty()) {
+            $first = $first->withTetheredDescendantNodeAggregateIds(
+                $first->tetheredDescendantNodeAggregateIds->merge($command->tetheredDescendantNodeAggregateIds)
+            );
+        }
+        $allCommands[0] = $first;
 
         return $allCommands;
     }
