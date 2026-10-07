@@ -14,6 +14,8 @@ use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\WorkspaceRebas
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
 use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceContainsPublishableChanges;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAddress;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindAncestorNodesFilter;
+use Neos\ContentRepository\Core\Projection\ContentGraph\VisibilityConstraints;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Workspace\Workspace;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
@@ -528,8 +530,10 @@ class WorkspacesController extends AbstractApiController
                 // by one - the content repository has no multi-document publish
                 // - so a conflict on the Nth document leaves the earlier ones
                 // published (the same behaviour as the classic review module).
+                // Ancestors go first: a subpage's creation depends on its new
+                // parent page already existing in the base workspace.
                 $publishedChanges = 0;
-                foreach ($documents as $documentId) {
+                foreach ($this->orderDocumentsByAncestry($workspace, $documents, true) as $documentId) {
                     $publishedChanges += $this->workspacePublishingService->publishChangesInDocument($this->getContentRepositoryId(), $workspace, NodeAggregateId::fromString($documentId))->numberOfPublishedChanges;
                 }
                 return ['publishedChanges' => $publishedChanges];
@@ -557,8 +561,10 @@ class WorkspacesController extends AbstractApiController
             if ($documents !== []) {
                 // A selection of documents from the review dialog, discarded one
                 // by one (see publishAction for the per-document rationale).
+                // Descendants go first: discarding a new parent page while its
+                // new subpage remains would leave the subpage without a parent.
                 $discardedChanges = 0;
-                foreach ($documents as $documentId) {
+                foreach ($this->orderDocumentsByAncestry($workspace, $documents, false) as $documentId) {
                     $discardedChanges += $this->workspacePublishingService->discardChangesInDocument($this->getContentRepositoryId(), $workspace, NodeAggregateId::fromString($documentId))->numberOfDiscardedChanges;
                 }
                 return ['discardedChanges' => $discardedChanges];
@@ -1352,6 +1358,53 @@ class WorkspacesController extends AbstractApiController
     private function getOperationFilter(): array
     {
         return array_filter($this->requestBody(), 'is_string');
+    }
+
+    /**
+     * Orders a document selection so that every selected ancestor of a
+     * selected document comes before it (ancestorsFirst) or after it. The
+     * client sends the review list's order, which follows the pending-changes
+     * table and is effectively random - publishing a new subpage before its
+     * new parent page fails, as the parent does not exist in the base yet.
+     * The classic review module avoids this by listing documents path-sorted.
+     *
+     * Ancestry is taken from the workspace's graph across all dimensions the
+     * document occupies, including removed nodes. Documents not found in the
+     * workspace (hard removals) have no known ancestry and keep their place
+     * relative to each other; the sort is stable otherwise as well.
+     *
+     * @param list<string> $documentIds
+     * @return list<string>
+     */
+    private function orderDocumentsByAncestry(WorkspaceName $workspaceName, array $documentIds, bool $ancestorsFirst): array
+    {
+        if (count($documentIds) < 2) {
+            return $documentIds;
+        }
+        $contentGraph = $this->getContentRepository()->getContentGraph($workspaceName);
+        $selected = array_flip($documentIds);
+        // Per document: how many other selected documents are its ancestors.
+        $selectedAncestorCount = [];
+        foreach ($documentIds as $documentId) {
+            $ancestorIds = [];
+            $nodeAggregate = $contentGraph->findNodeAggregateById(NodeAggregateId::fromString($documentId));
+            foreach ($nodeAggregate?->occupiedDimensionSpacePoints ?? [] as $originDimensionSpacePoint) {
+                $ancestors = $contentGraph
+                    ->getSubgraph($originDimensionSpacePoint->toDimensionSpacePoint(), VisibilityConstraints::createEmpty())
+                    ->findAncestorNodes($nodeAggregate->nodeAggregateId, FindAncestorNodesFilter::create());
+                foreach ($ancestors as $ancestor) {
+                    $ancestorIds[$ancestor->aggregateId->value] = true;
+                }
+            }
+            $selectedAncestorCount[$documentId] = count(array_intersect_key($ancestorIds, $selected));
+        }
+
+        // usort is stable (PHP >= 8.0): unrelated documents keep the client order.
+        usort($documentIds, fn (string $a, string $b): int => $ancestorsFirst
+            ? $selectedAncestorCount[$a] <=> $selectedAncestorCount[$b]
+            : $selectedAncestorCount[$b] <=> $selectedAncestorCount[$a]);
+
+        return $documentIds;
     }
 
     /**
