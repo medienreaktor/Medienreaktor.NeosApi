@@ -11,10 +11,13 @@ use Neos\Flow\Annotations as Flow;
 /**
  * Dynamic client registration (RFC 7591), as expected by MCP clients.
  *
- * Only PUBLIC clients (PKCE, no secret) can self-register; confidential
- * clients are created deliberately via ./flow neosapi:createclient. A
- * registered client obtains no permissions by itself: every token it acquires
- * is bound to the approving user's account and policies.
+ * Clients register either as public (PKCE, no secret) or as confidential with
+ * a generated secret, as some MCP clients (claude.ai connectors) do. Both are
+ * limited to the authorization_code and refresh_token grants, so a secret never
+ * unlocks client_credentials; machine clients are still created deliberately
+ * via ./flow neosapi:createclient. A registered client obtains no permissions
+ * by itself: every token it acquires is bound to the approving user's account
+ * and policies.
  */
 class RegistrationController extends AbstractOAuthController
 {
@@ -52,8 +55,8 @@ class RegistrationController extends AbstractOAuthController
         }
 
         $authMethod = $metadata['token_endpoint_auth_method'] ?? 'none';
-        if ($authMethod !== 'none') {
-            return $this->jsonResponse(['error' => 'invalid_client_metadata', 'error_description' => 'Only public clients (token_endpoint_auth_method "none") may self-register.'], 400);
+        if (!in_array($authMethod, ['none', 'client_secret_basic', 'client_secret_post'], true)) {
+            return $this->jsonResponse(['error' => 'invalid_client_metadata', 'error_description' => 'token_endpoint_auth_method must be "none", "client_secret_basic" or "client_secret_post".'], 400);
         }
 
         $allowedGrantTypes = ['authorization_code', 'refresh_token'];
@@ -72,18 +75,27 @@ class RegistrationController extends AbstractOAuthController
             ? mb_substr($metadata['client_name'], 0, 200)
             : 'Dynamically registered client';
 
-        $client = new OAuthClient($clientId, $clientName, null, $redirectUris, $grantTypes, $requestedScopes);
+        $secret = $authMethod === 'none' ? null : bin2hex(random_bytes(32));
+        $secretHash = $secret === null ? null : password_hash($secret, PASSWORD_DEFAULT);
+
+        $client = new OAuthClient($clientId, $clientName, $secretHash, $redirectUris, $grantTypes, $requestedScopes);
         $this->clientRepository->add($client);
 
-        return $this->jsonResponse([
+        $response = [
             'client_id' => $clientId,
             'client_id_issued_at' => time(),
             'client_name' => $clientName,
             'redirect_uris' => $redirectUris,
             'grant_types' => $grantTypes,
             'response_types' => ['code'],
-            'token_endpoint_auth_method' => 'none',
+            'token_endpoint_auth_method' => $authMethod,
             'scope' => implode(' ', $requestedScopes),
-        ], 201);
+        ];
+        if ($secret !== null) {
+            $response['client_secret'] = $secret;
+            $response['client_secret_expires_at'] = 0;
+        }
+
+        return $this->jsonResponse($response, 201);
     }
 }
