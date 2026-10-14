@@ -17,7 +17,8 @@
         "neos/jsonschema": "dev-main"
     },
     "suggest": {
-        "neos/api-docs": "Swagger UI for the API on /api/docs"
+        "neos/api-docs": "Swagger UI for the API on /api/docs",
+        "neos/neos-ui": "Runs the node creation handlers of node types (options.nodeCreationHandlers) on createNode, with the creation dialog values in elements"
     },
     "autoload": {
         "psr-4": {

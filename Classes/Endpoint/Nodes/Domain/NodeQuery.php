@@ -75,7 +75,7 @@ final readonly class NodeQuery
             return BadRequest::because(sprintf('filterByProperty is invalid: %s', $exception->getMessage()));
         }
         try {
-            $nodeTypeCriteria = $nodeTypes !== null ? Filter\NodeType\NodeTypeCriteria::fromFilterString($nodeTypes->value) : null;
+            $nodeTypeCriteria = $nodeTypes?->toNodeTypeCriteria();
         } catch (\InvalidArgumentException $exception) {
             // e.g. an empty node type name in "!" or "Neos.Neos:Document,"
             return BadRequest::because(sprintf('filterByNodeType is invalid: %s', $exception->getMessage()));
@@ -109,10 +109,7 @@ final readonly class NodeQuery
      */
     public function find(ContentGraph\Node $entryPoint, ContentSubgraphInterface $subgraph, NodeTypeManager $nodeTypeManager): array|BadRequest
     {
-        $unknownNodeTypes = $this->nodeTypes === null ? [] : array_values(array_filter(
-            [...$this->nodeTypes->explicitlyAllowedNodeTypeNames->toStringArray(), ...$this->nodeTypes->explicitlyDisallowedNodeTypeNames->toStringArray()],
-            static fn (string $nodeTypeName) => !$nodeTypeManager->hasNodeType($nodeTypeName),
-        ));
+        $unknownNodeTypes = $this->nodeTypes !== null ? self::unknownNodeTypes($this->nodeTypes, $nodeTypeManager) : [];
         if ($unknownNodeTypes !== []) {
             return BadRequest::because(sprintf('There is no node type %s', implode(', ', $unknownNodeTypes)));
         }
@@ -146,6 +143,19 @@ final readonly class NodeQuery
             iterator_to_array($subgraph->findDescendantNodes($entryPoint->aggregateId, $descendantNodesFilter), false),
             $subgraph->countDescendantNodes($entryPoint->aggregateId, Filter\CountDescendantNodesFilter::fromFindDescendantNodesFilter($descendantNodesFilter)),
         ];
+    }
+
+    /**
+     * The node types of the criteria the node type manager doesn't know, e.g. for a 400
+     *
+     * @return list<string>
+     */
+    public static function unknownNodeTypes(Filter\NodeType\NodeTypeCriteria $nodeTypes, NodeTypeManager $nodeTypeManager): array
+    {
+        return array_values(array_filter(
+            [...$nodeTypes->explicitlyAllowedNodeTypeNames->toStringArray(), ...$nodeTypes->explicitlyDisallowedNodeTypeNames->toStringArray()],
+            static fn (string $nodeTypeName) => !$nodeTypeManager->hasNodeType($nodeTypeName),
+        ));
     }
 
     private static function invalidSort(?Sort $sort): ?BadRequest

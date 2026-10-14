@@ -16,9 +16,11 @@ use Neos\Neos\Domain\Model\RenderingMode;
  * rendering mode's own one, e.g. rawContent), without __meta, and only in a rendering mode other than frontend, which
  * are the ones with these attributes and need Neos.Neos:Backend.GeneralAccess (checked by renderView)
  *
- * A path that ends with the element a Neos.Neos:ContentCase chose is rendered from the case, so a change that makes it
- * choose another one shows, as in the Neos UI's RenderedNodeDomAddress::getFusionPathForContentRendering(). Others,
- * e.g. a content collection's, render as given
+ * A path that ends in or passes through the element a Neos.Neos:ContentCase chose is rendered from the last (innermost)
+ * case, so everything below it is resolved again for the node as it is now: a change that makes the case choose
+ * another element shows, and so does one that changes what the element renders below it (e.g. a renderer picked from
+ * a property). The Neos UI's RenderedNodeDomAddress::getFusionPathForContentRendering() only cuts a matcher and element
+ * at the end. Paths without a case, e.g. a tethered content collection's at a named path, render as given
  *
  * @internal the implementation of Neos.Api:FusionPath
  */
@@ -30,9 +32,9 @@ class FusionPathImplementation extends AbstractFusionObject
     private const string PATTERN = '#^[a-zA-Z0-9_/<>.:@\\\\-]+$#';
 
     /**
-     * The element a content case chose, at the end of a path
+     * The content case of a content collection, whose element paths start below it
      */
-    private const string CONTENT_CASE_ELEMENT = '#(/itemRenderer<Neos\.Neos:ContentCase>)/[^<>/]+<Neos\.Fusion:Matcher>/element<[^>]+>$#';
+    private const string CONTENT_CASE = '/itemRenderer<Neos.Neos:ContentCase>';
 
     /**
      * Where Neos' FusionView starts rendering a page
@@ -55,11 +57,20 @@ class FusionPathImplementation extends AbstractFusionObject
         if (!self::isContentPath($path, $renderingMode)) {
             throw new InvalidViewArgument(sprintf('The Fusion path %s is no path of content on the page, it must start at %s', $path, implode(' or ', self::pagePaths($renderingMode))), 1791802335);
         }
-        $path = (string)preg_replace(self::CONTENT_CASE_ELEMENT, '$1', $path);
+        $path = self::fromContentCase($path);
         if (!$this->runtime->canRender($path)) {
             throw new InvalidViewArgument(sprintf('There is nothing to render at the Fusion path %s', $path), 1791802333);
         }
         return $this->runtime->render($path);
+    }
+
+    /**
+     * The path up to its last content case, if there is anything below it, else the path
+     */
+    private static function fromContentCase(string $path): string
+    {
+        $position = strrpos($path, self::CONTENT_CASE . '/');
+        return $position !== false ? substr($path, 0, $position + strlen(self::CONTENT_CASE)) : $path;
     }
 
     /**

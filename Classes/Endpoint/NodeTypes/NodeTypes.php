@@ -5,6 +5,8 @@ namespace Neos\Api\Endpoint\NodeTypes;
 
 use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
 use Neos\Api\Endpoint\NodeTypes\Schema\NodeType;
+use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeGroup;
+use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeGroupList;
 use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeName;
 use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeList;
 use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeListing;
@@ -17,9 +19,12 @@ use Neos\Api\Shared\Parameter\IncludePaths;
 use Neos\Api\Shared\Response\BadRequest;
 use Neos\Api\Shared\Response\NotFound;
 use Neos\Api\Shared\Schema\AcceptLanguage;
+use Neos\Api\Infrastructure\I18n\Labels;
 use Neos\ContentRepository\Core;
+use Neos\Flow\Annotations as Flow;
 use Neos\OpenApi\Attributes\Operation;
 use Neos\OpenApi\Attributes\Parameter;
+use Neos\Utility\PositionalArraySorter;
 
 /**
  * The node types of a content repository, the content model generic clients like form generators work with
@@ -28,18 +33,29 @@ final readonly class NodeTypes
 {
     private const array INCLUDE_PATHS = ['properties', 'references', 'configuration', 'allowedChildNodeTypes', 'tetheredChildNodes'];
 
+    /**
+     * @var array<mixed> the groups the Neos UI offers node types in, by name
+     */
+    private array $groups;
+
+    /**
+     * @param array<mixed>|null $groups
+     */
     public function __construct(
         private ContentRepositoryFinder $contentRepositoryFinder,
         private LabelTranslator $labelTranslator,
         private NodeTypeUi $nodeTypeUi,
+        #[Flow\InjectConfiguration(path: 'nodeTypes.groups', package: 'Neos.Neos')]
+        array|null $groups,
     ) {
+        $this->groups = $groups ?? [];
     }
 
     #[Operation(
         path: '/cr/{contentRepositoryId}/nodetypes',
         method: 'GET',
         summary: 'List the node types',
-        description: 'All node types of the content repository, abstract ones included, sorted by name, or with filterBySuperType only the ones of that type. Their properties, references, configuration, allowedChildNodeTypes and tetheredChildNodes are null unless included, getNodeType has them all. Which node types a node may have as children follows from the model alone: a regular node\'s from its node type\'s allowedChildNodeTypes, a tethered node\'s (e.g. a page\'s main content collection) from its parent\'s node type\'s tetheredChildNodes, by its name. The labels are translated to the Accept-Language.',
+        description: 'All node types of the content repository, abstract ones included, sorted by name, or with filterBySuperType only the ones of that type. Their properties, references, configuration, allowedChildNodeTypes and tetheredChildNodes are null unless included, getNodeType has them all. Which node types a node may have as children follows from the model alone: a regular node\'s from its node type\'s allowedChildNodeTypes, a tethered node\'s (e.g. a page\'s main content collection) from its parent\'s node type\'s tetheredChildNodes, by its name. meta.groups are the groups a node type\'s group refers to (Neos.Neos.nodeTypes.groups), in the order of their positions, as the Neos UI offers them for creation. The labels are translated to the Accept-Language.',
         operationId: 'listNodeTypes',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODETYPES_READ],
@@ -88,7 +104,19 @@ final readonly class NodeTypes
                 withTetheredChildNodes: $include->includes('tetheredChildNodes'),
             ),
             array_values($nodeTypes),
-        )));
+        )), $this->groups($labels));
+    }
+
+    /**
+     * The groups of the settings in the order of their positions, ones set to null left out
+     */
+    private function groups(Labels $labels): NodeTypeGroupList
+    {
+        $groups = [];
+        foreach ((new PositionalArraySorter(array_filter($this->groups, is_array(...))))->toArray() as $name => $configuration) {
+            $groups[] = NodeTypeGroup::from((string)$name, $configuration, $labels);
+        }
+        return new NodeTypeGroupList(...$groups);
     }
 
     #[Operation(

@@ -4,8 +4,10 @@ declare(strict_types=1);
 namespace Neos\Api\Endpoint\Nodes;
 
 use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
+use Neos\Api\Endpoint\Nodes\Domain\NodeCreationHandlers;
 use Neos\Api\Endpoint\Nodes\Domain\NodeMoveCommand;
 use Neos\Api\Endpoint\Nodes\Domain\NodeQuery;
+use Neos\Api\Endpoint\Nodes\Domain\NodeReadFilters;
 use Neos\Api\Endpoint\Nodes\Domain\NodeRestoration;
 use Neos\Api\Endpoint\Nodes\Domain\NodeVariation;
 use Neos\Api\Endpoint\Nodes\Domain\SubgraphResolver;
@@ -14,6 +16,7 @@ use Neos\Api\Endpoint\Nodes\Parameter\NodeTypeCriteria;
 use Neos\Api\Endpoint\Nodes\Parameter\PropertyCriteria;
 use Neos\Api\Endpoint\Nodes\Parameter\ReferenceFilter;
 use Neos\Api\Endpoint\Nodes\Parameter\SearchTerm;
+use Neos\Api\Endpoint\Nodes\RequestBody\NodeCopy;
 use Neos\Api\Endpoint\Nodes\RequestBody\NodeCreate;
 use Neos\Api\Endpoint\Nodes\RequestBody\NodeMove;
 use Neos\Api\Endpoint\Nodes\RequestBody\NodePropertiesUpdate;
@@ -23,12 +26,15 @@ use Neos\Api\Endpoint\Nodes\RequestBody\NodeUriPathSegmentGenerate;
 use Neos\Api\Endpoint\Nodes\RequestBody\NodeVariantCreate;
 use Neos\Api\Endpoint\Nodes\Response\NodeCreated;
 use Neos\Api\Endpoint\Nodes\Schema\DimensionSpacePoint;
+use Neos\Api\Endpoint\Nodes\Schema\DimensionSpacePointList;
 use Neos\Api\Endpoint\Nodes\Schema\Node;
 use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
 use Neos\Api\Endpoint\Nodes\Schema\NodeList;
-use Neos\Api\Endpoint\Nodes\Schema\NodeListing;
+use Neos\Api\Endpoint\Nodes\Schema\NodeVariantListing;
+use Neos\Api\Endpoint\Nodes\Schema\NodeVariantListingMeta;
 use Neos\Api\Endpoint\Nodes\Schema\PaginatedNodeListing;
 use Neos\Api\Endpoint\Nodes\Schema\SubtreeTag;
+use Neos\Api\Endpoint\Nodes\Schema\UriPathSegment;
 use Neos\Api\Endpoint\Workspaces\Domain\ReadableWorkspace;
 use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceName;
 use Neos\Api\Endpoint\Workspaces\Domain\WorkspaceResolver;
@@ -90,11 +96,15 @@ use Neos\ContentRepository\Core\SharedModel\Exception\PropertyCannotBeSet;
 use Neos\ContentRepository\Core\SharedModel\Exception\ReferenceCannotBeSet;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeVariantSelectionStrategy;
 use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
+use Neos\Neos\Domain\Exception\TetheredNodesCannotBePartiallyCopied;
+use Neos\Neos\Domain\Service\NodeDuplication\NodeAggregateIdMapping;
+use Neos\Neos\Domain\Service\NodeDuplicationService;
 use Neos\Neos\Domain\SubtreeTagging\NeosSubtreeTag;
 use Neos\OpenApi\Attributes\AuthContext;
 use Neos\OpenApi\Attributes\Operation;
 use Neos\OpenApi\Attributes\Parameter;
 use Neos\OpenApi\Attributes\RequestBody;
+use Neos\Schematic\Serialization\Serializer;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
@@ -105,7 +115,7 @@ final readonly class Nodes
     /**
      * The include paths, as JSON:API's: a path includes the ones it goes through, children.references includes children
      */
-    private const array INCLUDE_PATHS = ['references', 'children', 'children.references', 'variants', 'variants.references', 'ancestors'];
+    private const array INCLUDE_PATHS = ['references', 'references.node', 'children', 'children.references', 'children.hasChildren', 'variants', 'variants.references', 'ancestors', 'hasChildren'];
 
     /**
      * The include paths of listNodeVariants: variants have no variants, and their ancestors are the node's
@@ -124,6 +134,9 @@ final readonly class Nodes
         private NodeVariation $nodeVariation,
         private NodeRestoration $nodeRestoration,
         private NodeMoveCommand $nodeMoveCommand,
+        private NodeCreationHandlers $nodeCreationHandlers,
+        private NodeReadFilters $nodeReadFilters,
+        private NodeDuplicationService $nodeDuplicationService,
     ) {
     }
 
@@ -131,7 +144,7 @@ final readonly class Nodes
         path: '/cr/{contentRepositoryId}/nodes',
         method: 'GET',
         summary: 'List nodes',
-        description: 'A page of the nodes in the workspace and dimension space point: with filterByHierarchy the nodes below a node (type childOf its direct child nodes, in their order unless sorted, type descendantOf all of them), with filterByReference the nodes that reference a node, a node once per reference. The two can\'t be combined, each is a query of its own. Without either, all nodes below the site node of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name). filterByNodeType, filterByProperty and search narrow them down. sort takes properties.<name> and timestamps.created, timestamps.lastModified, timestamps.originalCreated, timestamps.originalLastModified. offset and limit (25 by default, 100 at most) choose the page, meta.total and links tell about the others. include works as in getNode, for each node. Hidden nodes are visible as in getNode.',
+        description: 'A page of the nodes in the workspace and dimension space point: with filterByHierarchy the nodes below a node (type childOf its direct child nodes, in their order unless sorted, type descendantOf all of them), with filterByReference the nodes that reference a node, a node once per reference. The two can\'t be combined, each is a query of its own. Without either, all nodes below the site node of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name). filterByNodeType, filterByProperty and search narrow them down. sort takes properties.<name> and timestamps.created, timestamps.lastModified, timestamps.originalCreated, timestamps.originalLastModified. offset and limit (25 by default, 100 at most) choose the page, meta.total and links tell about the others. include, hasChildrenOfNodeType and includeRemoved work as in getNode, for each node. Hidden nodes are visible as in getNode. Packages may narrow the nodes down further (NodeReadFilter, Neos.Api.nodeReadFilters): that happens to each page after it is read, so a page may have fewer nodes than limit, meta.total and links count the nodes before.',
         operationId: 'listNodes',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_READ],
@@ -140,6 +153,7 @@ final readonly class Nodes
     public function list(
         ContentRepositoryId $contentRepositoryId,
         ServerRequestInterface $request,
+        #[AuthContext] ApiCaller $caller,
         #[Parameter(in: 'query', description: 'The workspace to read the nodes in, live if omitted')]
         WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'The dimension space point to read the nodes in, as JSON. If omitted, the default one of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name), the only one of a content repository without a site')]
@@ -160,8 +174,12 @@ final readonly class Nodes
         Offset|null $offset = null,
         #[Parameter(in: 'query', description: 'How many items at most, 25 if omitted, 100 at most')]
         Limit|null $limit = null,
-        #[Parameter(in: 'query', description: 'What to include beyond each node\'s own fields, comma-separated: references, children, children.references, variants, variants.references, ancestors')]
+        #[Parameter(in: 'query', description: 'What to include beyond each node\'s own fields, comma-separated: references, references.node, children, children.references, children.hasChildren, variants, variants.references, ancestors, hasChildren')]
         IncludePaths|null $include = null,
+        #[Parameter(in: 'query', description: 'With include=hasChildren or children.hasChildren, only child nodes of these node types count, comma-separated, a ! in front excludes a type, as filterByNodeType. All if omitted')]
+        NodeTypeCriteria|null $hasChildrenOfNodeType = null,
+        #[Parameter(in: 'query', description: 'Find deleted nodes as well (soft removed, tagged removed), as getNode, false if omitted')]
+        bool $includeRemoved = false,
     ): PaginatedNodeListing|NotFound|BadRequest {
         $offset ??= Offset::none();
         $limit ??= Limit::default();
@@ -174,7 +192,11 @@ final readonly class Nodes
         if ($query instanceof BadRequest) {
             return $query;
         }
-        $subgraph = $this->subgraph($contentRepositoryId, $workspaceName, $dimensionSpacePoint);
+        $hasChildrenOf = self::hasChildrenOf($hasChildrenOfNodeType);
+        if ($hasChildrenOf instanceof BadRequest) {
+            return $hasChildrenOf;
+        }
+        $subgraph = $this->subgraph($contentRepositoryId, $workspaceName, $dimensionSpacePoint, $includeRemoved);
         if (!$subgraph instanceof ContentSubgraphInterface) {
             return $subgraph;
         }
@@ -188,9 +210,14 @@ final readonly class Nodes
         if ($found instanceof BadRequest) {
             return $found;
         }
+        $unknownNodeTypes = $this->unknownNodeTypes($hasChildrenOf, $entryPoint);
+        if ($unknownNodeTypes !== null) {
+            return $unknownNodeTypes;
+        }
         [$nodes, $total] = $found;
+        $nodes = $this->nodeReadFilters->apply($nodes, $caller);
         return new PaginatedNodeListing(
-            new NodeList(...array_map(fn (ContentGraph\Node $node) => $this->node($node, $include), $nodes)),
+            new NodeList(...array_map(fn (ContentGraph\Node $node) => $this->node($node, $include, $hasChildrenOf), $nodes)),
             new ListingMeta($total),
             ListingLinks::for($request, $offset, $limit, $total),
         );
@@ -200,7 +227,7 @@ final readonly class Nodes
         path: '/cr/{contentRepositoryId}/nodes',
         method: 'POST',
         summary: 'Create a node',
-        description: 'Creates a node of the node type below the parent in the workspace, with the dimension space point as its origin (CreateNodeAggregateWithNode): before the succeeding sibling, else as the parent\'s last child, with the given aggregate id, else a new one. The properties are set as for updateNodeProperties, over the node type\'s defaults, a document without uriPathSegment gets one from its title as in the Neos backend. The references are set as for updateNodeReferences right after the node is created: if they can\'t be (e.g. an unknown target), it\'s a 422 and the node stays without them. Tethered child nodes (e.g. a page\'s main collection) are created with it. An unknown, abstract or root node type, one the parent doesn\'t allow below it, a sibling that isn\'t a child of the parent or properties that can\'t be written are a 422, an aggregate id that is taken a 409. Whether the account may create the node there is up to its workspace roles and node privileges (else a 403), as in the Neos backend. The response is the new node as getNode returns it without include.',
+        description: 'Creates a node of the node type below the parent in the workspace, with the dimension space point as its origin (CreateNodeAggregateWithNode): before the succeeding sibling, else as the parent\'s last child, with the given aggregate id, else a new one. The properties are set as for updateNodeProperties, over the node type\'s defaults, a document without uriPathSegment gets one from its title as in the Neos backend. The references are set as for updateNodeReferences right after the node is created: if they can\'t be (e.g. an unknown target), it\'s a 422 and the node stays without them. Tethered child nodes (e.g. a page\'s main collection) are created with it. If neos/neos-ui is installed, the node type\'s node creation handlers (options.nodeCreationHandlers, e.g. Flowpack.NodeTemplates\' templates) run as for the Neos UI\'s creation dialog, with the creation dialog\'s values in elements; the properties given win over what they set, and if one of the commands they add fails, it\'s a 422 and the node stays as far as it got. Without neos/neos-ui elements are ignored. An unknown, abstract or root node type, one the parent doesn\'t allow below it, a sibling that isn\'t a child of the parent or properties that can\'t be written are a 422, an aggregate id that is taken a 409. Whether the account may create the node there is up to its workspace roles and node privileges (else a 403), as in the Neos backend. The response is the new node as getNode returns it without include.',
         operationId: 'createNode',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_CREATE],
@@ -232,27 +259,59 @@ final readonly class Nodes
             return UnprocessableContent::because(sprintf('There is no node type %s', $nodeTypeName->value));
         }
         $values = $newNode->properties;
-        if (UriPathSegments::appliesTo($nodeType) && !isset($values['uriPathSegment'])) {
-            $values['uriPathSegment'] = $this->uriPathSegments->forNewDocument($nodeTypeName, is_string($values['title'] ?? null) ? $values['title'] : null, $subgraph->getDimensionSpacePoint());
+        $isDocument = UriPathSegments::appliesTo($nodeType);
+        $title = $values['title'] ?? null;
+        if ($isDocument && !isset($values['uriPathSegment']) && is_string($title)) {
+            // as stated, so it wins over the node creation handlers', see there
+            $fromTitle = $this->uriPathSegments->fromText($title, $subgraph->getDimensionSpacePoint());
+            if ($fromTitle !== '') {
+                $values['uriPathSegment'] = $fromTitle;
+            }
         }
+        $contentRepository = $this->contentRepositoryRegistry->get($parent->contentRepositoryId);
         try {
             $propertyValues = $this->propertyValues->toWrite($nodeType, $values);
             $referencesToWrite = $this->propertyValues->referencesToWrite($nodeType, $newNode->references);
+            // without neos/neos-ui there are no handlers to take them
+            $elements = NodeCreationHandlers::areAvailable() ? $this->propertyValues->creationElements($nodeType, $newNode->elements) : [];
         } catch (InvalidPropertyValue $exception) {
             return UnprocessableContent::because($exception->getMessage());
         }
         $nodeAggregateId = $newNode->nodeAggregateId?->toNodeAggregateId() ?? SharedModel\Node\NodeAggregateId::create();
         $origin = OriginDimensionSpacePoint::fromDimensionSpacePoint($subgraph->getDimensionSpacePoint());
+        $action = sprintf('create a node below the node %s', $parent->aggregateId->value);
         try {
-            $failed = $this->send($parent, sprintf('create a node below the node %s', $parent->aggregateId->value), CreateNodeAggregateWithNode::create(
-                $parent->workspaceName,
-                $nodeAggregateId,
-                $nodeTypeName,
-                $origin,
-                $parent->aggregateId,
-                $newNode->succeedingSiblingNodeAggregateId?->toNodeAggregateId(),
-                $propertyValues,
+            $commands = $this->nodeCreationHandlers->apply(
+                CreateNodeAggregateWithNode::create(
+                    $parent->workspaceName,
+                    $nodeAggregateId,
+                    $nodeTypeName,
+                    $origin,
+                    $parent->aggregateId,
+                    $newNode->succeedingSiblingNodeAggregateId?->toNodeAggregateId(),
+                    $propertyValues,
+                ),
+                $nodeType,
+                $elements,
+                $newNode->elements,
+                $contentRepository,
+            );
+        } catch (\Exception $exception) {
+            // a handler's own rules or its misconfiguration, as Medienreaktor.NeosApi and the Neos UI report them
+            return UnprocessableContent::because(sprintf('The node creation handlers of the node type %s failed: %s', $nodeTypeName->value, $exception->getMessage()));
+        }
+        /** @var CreateNodeAggregateWithNode $create the handlers keep it first */
+        $create = array_shift($commands);
+        if ($isDocument && !isset($create->initialPropertyValues->values['uriPathSegment'])) {
+            // without handlers: from the title, else <node type suffix>-<random number> as in the Neos backend
+            $title = $create->initialPropertyValues->values['title'] ?? null;
+            $create = $create->withInitialPropertyValues($create->initialPropertyValues->withValue(
+                'uriPathSegment',
+                $this->uriPathSegments->forNewDocument($nodeTypeName, is_string($title) ? $title : null, $subgraph->getDimensionSpacePoint()),
             ));
+        }
+        try {
+            $failed = $this->send($parent, $action, $create);
         } catch (NodeAggregateCurrentlyExists) {
             return Conflict::because(sprintf('There is a node with the aggregate id %s already', $nodeAggregateId->value));
         } catch (NodeAggregateDoesCurrentlyNotCoverDimensionSpacePoint) {
@@ -263,10 +322,24 @@ final readonly class Nodes
         if ($failed !== null) {
             return $failed;
         }
+        // what the node creation handlers add, e.g. a template's child nodes
+        foreach ($commands as $command) {
+            try {
+                $failed = $this->send($parent, $action, $command);
+            } catch (\Exception $exception) {
+                $failed = UnprocessableContent::because($exception->getMessage());
+            }
+            if ($failed instanceof UnprocessableContent) {
+                return UnprocessableContent::because(sprintf('The node %s was created without everything its node creation handlers add: %s', $nodeAggregateId->value, $failed->body()->detail));
+            }
+            if ($failed !== null) {
+                return $failed;
+            }
+        }
         // CreateNodeAggregateWithNode takes references as well, but doesn't check them (targets, constraints), SetNodeReferences does
         if ($newNode->references !== []) {
             try {
-                $failed = $this->send($parent, sprintf('create a node below the node %s', $parent->aggregateId->value), SetNodeReferences::create($parent->workspaceName, $nodeAggregateId, $origin, $referencesToWrite));
+                $failed = $this->send($parent, $action, SetNodeReferences::create($parent->workspaceName, $nodeAggregateId, $origin, $referencesToWrite));
             } catch (ReferenceCannotBeSet | NodeAggregateCurrentlyDoesNotExist | NodeAggregateDoesCurrentlyNotCoverDimensionSpacePoint | NodeAggregateIsRoot $exception) {
                 $failed = UnprocessableContent::because($exception->getMessage());
             }
@@ -282,7 +355,7 @@ final readonly class Nodes
         path: '/cr/{contentRepositoryId}/nodes/{nodeAggregateId}',
         method: 'GET',
         summary: 'Get a node',
-        description: 'A node in the workspace and dimension space point with its properties and what is included: with include=references its references, with children its direct child nodes in their order, with variants the node in its other origin dimension space points (its content variants, not the points that only fall back to it), in the order of the content dimensions, with ancestors the nodes above it up to its site node, nearest first (the parent first, the content repository\'s root left out), e.g. for a breadcrumb: the labels of the documents among them, reversed. children.references and variants.references include their references as well. Hidden nodes are visible to accounts that may see them in every workspace, live included, as in the Neos backend; isHidden tells them apart.',
+        description: 'A node in the workspace and dimension space point with its properties and what is included: with include=references its references, with children its direct child nodes in their order, with variants the node in its other origin dimension space points (its content variants, not the points that only fall back to it), in the order of the content dimensions, with ancestors the nodes above it up to its site node, nearest first (the parent first, the content repository\'s root left out), e.g. for a breadcrumb: the labels of the documents among them, reversed, with hasChildren whether it has child nodes (of the node types of hasChildrenOfNodeType), e.g. for a tree. children.references and variants.references include their references as well, children.hasChildren whether the children have child nodes, references.node the referenced nodes in the references. Hidden nodes are visible to accounts that may see them in every workspace, live included, as in the Neos backend; isHidden tells them apart. Deleted nodes (soft removed, tagged removed, until the deletion is published and the grace period is over) are only found with includeRemoved, e.g. for a trash, so are the ones below and above them in what is included; their tags or inheritedTags contain removed. The account\'s node privileges apply as always.',
         operationId: 'getNode',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_READ],
@@ -295,16 +368,27 @@ final readonly class Nodes
         WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'The dimension space point to read the node in, as JSON. If omitted, the default one of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name), the only one of a content repository without a site')]
         DimensionSpacePoint|null $dimensionSpacePoint = null,
-        #[Parameter(in: 'query', description: 'What to include beyond the node\'s own fields, comma-separated: references, children, children.references, variants, variants.references, ancestors')]
+        #[Parameter(in: 'query', description: 'What to include beyond the node\'s own fields, comma-separated: references, references.node, children, children.references, children.hasChildren, variants, variants.references, ancestors, hasChildren')]
         IncludePaths|null $include = null,
+        #[Parameter(in: 'query', description: 'With include=hasChildren or children.hasChildren, only child nodes of these node types count, comma-separated, a ! in front excludes a type, as filterByNodeType of listNodes. All if omitted. Unknown node types are a 400')]
+        NodeTypeCriteria|null $hasChildrenOfNodeType = null,
+        #[Parameter(in: 'query', description: 'Find deleted nodes as well (soft removed, tagged removed), e.g. for a trash, false if omitted')]
+        bool $includeRemoved = false,
     ): Node|NotFound|BadRequest {
         $include ??= IncludePaths::none();
         $unsupported = $include->unsupported(self::INCLUDE_PATHS);
         if ($unsupported !== null) {
             return $unsupported;
         }
-        $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
-        return $node instanceof ContentGraph\Node ? $this->node($node, $include) : $node;
+        $hasChildrenOf = self::hasChildrenOf($hasChildrenOfNodeType);
+        if ($hasChildrenOf instanceof BadRequest) {
+            return $hasChildrenOf;
+        }
+        $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint, $includeRemoved);
+        if (!$node instanceof ContentGraph\Node) {
+            return $node;
+        }
+        return $this->unknownNodeTypes($hasChildrenOf, $node) ?? $this->node($node, $include, $hasChildrenOf);
     }
 
     #[Operation(
@@ -371,13 +455,56 @@ final readonly class Nodes
         if (!UriPathSegments::appliesTo($nodeType)) {
             return UnprocessableContent::because(sprintf('The node %s is no document with a uriPathSegment property', $node->aggregateId->value));
         }
-        $title = $node->getProperty('title');
-        $text = $source->text !== null && trim($source->text) !== '' ? $source->text : (is_string($title) ? $title : '');
-        $uriPathSegment = trim($text) !== '' ? $this->uriPathSegments->fromText($text, $node->dimensionSpacePoint) : '';
+        $uriPathSegment = $this->uriPathSegmentOf($node, $source->text, withLabel: false);
         if ($uriPathSegment === '') {
             return UnprocessableContent::because(sprintf('There is nothing to generate the uriPathSegment of the node %s from, it has no title', $node->aggregateId->value));
         }
         return $this->setProperties($node, $nodeType, ['uriPathSegment' => $uriPathSegment]) ?? $this->reread($node);
+    }
+
+    #[Operation(
+        path: '/cr/{contentRepositoryId}/nodes/{nodeAggregateId}/uripathsegment',
+        method: 'GET',
+        summary: 'Preview the URI path segment of a node',
+        description: 'The uriPathSegment generateNodeUriPathSegment would set, without setting it, e.g. while a title is typed: generated from the text, else from the node\'s title property, else its label, transliterated in the language of the dimension space point in the same way. A node without a uriPathSegment property gets one as well. Nothing to generate it from (e.g. "!!!") is a 422.',
+        operationId: 'getNodeUriPathSegment',
+        security: [
+            ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_READ],
+        ],
+    )]
+    public function getUriPathSegment(
+        ContentRepositoryId $contentRepositoryId,
+        NodeAggregateId $nodeAggregateId,
+        #[Parameter(in: 'query', description: 'The workspace to read the node in, live if omitted')]
+        WorkspaceName|null $workspaceName = null,
+        #[Parameter(in: 'query', description: 'The dimension space point to read the node in, its language the one to transliterate in, as JSON. If omitted, as for getNode')]
+        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        #[Parameter(in: 'query', description: 'The text to generate it from, e.g. a title not saved yet. If omitted or empty, the node\'s title, else its label')]
+        string|null $text = null,
+    ): UriPathSegment|NotFound|BadRequest|UnprocessableContent {
+        $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
+        if (!$node instanceof ContentGraph\Node) {
+            return $node;
+        }
+        $uriPathSegment = $this->uriPathSegmentOf($node, $text, withLabel: true);
+        return $uriPathSegment !== ''
+            ? new UriPathSegment($uriPathSegment)
+            : UnprocessableContent::because(sprintf('There is nothing to generate the uriPathSegment of the node %s from', $node->aggregateId->value));
+    }
+
+    /**
+     * The uriPathSegment generated for the node as the Neos backend's "sync" button does: from the text, else its title
+     * (and with $withLabel its label), '' if there is nothing to generate it from
+     */
+    private function uriPathSegmentOf(ContentGraph\Node $node, ?string $text, bool $withLabel): string
+    {
+        $title = $node->getProperty('title');
+        foreach ([$text, is_string($title) ? $title : null, $withLabel ? $this->nodeSerializer->label($node) : null] as $source) {
+            if ($source !== null && trim($source) !== '') {
+                return $this->uriPathSegments->fromText($source, $node->dimensionSpacePoint);
+            }
+        }
+        return '';
     }
 
     /**
@@ -714,7 +841,7 @@ final readonly class Nodes
         path: '/cr/{contentRepositoryId}/nodes/{nodeAggregateId}/variants',
         method: 'GET',
         summary: 'List the variants of a node',
-        description: 'The node in each dimension space point it has a variant of its own in (not the points that only fall back to one), each read in its point, in the order of the content dimensions: all of them, unlike getNode\'s include=variants, which are the others. Variants the account may not read are left out, a node without any it may read is a 404. include works as in getNode, for each variant. Hidden nodes are visible as in getNode.',
+        description: 'The node in each dimension space point it has a variant of its own in (not the points that only fall back to one), each read in its point, in the order of the content dimensions: all of them, unlike getNode\'s include=variants, which are the others. Variants the account may not read are left out, a node without any it may read is a 404. meta.coveredDimensionSpacePoints are all points the node is shown in, its variants\' and the ones that fall back to them (e.g. en_UK showing en_US), in which the account may read it, in the order of the content dimensions. include works as in getNode, for each variant. Hidden nodes are visible as in getNode.',
         operationId: 'listNodeVariants',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_READ],
@@ -728,7 +855,7 @@ final readonly class Nodes
         WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'What to include beyond each variant\'s own fields, comma-separated: references, children, children.references')]
         IncludePaths|null $include = null,
-    ): NodeListing|NotFound|BadRequest {
+    ): NodeVariantListing|NotFound|BadRequest {
         $include ??= IncludePaths::none();
         $unsupported = $include->unsupported(self::VARIANT_INCLUDE_PATHS);
         if ($unsupported !== null) {
@@ -742,9 +869,10 @@ final readonly class Nodes
         if ($variants === []) {
             return NotFound::because(sprintf('There is no node %s in the workspace %s', $nodeAggregateId->value, $workspace->workspace->workspaceName->value));
         }
-        return new NodeListing(
+        $covered = $this->contentSubgraphs->findCoveredDimensionSpacePoints($workspace->contentRepository, $workspace->workspace->workspaceName, $nodeAggregateId->toNodeAggregateId(), excludeDisabled: false) ?? [];
+        return new NodeVariantListing(
             new NodeList(...array_map(fn (ContentGraph\Node $variant) => $this->node($variant, $include), $variants)),
-            new ListingMeta(count($variants)),
+            new NodeVariantListingMeta(count($variants), DimensionSpacePointList::from($covered)),
         );
     }
 
@@ -801,6 +929,75 @@ final readonly class Nodes
         return $created instanceof Node ? NodeCreated::variant($created) : $created;
     }
 
+    #[Operation(
+        path: '/cr/{contentRepositoryId}/nodes/{nodeAggregateId}/copy',
+        method: 'POST',
+        summary: 'Copy a node',
+        description: 'Copies the node as read in the workspace and dimension space point, with everything below it, below the parent of the body in the workspace, as the Neos backend\'s paste does (Neos\' NodeDuplicationService): as the parent\'s last child or before succeedingSiblingNodeAggregateId, in targetDimensionSpacePoint (its origin, the point the node is read in if omitted), with new aggregate ids, its properties, references and tags (e.g. disabled). A copied document gets the uriPathSegment of the original, with -1, -2, … if a sibling has it already. Each node is a command of its own, if one fails, the ones before it stay. A parent or sibling that isn\'t in the target point (or that the account may not read), a sibling that isn\'t a child of the parent, a parent that doesn\'t allow the node, or a body targetDimensionSpacePoint that is invalid or not one of the content repository are a 422, a copy that conflicts with what is there (e.g. a node name taken, tethered nodes that can\'t be copied alone) a 409. Whether the account may create the nodes is up to its workspace roles and node privileges (else a 403), as in the Neos backend. The response is the copy as getNode returns it without include, in the target point.',
+        operationId: 'copyNode',
+        security: [
+            ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_CREATE],
+        ],
+    )]
+    public function copy(
+        ContentRepositoryId $contentRepositoryId,
+        NodeAggregateId $nodeAggregateId,
+        #[Parameter(in: 'query', description: 'The workspace to copy the node in, required: changing live directly is rarely what is meant')]
+        WorkspaceName $workspaceName,
+        #[RequestBody(description: 'Where to put the copy')] NodeCopy $target,
+        #[Parameter(in: 'query', description: 'The dimension space point to read the node in, whose content is copied, as JSON. If omitted, as for getNode')]
+        DimensionSpacePoint|null $dimensionSpacePoint = null,
+    ): NodeCreated|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
+        $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
+        if (!$node instanceof ContentGraph\Node) {
+            return $node;
+        }
+        // the body's point is no query parameter, so its errors are 422s, as for createNodeVariant
+        try {
+            $targetPoint = $target->targetDimensionSpacePoint?->toDimensionSpacePoint() ?? $node->dimensionSpacePoint;
+        } catch (\InvalidArgumentException | \RuntimeException | \TypeError $exception) {
+            return UnprocessableContent::because(sprintf('The targetDimensionSpacePoint of the body is invalid: %s', $exception->getMessage()));
+        }
+        $contentRepository = $this->contentRepositoryRegistry->get($node->contentRepositoryId);
+        if (!$contentRepository->getVariationGraph()->getDimensionSpacePoints()->contains($targetPoint)) {
+            return UnprocessableContent::because(sprintf('There is no dimension space point %s (the targetDimensionSpacePoint of the body) in the content repository %s, GET /cr/%2$s lists its dimensions and their values', $targetPoint->toJson(), $node->contentRepositoryId->value));
+        }
+        // with the visibility the node was read with
+        $targetSubgraph = $contentRepository->getContentGraph($node->workspaceName)->getSubgraph($targetPoint, $node->visibilityConstraints);
+        $parent = $targetSubgraph->findNodeById($target->parentNodeAggregateId->toNodeAggregateId());
+        if ($parent === null) {
+            return UnprocessableContent::because(sprintf('There is no node %s (the parentNodeAggregateId of the body) in the workspace %s and the dimension space point %s', $target->parentNodeAggregateId->value, $node->workspaceName->value, $targetPoint->toJson()));
+        }
+        $siblingId = $target->succeedingSiblingNodeAggregateId?->toNodeAggregateId();
+        // the content repository doesn't check it, as for createNode
+        if ($siblingId !== null && $targetSubgraph->findParentNode($siblingId)?->aggregateId->equals($parent->aggregateId) !== true) {
+            return UnprocessableContent::because(sprintf('The node %s has no child node %s to put the copy before', $parent->aggregateId->value, $siblingId->value));
+        }
+        $copyId = SharedModel\Node\NodeAggregateId::create();
+        try {
+            $failed = $this->send($node, sprintf('copy the node %s below the node %s', $node->aggregateId->value, $parent->aggregateId->value), fn () => $this->nodeDuplicationService->copyNodesRecursively(
+                $node->contentRepositoryId,
+                $node->workspaceName,
+                $node->dimensionSpacePoint,
+                $node->aggregateId,
+                OriginDimensionSpacePoint::fromDimensionSpacePoint($targetPoint),
+                $parent->aggregateId,
+                $siblingId,
+                // the copy's id, to read it afterwards
+                NodeAggregateIdMapping::fromArray([$node->aggregateId->value => $copyId]),
+            ));
+        } catch (NodeAggregateCurrentlyExists | NodeNameIsAlreadyCovered | NodeAggregateDoesCurrentlyNotCoverDimensionSpacePoint | DimensionSpacePointIsNotYetOccupied | TetheredNodesCannotBePartiallyCopied $exception) {
+            return Conflict::because($exception->getMessage());
+        } catch (NodeAggregateCurrentlyDoesNotExist | NodeTypeIsAbstract | NodeTypeIsOfTypeRoot | NodeConstraintException | PropertyCannotBeSet | ReferenceCannotBeSet $exception) {
+            return UnprocessableContent::because($exception->getMessage());
+        }
+        if ($failed !== null) {
+            return $failed;
+        }
+        $copy = $this->read($targetSubgraph, $copyId);
+        return $copy instanceof Node ? NodeCreated::copy($copy) : $copy;
+    }
+
     /**
      * Sends the command (or runs the writes) for the node, a 403 if the account may not (AccessDenied: its workspace
      * roles or node privileges), null if it was sent. The command's other exceptions are up to the operation
@@ -843,9 +1040,9 @@ final readonly class Nodes
     /**
      * The node in the subgraph of the request, see SubgraphResolver::resolveNode()
      */
-    private function nodeIn(ContentRepositoryId $contentRepositoryId, NodeAggregateId $nodeAggregateId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint): ContentGraph\Node|NotFound|BadRequest
+    private function nodeIn(ContentRepositoryId $contentRepositoryId, NodeAggregateId $nodeAggregateId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint, bool $includeRemoved = false): ContentGraph\Node|NotFound|BadRequest
     {
-        return $this->subgraphResolver->resolveNode($contentRepositoryId, $nodeAggregateId->toNodeAggregateId(), $workspaceName, $dimensionSpacePoint, excludeDisabled: false);
+        return $this->subgraphResolver->resolveNode($contentRepositoryId, $nodeAggregateId->toNodeAggregateId(), $workspaceName, $dimensionSpacePoint, excludeDisabled: false, includeRemoved: $includeRemoved);
     }
 
     /**
@@ -869,9 +1066,31 @@ final readonly class Nodes
     /**
      * The subgraph with the visibility of the Neos backend, see SubgraphResolver::resolve()
      */
-    private function subgraph(ContentRepositoryId $contentRepositoryId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint): ContentSubgraphInterface|BadRequest|NotFound
+    private function subgraph(ContentRepositoryId $contentRepositoryId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint, bool $includeRemoved = false): ContentSubgraphInterface|BadRequest|NotFound
     {
-        return $this->subgraphResolver->resolve($contentRepositoryId, $workspaceName, $dimensionSpacePoint, excludeDisabled: false);
+        return $this->subgraphResolver->resolve($contentRepositoryId, $workspaceName, $dimensionSpacePoint, excludeDisabled: false, includeRemoved: $includeRemoved);
+    }
+
+    /**
+     * The node types of hasChildrenOfNodeType, a 400 for a syntax error before anything is looked up, see
+     * unknownNodeTypes() for the node types themselves
+     */
+    private static function hasChildrenOf(?NodeTypeCriteria $hasChildrenOfNodeType): ContentGraph\Filter\NodeType\NodeTypeCriteria|BadRequest|null
+    {
+        try {
+            return $hasChildrenOfNodeType?->toNodeTypeCriteria();
+        } catch (\InvalidArgumentException $exception) {
+            return BadRequest::because(sprintf('hasChildrenOfNodeType is invalid: %s', $exception->getMessage()));
+        }
+    }
+
+    /**
+     * The 400 if hasChildrenOfNodeType names node types the node's content repository doesn't have, as filterByNodeType
+     */
+    private function unknownNodeTypes(?ContentGraph\Filter\NodeType\NodeTypeCriteria $hasChildrenOf, ContentGraph\Node $node): ?BadRequest
+    {
+        $unknown = $hasChildrenOf !== null ? NodeQuery::unknownNodeTypes($hasChildrenOf, $this->contentRepositoryRegistry->get($node->contentRepositoryId)->getNodeTypeManager()) : [];
+        return $unknown !== [] ? BadRequest::because(sprintf('There is no node type %s (hasChildrenOfNodeType)', implode(', ', $unknown))) : null;
     }
 
     /**
@@ -893,15 +1112,21 @@ final readonly class Nodes
             ));
     }
 
-    private function node(ContentGraph\Node $node, IncludePaths $include): Node
+    /**
+     * @param ContentGraph\Filter\NodeType\NodeTypeCriteria|null $hasChildrenOf the child nodes hasChildren counts, all if null
+     */
+    private function node(ContentGraph\Node $node, IncludePaths $include, ?ContentGraph\Filter\NodeType\NodeTypeCriteria $hasChildrenOf = null): Node
     {
         return Node::from(
             $node,
             $this->nodeSerializer,
             $include->includes('references'),
-            $include->includes('children') ? $this->nodeList($this->children($node), $include->includes('children.references')) : null,
+            $include->includes('children') ? $this->nodeList($this->children($node), $include->includes('children.references'), $include->includes('children.hasChildren') ? $hasChildrenOf ?? true : false) : null,
             $include->includes('variants') ? $this->nodeList($this->contentSubgraphs->findVariants($node), $include->includes('variants.references')) : null,
             $include->includes('ancestors') ? $this->nodeList($this->ancestors($node), false) : null,
+            $include->includes('hasChildren') ? $this->nodeSerializer->hasChildren($node, $hasChildrenOf) : null,
+            // the referenced nodes as getNode returns them without include
+            $include->includes('references.node') ? fn (ContentGraph\Node $referenced) => Serializer::serialize(Node::from($referenced, $this->nodeSerializer, false), Node::schema()) : null,
         );
     }
 
@@ -926,9 +1151,16 @@ final readonly class Nodes
 
     /**
      * @param list<ContentGraph\Node> $nodes
+     * @param ContentGraph\Filter\NodeType\NodeTypeCriteria|bool $hasChildren whether to tell if they have child nodes,
+     *     of these node types (true: of all)
      */
-    private function nodeList(array $nodes, bool $includeReferences): NodeList
+    private function nodeList(array $nodes, bool $includeReferences, ContentGraph\Filter\NodeType\NodeTypeCriteria|bool $hasChildren = false): NodeList
     {
-        return new NodeList(...array_map(fn (ContentGraph\Node $node) => Node::from($node, $this->nodeSerializer, $includeReferences), $nodes));
+        return new NodeList(...array_map(fn (ContentGraph\Node $node) => Node::from(
+            $node,
+            $this->nodeSerializer,
+            $includeReferences,
+            hasChildren: $hasChildren !== false ? $this->nodeSerializer->hasChildren($node, $hasChildren === true ? null : $hasChildren) : null,
+        ), $nodes));
     }
 }

@@ -46,7 +46,32 @@ class MeTest extends EndpointTestCase
                 'accounts' => [$account],
             ],
             'token' => ['client' => 'editor-machine', 'scopes' => ['me.read']],
+            // whatever the token's scopes, sorted
+            'privileges' => [
+                'assetcollections.create', 'assetcollections.delete', 'assetcollections.read', 'assetcollections.update',
+                'assets.create', 'assets.delete', 'assets.read', 'assets.update',
+                'assettags.create', 'assettags.delete', 'assettags.read', 'assettags.update',
+                'contentrepositories.read', 'datasources.read',
+                'me.password', 'me.read', 'me.update',
+                'nodes.create', 'nodes.delete', 'nodes.read', 'nodes.update',
+                'nodetypes.read', 'people.read', 'sites.read', 'views.read',
+                'workspaces.create', 'workspaces.delete', 'workspaces.publish', 'workspaces.read', 'workspaces.roles', 'workspaces.update',
+            ],
         ], self::json($response));
+    }
+
+    #[Test]
+    public function privilegesAreTheOnesOfTheAccountsRoles(): void
+    {
+        $accountFactory = $this->objectManager->get(AccountFactory::class);
+        $this->objectManager->get(AccountRepository::class)->add($accountFactory->createAccountWithPassword('plain', 'password', [], 'Neos.Neos:Backend'));
+        $this->addMachineClient('plain-machine', 'plain');
+        $this->persistenceManager->persistAll();
+
+        $response = $this->get('/api/me', $this->token('plain-machine', 'me.read'));
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        // Neos.Flow:AuthenticatedUser's only
+        self::assertSame(['me.password', 'me.read', 'me.update', 'nodes.read', 'views.read', 'workspaces.read'], self::json($response)['privileges']);
     }
 
     #[Test]

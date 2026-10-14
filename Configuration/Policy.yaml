@@ -23,6 +23,9 @@ privilegeTargets:
     "Neos.Api:Users.Delete":
       label: "Delete Neos users"
       matcher: "users.delete"
+    "Neos.Api:People.Read":
+      label: "List the names of the Neos users"
+      matcher: "people.read"
     "Neos.Api:Sites.Read":
       label: "List and read the Neos sites"
       matcher: "sites.read"
@@ -141,6 +144,9 @@ roles:
 
   "Neos.Neos:AbstractEditor":
     privileges:
+      # the names of the users editors work with (workspace owners and roles, authors of changes), not their accounts
+      - privilegeTarget: "Neos.Api:People.Read"
+        permission: GRANT
       # the entry point to the nodes, writing them stays with administrators
       - privilegeTarget: "Neos.Api:Sites.Read"
         permission: GRANT

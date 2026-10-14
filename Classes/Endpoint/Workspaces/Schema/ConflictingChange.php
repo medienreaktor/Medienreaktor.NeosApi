@@ -5,7 +5,20 @@ namespace Neos\Api\Endpoint\Workspaces\Schema;
 
 use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
 use Neos\Api\Endpoint\Workspaces\Domain\ChangeLocator;
+use Neos\ContentRepository\Core\EventStore\EventInterface;
+use Neos\ContentRepository\Core\Feature\NodeCreation\Event\NodeAggregateWithNodeWasCreated;
+use Neos\ContentRepository\Core\Feature\NodeModification\Event\NodePropertiesWereSet;
+use Neos\ContentRepository\Core\Feature\NodeMove\Event\NodeAggregateWasMoved;
+use Neos\ContentRepository\Core\Feature\NodeReferencing\Event\NodeReferencesWereSet;
+use Neos\ContentRepository\Core\Feature\NodeRemoval\Event\NodeAggregateWasRemoved;
+use Neos\ContentRepository\Core\Feature\NodeTypeChange\Event\NodeAggregateTypeWasChanged;
+use Neos\ContentRepository\Core\Feature\NodeVariation\Event\NodeGeneralizationVariantWasCreated;
+use Neos\ContentRepository\Core\Feature\NodeVariation\Event\NodePeerVariantWasCreated;
+use Neos\ContentRepository\Core\Feature\NodeVariation\Event\NodeSpecializationVariantWasCreated;
+use Neos\ContentRepository\Core\Feature\SubtreeTagging\Event\SubtreeWasTagged;
+use Neos\ContentRepository\Core\Feature\SubtreeTagging\Event\SubtreeWasUntagged;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\ConflictingEvent;
+use Neos\Neos\Domain\SubtreeTagging\NeosSubtreeTag;
 use Neos\JsonSchema\ProvidesSchema;
 use Neos\JsonSchema\Schema;
 use Neos\Schematic\Discovery\AutoDiscoveringSchema;
@@ -20,6 +33,7 @@ final readonly class ConflictingChange implements ProvidesSchema
      * @param NodeAggregateId|null $documentAggregateId the document the node is in (or is), to group the conflicts, null if unknown
      * @param NodeAggregateId|null $siteAggregateId the site the node is in, null if unknown
      * @param string|null $reason node_has_been_deleted if the node was removed in the base workspace, else null
+     * @param string|null $typeOfChange what the change does, as the Neos UI tells it: node_has_been_created, node_has_been_changed (its properties, references, tags or node type), node_has_been_moved or node_has_been_deleted, null for another change
      * @param string $message what the content repository says about it
      */
     public function __construct(
@@ -27,6 +41,7 @@ final readonly class ConflictingChange implements ProvidesSchema
         public NodeAggregateId|null $documentAggregateId,
         public NodeAggregateId|null $siteAggregateId,
         public string|null $reason,
+        public string|null $typeOfChange,
         public string $message,
     ) {
     }
@@ -47,8 +62,32 @@ final readonly class ConflictingChange implements ProvidesSchema
             isset($location['document']) ? NodeAggregateId::fromString($location['document']->value) : null,
             isset($location['site']) ? NodeAggregateId::fromString($location['site']->value) : null,
             $shortName === 'NodeAggregateCurrentlyDoesNotExist' ? 'node_has_been_deleted' : null,
+            // the event is internal to the content repository, the Neos UI reads it as well (ConflictsFactory)
+            self::typeOfChange($conflictingEvent->getEvent()),
             $exception->getMessage(),
         );
+    }
+
+    /**
+     * As the Neos UI's ConflictsFactory::createTypeOfChange(), a soft removal (tagged removed) is a deletion
+     */
+    private static function typeOfChange(EventInterface $event): ?string
+    {
+        return match (true) {
+            $event instanceof SubtreeWasTagged && $event->tag->equals(NeosSubtreeTag::removed()),
+            $event instanceof NodeAggregateWasRemoved => 'node_has_been_deleted',
+            $event instanceof NodeAggregateWithNodeWasCreated,
+            $event instanceof NodePeerVariantWasCreated,
+            $event instanceof NodeGeneralizationVariantWasCreated,
+            $event instanceof NodeSpecializationVariantWasCreated => 'node_has_been_created',
+            $event instanceof NodePropertiesWereSet,
+            $event instanceof NodeReferencesWereSet,
+            $event instanceof SubtreeWasTagged,
+            $event instanceof SubtreeWasUntagged,
+            $event instanceof NodeAggregateTypeWasChanged => 'node_has_been_changed',
+            $event instanceof NodeAggregateWasMoved => 'node_has_been_moved',
+            default => null,
+        };
     }
 
     public static function schema(): Schema

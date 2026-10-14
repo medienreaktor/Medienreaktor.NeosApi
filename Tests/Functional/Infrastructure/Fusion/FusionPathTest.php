@@ -24,9 +24,17 @@ use PHPUnit\Framework\Attributes\Test;
 class FusionPathTest extends FunctionalTestCase
 {
     private const string FUSION = <<<'FUSION'
+        prototype(Neos.Neos:ContentCase) < prototype(Neos.Fusion:Value) {
+            value = ${'the case for ' + node}
+        }
         root = Neos.Fusion:Join {
             main = Neos.Fusion:Value {
                 value = 'the element'
+            }
+            content = Neos.Fusion:Join {
+                itemRenderer = Neos.Neos:ContentCase {
+                    value = ${'the outer case for ' + node}
+                }
             }
         }
         rawContent = Neos.Fusion:Join {
@@ -52,6 +60,24 @@ class FusionPathTest extends FunctionalTestCase
         self::assertSame('the element', $this->renderFusionPath('root/main', $inPlace));
         // the mode's own path, which Neos' root case renders instead
         self::assertSame('the raw element', $this->renderFusionPath('rawContent<Neos.Fusion:Join>/main', self::renderingMode('rawContent', 'rawContent')));
+    }
+
+    #[Test]
+    public function rendersElementsFromTheirLastContentCase(): void
+    {
+        $inPlace = self::renderingMode('inPlace', '');
+        $case = 'root<Neos.Fusion:Join>/content<Neos.Fusion:Join>/itemRenderer<Neos.Neos:ContentCase>';
+
+        // the element the case chose, and what it rendered below it (e.g. a renderer picked from a property), are chosen again
+        foreach (['/default<Neos.Fusion:Matcher>/element<Vendor.Site:Old>', '/default<Neos.Fusion:Matcher>/element<Vendor.Site:Old>/renderer<Vendor.Site:Old.Renderer>'] as $below) {
+            self::assertSame('the outer case for text', $this->renderFusionPath($case . $below, $inPlace, ['node' => 'text']), $below);
+        }
+        // the case itself as given
+        self::assertSame('the outer case for text', $this->renderFusionPath($case, $inPlace, ['node' => 'text']));
+
+        // an element in a collection of an element: from the inner case, the last one, by its prototype
+        $inner = $case . '/default<Neos.Fusion:Matcher>/element<Vendor.Site:Box>/column<Neos.Neos:ContentCollection>/itemRenderer<Neos.Neos:ContentCase>';
+        self::assertSame('the case for text', $this->renderFusionPath($inner . '/default<Neos.Fusion:Matcher>/element<Vendor.Site:Inner>', $inPlace, ['node' => 'text']));
     }
 
     #[Test]
@@ -101,10 +127,13 @@ class FusionPathTest extends FunctionalTestCase
         }
     }
 
-    private function renderFusionPath(string $path, RenderingMode $renderingMode): mixed
+    /**
+     * @param array<string, mixed> $context
+     */
+    private function renderFusionPath(string $path, RenderingMode $renderingMode, array $context = []): mixed
     {
         $runtime = $this->runtime($renderingMode);
-        $runtime->pushContextArray(['path' => $path]);
+        $runtime->pushContextArray(['path' => $path] + $context);
         try {
             return $runtime->render('fusionPath');
         } catch (\Exception $exception) {

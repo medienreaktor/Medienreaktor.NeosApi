@@ -54,6 +54,25 @@ class ContentRepositoriesTest extends EndpointTestCase
     }
 
     #[Test]
+    public function tellsTheDimensionsWithIconsDepthsAndAllDimensionSpacePoints(): void
+    {
+        $this->requireContentRepository();
+        $response = $this->get('/api/cr/default', $this->token('editor-machine', 'contentrepositories.read'));
+
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        $contentRepository = self::json($response);
+        // Neos.Demo's language dimension: icon: language, en_UK below en_US
+        $language = $contentRepository['dimensions'][0];
+        self::assertSame(['language', 'fas fa-language'], [$language['id'], $language['icon']]);
+        self::assertSame(
+            [['en_US', null, 0], ['en_UK', 'en_US', 1], ['de', null, 0]],
+            array_map(static fn (array $value) => [$value['value'], $value['generalization'], $value['specializationDepth']], $language['values']),
+        );
+        self::assertEqualsCanonicalizing(['{"language":"en_US"}', '{"language":"en_UK"}', '{"language":"de"}'], $contentRepository['dimensionSpacePoints']);
+        self::assertCount(3, $contentRepository['dimensionSpacePoints']);
+    }
+
+    #[Test]
     public function unknownContentRepositoriesAreNotFound(): void
     {
         $response = $this->get('/api/cr/unknown', $this->token('editor-machine', 'contentrepositories.read'));

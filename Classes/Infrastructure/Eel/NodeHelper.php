@@ -8,7 +8,6 @@ use Neos\Api\Infrastructure\ContentRepository\NodeTypeUi;
 use Neos\Api\Infrastructure\I18n\LabelTranslator;
 use Neos\Api\Shared\Schema\AcceptLanguage;
 use Neos\ContentRepository\Core\NodeType\NodeType;
-use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\CountChildNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindChildNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
@@ -59,10 +58,7 @@ final class NodeHelper implements ProtectedContextAwareInterface
      */
     public function hasChildNodes(Node $node, string $nodeTypes): bool
     {
-        return $this->contentRepositoryRegistry->subgraphForNode($node)->countChildNodes(
-            $node->aggregateId,
-            CountChildNodesFilter::create(nodeTypes: $nodeTypes),
-        ) > 0;
+        return $this->nodeSerializer->hasChildren($node, $nodeTypes);
     }
 
     /**

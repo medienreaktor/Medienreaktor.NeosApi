@@ -32,6 +32,16 @@ final class PrivilegeScopes implements ScopeProvider
     }
 
     /**
+     * The identifiers of the ApiPrivilege targets by the scopes they stand for
+     *
+     * @return array<string, string>
+     */
+    public function privilegeTargets(): array
+    {
+        return array_map(static fn (array $scope) => $scope['privilegeTarget'], $this->all());
+    }
+
+    /**
      * The identifier of the ApiPrivilege target the scope stands for
      *
      * @throws \LogicException if there is none, e.g. for a typo in an operation's security

@@ -10,7 +10,7 @@ use Neos\Neos\Service\IconNameMappingService;
 
 /**
  * How a node type shows in an editing UI, the same for the node types endpoint and the views (Neos.Api.Node): its
- * ui.icon and ui.label
+ * ui.icon and ui.label. Content dimensions' icons are normalized the same way
  */
 #[Flow\Scope('singleton')]
 final readonly class NodeTypeUi
@@ -27,7 +27,14 @@ final readonly class NodeTypeUi
      */
     public function icon(NodeType $nodeType): ?string
     {
-        $icon = $nodeType->getConfiguration('ui.icon');
+        return $this->iconFrom($nodeType->getConfiguration('ui.icon'));
+    }
+
+    /**
+     * An icon of the configuration as Font Awesome classes, as icon() for node types, e.g. a content dimension's
+     */
+    public function iconFrom(mixed $icon): ?string
+    {
         if (!is_string($icon) || $icon === '') {
             return null;
         }

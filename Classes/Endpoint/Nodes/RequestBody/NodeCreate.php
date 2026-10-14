@@ -22,6 +22,7 @@ final readonly class NodeCreate implements ProvidesSchema
     /**
      * @param array<string, mixed> $properties
      * @param array<string, mixed> $references
+     * @param array<string, mixed> $elements
      */
     public function __construct(
         public NodeTypeName $nodeType,
@@ -30,6 +31,7 @@ final readonly class NodeCreate implements ProvidesSchema
         public NodeAggregateId|null $nodeAggregateId = null,
         public array $properties = [],
         public array $references = [],
+        public array $elements = [],
     ) {
     }
 
@@ -51,6 +53,11 @@ final readonly class NodeCreate implements ProvidesSchema
                 references: ObjectSchema::create(
                     description: 'The references to set, by name as for updateNodeReferences: [{"nodeAggregateId": "…", "properties": {…}}], properties optional. Set right after the node is created (SetNodeReferences): if they can\'t be, the node stays without them',
                     examples: [['relatedPages' => [['nodeAggregateId' => 'a3474e1d-dd60-4a84-82b1-18d2f21891a3']]]],
+                    additionalProperties: true,
+                ),
+                elements: ObjectSchema::create(
+                    description: 'The values of the node type\'s creation dialog (ui.creationDialog.elements, with the properties and references it promotes) by element name, for its node creation handlers (options.nodeCreationHandlers) as the Neos UI\'s creation dialog sends them: a reference(s) element as a node aggregate id or a list of them, the others as properties (dates as RFC 3339, assets as {"id": "…"}). Only if neos/neos-ui is installed, which the handlers belong to, else they are ignored. properties given as well win over what the handlers set',
+                    examples: [['title' => 'About us']],
                     additionalProperties: true,
                 ),
             ),

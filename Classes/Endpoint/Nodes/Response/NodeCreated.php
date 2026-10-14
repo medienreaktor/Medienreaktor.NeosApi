@@ -9,7 +9,7 @@ use Neos\OpenApi\Binding\TypeReference;
 use Neos\OpenApi\Response\ApiResponseWithHeaders;
 
 /**
- * A 201 with the new node (or variant) and where to find it
+ * A 201 with the new node (or variant, or copy) and where to find it
  */
 final readonly class NodeCreated implements ApiResponseWithHeaders
 {
@@ -36,6 +36,14 @@ final readonly class NodeCreated implements ApiResponseWithHeaders
      * For POST …/nodes/{nodeAggregateId}/variants, relative to …/nodes/{nodeAggregateId}/
      */
     public static function variant(Node $node): self
+    {
+        return new self($node, '../' . rawurlencode($node->nodeAggregateId->value));
+    }
+
+    /**
+     * For POST …/nodes/{nodeAggregateId}/copy, relative to …/nodes/{nodeAggregateId}/
+     */
+    public static function copy(Node $node): self
     {
         return new self($node, '../' . rawurlencode($node->nodeAggregateId->value));
     }

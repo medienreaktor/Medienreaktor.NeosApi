@@ -45,6 +45,25 @@ class NodeTypesTest extends EndpointTestCase
     }
 
     #[Test]
+    public function listsTheGroupsInTheMeta(): void
+    {
+        $this->requireContentRepository();
+        $response = $this->get('/api/cr/default/nodetypes', $this->token('editor-machine', 'nodetypes.read'), ['Accept-Language' => 'de']);
+
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        $meta = self::json($response)['meta'];
+        self::assertSame(count(self::json($response)['data']), $meta['total']);
+        $groups = array_column($meta['groups'], null, 'name');
+        // Neos.Neos' groups, in the order of their positions, translated
+        self::assertSame(['general', 'structure', 'plugins'], array_values(array_intersect(array_keys($groups), ['general', 'structure', 'plugins'])));
+        self::assertSame('general', $meta['groups'][0]['name']);
+        self::assertSame(['name' => 'plugins', 'label' => 'Plugins', 'position' => 200, 'collapsed' => true], $groups['plugins']);
+        self::assertSame('start', $groups['general']['position']);
+        self::assertFalse($groups['general']['collapsed']);
+        self::assertSame('Struktur', $groups['structure']['label']);
+    }
+
+    #[Test]
     public function includesPropertiesReferencesAndConfigurationInTheList(): void
     {
         $this->requireContentRepository();

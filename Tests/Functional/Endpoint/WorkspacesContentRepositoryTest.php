@@ -156,6 +156,7 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
         self::assertGreaterThan(0, $problem['numberOfCompletedChanges']);
         self::assertSame(0, $problem['inaccessibleConflicts']);
         self::assertContains('new-child', array_column($problem['conflicts'], 'nodeAggregateId'));
+        self::assertContains('node_has_been_created', array_column($problem['conflicts'], 'typeOfChange'));
         self::assertNotNull($this->nodeAggregate('live', 'unrelated-page'));
     }
 
@@ -173,6 +174,8 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
             $problem = self::json($response);
             self::assertSame('rebase', $problem['title']);
             self::assertSame([self::PAGE, 'node_has_been_deleted'], [$problem['conflicts'][0]['nodeAggregateId'], $problem['conflicts'][0]['reason']]);
+            // the title set in the workspace
+            self::assertSame('node_has_been_changed', $problem['conflicts'][0]['typeOfChange']);
             self::assertSame([[], 0], [$problem['completedDocumentAggregateIds'], $problem['numberOfCompletedChanges']]);
         }
 

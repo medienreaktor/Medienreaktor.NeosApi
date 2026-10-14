@@ -16,11 +16,13 @@ final readonly class CurrentAccount implements ProvidesSchema
 {
     /**
      * @param User|null $user null if the account belongs to no Neos user
+     * @param ScopeList $privileges the scopes whose privileges the account holds by its roles, sorted: what a token of the account could do with them, whatever scopes this one has, e.g. to show what the user may do
      */
     public function __construct(
         public Account $account,
         public User|null $user,
         public AccessTokenGrant $token,
+        public ScopeList $privileges,
     ) {
     }
 

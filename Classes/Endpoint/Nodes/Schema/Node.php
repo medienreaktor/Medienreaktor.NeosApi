@@ -18,7 +18,8 @@ use Neos\JsonSchema\StringSchema;
 use Neos\JsonSchema\Support\ObjectProperties;
 
 /**
- * A node with its properties and, if included, its references, children and variants
+ * A node with its properties and, if included, its references, children, variants, ancestors and whether it has
+ * children
  *
  * The schema is written out: properties and references are maps, which schematic can't discover from an array, and
  * children and variants contain Node itself, see NodeList
@@ -29,15 +30,17 @@ final readonly class Node implements ProvidesSchema
      * @param list<string> $tags
      * @param list<string> $inheritedTags
      * @param array<string, mixed> $properties
-     * @param array<string, list<array{nodeAggregateId: string, properties: array<string, mixed>|\stdClass}>>|\stdClass|null $references
+     * @param array<string, list<array{nodeAggregateId: string, properties: array<string, mixed>|\stdClass, node?: array<string, mixed>|null}>>|\stdClass|null $references
      * @param NodeList|null $children typed iterable, not NodeList, see there
      * @param NodeList|null $variants as $children
      * @param NodeList|null $ancestors as $children
+     * @param bool|null $hasChildren whether the node has child nodes (of the requested node types), null unless included
      */
     public function __construct(
         public ContentRepositoryId $contentRepositoryId,
         public WorkspaceName $workspaceName,
         public DimensionSpacePoint $dimensionSpacePoint,
+        public DimensionSpacePoint $originDimensionSpacePoint,
         public NodeAggregateId $nodeAggregateId,
         public NodeName|null $name,
         public NodeTypeName $nodeType,
@@ -54,15 +57,29 @@ final readonly class Node implements ProvidesSchema
         public iterable|null $children,
         public iterable|null $variants,
         public iterable|null $ancestors,
+        public bool|null $hasChildren,
     ) {
     }
 
-    public static function from(ContentGraph\Node $node, NodeSerializer $nodeSerializer, bool $includeReferences, NodeList|null $children = null, NodeList|null $variants = null, NodeList|null $ancestors = null): self
-    {
+    /**
+     * @param \Closure(ContentGraph\Node): (array<string, mixed>|null)|null $referencedNode the referenced node of each
+     *     reference, serialized, if they are included (include=references.node); only with $includeReferences
+     */
+    public static function from(
+        ContentGraph\Node $node,
+        NodeSerializer $nodeSerializer,
+        bool $includeReferences,
+        NodeList|null $children = null,
+        NodeList|null $variants = null,
+        NodeList|null $ancestors = null,
+        bool|null $hasChildren = null,
+        \Closure|null $referencedNode = null,
+    ): self {
         return new self(
             ContentRepositoryId::fromString($node->contentRepositoryId->value),
             WorkspaceName::fromString($node->workspaceName->value),
             DimensionSpacePoint::from($node->dimensionSpacePoint),
+            DimensionSpacePoint::from($node->originDimensionSpacePoint),
             NodeAggregateId::fromString($node->aggregateId->value),
             $node->name !== null ? NodeName::fromString($node->name->value) : null,
             NodeTypeName::fromString($node->nodeTypeName->value),
@@ -75,10 +92,11 @@ final readonly class Node implements ProvidesSchema
             self::sorted($node->tags->onlyInherited()->toStringArray()),
             new NodeTimestamps(...$nodeSerializer->timestamps($node)),
             $nodeSerializer->properties($node->properties),
-            $includeReferences ? $nodeSerializer->references($node) : null,
+            $includeReferences ? $nodeSerializer->references($node, $referencedNode) : null,
             $children,
             $variants,
             $ancestors,
+            $hasChildren,
         );
     }
 
@@ -92,6 +110,8 @@ final readonly class Node implements ProvidesSchema
                 workspaceName: WorkspaceName::schema(),
                 // the point the node was read in, see isShineThrough
                 dimensionSpacePoint: DimensionSpacePoint::schema(),
+                // the point whose content it shows, the same as dimensionSpacePoint unless isShineThrough
+                originDimensionSpacePoint: DimensionSpacePoint::schema(),
                 nodeAggregateId: NodeAggregateId::schema(),
                 name: Nullable::wrap(NodeName::schema()),
                 nodeType: NodeTypeName::schema(),
@@ -115,7 +135,7 @@ final readonly class Node implements ProvidesSchema
                     additionalProperties: true,
                 ),
                 references: Nullable::wrap(ObjectSchema::create(
-                    description: 'Only if included (e.g. include=references or children.references), else null: the references the node type declares, each with the referenced nodes in their order (an empty list if there are none) as {"nodeAggregateId": "…", "properties": {…}}, the properties of the reference serialized as the node\'s',
+                    description: 'Only if included (e.g. include=references or children.references), else null: the references the node type declares, each with the referenced nodes in their order (an empty list if there are none) as {"nodeAggregateId": "…", "properties": {…}}, the properties of the reference serialized as the node\'s. With include=references.node each one has the referenced node as well, {"nodeAggregateId": "…", "properties": {…}, "node": {…}}, as getNode returns it without include, null if the account may not read it',
                     examples: [['relatedPages' => [['nodeAggregateId' => 'a3474e1d-dd60-4a84-82b1-18d2f21891a3', 'properties' => new \stdClass()]]]],
                     additionalProperties: true,
                 )),
@@ -123,9 +143,10 @@ final readonly class Node implements ProvidesSchema
                 children: Nullable::wrap(NodeList::schema()),
                 variants: Nullable::wrap(NodeList::schema()),
                 ancestors: Nullable::wrap(NodeList::schema()),
+                hasChildren: Nullable::wrap(BooleanSchema::create(description: 'Only if included (include=hasChildren or children.hasChildren), else null: whether the node has child nodes, of the node types of hasChildrenOfNodeType if given, e.g. for the toggle of a tree')),
             ),
             additionalProperties: false,
-            required: ['contentRepositoryId', 'workspaceName', 'dimensionSpacePoint', 'nodeAggregateId', 'name', 'nodeType', 'label', 'classification', 'isHidden', 'isHiddenByAncestor', 'isShineThrough', 'tags', 'inheritedTags', 'timestamps', 'properties', 'references', 'children', 'variants', 'ancestors'],
+            required: ['contentRepositoryId', 'workspaceName', 'dimensionSpacePoint', 'originDimensionSpacePoint', 'nodeAggregateId', 'name', 'nodeType', 'label', 'classification', 'isHidden', 'isHiddenByAncestor', 'isShineThrough', 'tags', 'inheritedTags', 'timestamps', 'properties', 'references', 'children', 'variants', 'ancestors', 'hasChildren'],
         );
     }
 

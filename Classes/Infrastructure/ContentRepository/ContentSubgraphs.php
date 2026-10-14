@@ -22,6 +22,7 @@ use Neos\Flow\Security\Policy\PolicyService;
 use Neos\Flow\Security\Policy\Role;
 use Neos\Neos\Domain\Model;
 use Neos\Neos\Domain\Service\NodeTypeNameFactory;
+use Neos\Neos\Domain\SubtreeTagging\NeosSubtreeTag;
 use Neos\Neos\Domain\SubtreeTagging\NeosVisibilityConstraints;
 use Neos\Neos\Security\Authorization\ContentRepositoryAuthorizationService;
 use Neos\OAuth\Security\OAuthContext;
@@ -56,21 +57,23 @@ final readonly class ContentSubgraphs
      * @param bool $excludeDisabled leave out disabled nodes even if the account may see them, as the frontend does
      *                              (Neos\Neos\Controller\Frontend\NodeController::showAction()), otherwise it's the
      *                              account's visibility as in the Neos backend and its preview (previewAction())
+     * @param bool $includeRemoved find soft removed nodes as well (tagged removed, e.g. for a trash), which Neos never
+     *                             shows: the account's node privileges still apply
      */
-    public function find(ContentRepositoryId $contentRepositoryId, WorkspaceName $workspaceName, DimensionSpacePoint $dimensionSpacePoint, bool $excludeDisabled): ?ContentSubgraphInterface
+    public function find(ContentRepositoryId $contentRepositoryId, WorkspaceName $workspaceName, DimensionSpacePoint $dimensionSpacePoint, bool $excludeDisabled, bool $includeRemoved = false): ?ContentSubgraphInterface
     {
         $contentRepository = $this->contentRepositoryFinder->find($contentRepositoryId);
-        return $contentRepository !== null ? $this->findIn($contentRepository, $workspaceName, $dimensionSpacePoint, $excludeDisabled) : null;
+        return $contentRepository !== null ? $this->findIn($contentRepository, $workspaceName, $dimensionSpacePoint, $excludeDisabled, $includeRemoved) : null;
     }
 
     /**
      * As find(), for a content repository found already
      */
-    public function findIn(ContentRepository $contentRepository, WorkspaceName $workspaceName, DimensionSpacePoint $dimensionSpacePoint, bool $excludeDisabled): ?ContentSubgraphInterface
+    public function findIn(ContentRepository $contentRepository, WorkspaceName $workspaceName, DimensionSpacePoint $dimensionSpacePoint, bool $excludeDisabled, bool $includeRemoved = false): ?ContentSubgraphInterface
     {
         $roles = $this->roles();
         return $this->readableContentGraph($contentRepository, $workspaceName, $roles)
-            ?->getSubgraph($dimensionSpacePoint, $this->visibilityConstraints($contentRepository, $roles, $excludeDisabled));
+            ?->getSubgraph($dimensionSpacePoint, $this->visibilityConstraints($contentRepository, $roles, $excludeDisabled, $includeRemoved));
     }
 
     /**
@@ -135,6 +138,35 @@ final readonly class ContentSubgraphs
     }
 
     /**
+     * The dimension space points the aggregate covers in the workspace, in the order of the variation graph: the ones
+     * it occupies and the ones that fall back to them (e.g. en_UK showing en_US), each only if the account sees the
+     * node there, so a point it is removed or hidden from the account in is left out. Null if the workspace doesn't
+     * exist or the account may not read it, see find()
+     *
+     * @return list<DimensionSpacePoint>|null
+     */
+    public function findCoveredDimensionSpacePoints(ContentRepository $contentRepository, WorkspaceName $workspaceName, NodeAggregateId $nodeAggregateId, bool $excludeDisabled): ?array
+    {
+        $roles = $this->roles();
+        $contentGraph = $this->readableContentGraph($contentRepository, $workspaceName, $roles);
+        if ($contentGraph === null) {
+            return null;
+        }
+        $nodeAggregate = $contentGraph->findNodeAggregateById($nodeAggregateId);
+        if ($nodeAggregate === null) {
+            return [];
+        }
+        $visibilityConstraints = $this->visibilityConstraints($contentRepository, $roles, $excludeDisabled);
+        $covered = [];
+        foreach ($contentRepository->getVariationGraph()->getDimensionSpacePoints() as $dimensionSpacePoint) {
+            if ($nodeAggregate->coversDimensionSpacePoint($dimensionSpacePoint) && $contentGraph->getSubgraph($dimensionSpacePoint, $visibilityConstraints)->findNodeById($nodeAggregateId) !== null) {
+                $covered[] = $dimensionSpacePoint;
+            }
+        }
+        return $covered;
+    }
+
+    /**
      * @return list<Node>
      */
     private function variantsIn(ContentRepository $contentRepository, ContentGraphInterface $contentGraph, NodeAggregateId $nodeAggregateId, VisibilityConstraints $visibilityConstraints): array
@@ -180,9 +212,14 @@ final readonly class ContentSubgraphs
     /**
      * @param array<string, Role> $roles
      */
-    private function visibilityConstraints(ContentRepository $contentRepository, array $roles, bool $excludeDisabled): VisibilityConstraints
+    private function visibilityConstraints(ContentRepository $contentRepository, array $roles, bool $excludeDisabled, bool $includeRemoved = false): VisibilityConstraints
     {
         $visibilityConstraints = $this->contentRepositoryAuthorizationService->getVisibilityConstraints($contentRepository->id, $roles);
+        if ($includeRemoved) {
+            // Neos always excludes removed, the tags of the account's node privileges stay excluded (unless one of
+            // them is removed itself)
+            $visibilityConstraints = VisibilityConstraints::excludeSubtreeTags($visibilityConstraints->excludedSubtreeTags->without(NeosSubtreeTag::removed()));
+        }
         return $excludeDisabled ? $visibilityConstraints->merge(NeosVisibilityConstraints::excludeDisabled()) : $visibilityConstraints;
     }
 

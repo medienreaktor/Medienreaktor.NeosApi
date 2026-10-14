@@ -12,10 +12,12 @@ use Neos\Api\Endpoint\Me\Schema\Profile;
 use Neos\Api\Endpoint\Me\Schema\ScopeList;
 use Neos\Api\Endpoint\Users\Schema\Account;
 use Neos\Api\Endpoint\Users\Schema\User;
+use Neos\Api\Security\AccountPrivileges;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiCaller;
 use Neos\Api\Security\ApiScopes;
 use Neos\Api\Security\OAuthTokens;
+use Neos\Api\Security\PrivilegeScopes;
 use Neos\Api\Infrastructure\Http\JsonBody;
 use Neos\Api\Shared\Response\NotFound;
 use Neos\Api\Shared\Response\UnprocessableContent;
@@ -53,6 +55,8 @@ final readonly class Me
         private UserService $userService,
         private HashService $hashService,
         private OAuthTokens $oauthTokens,
+        private PrivilegeScopes $privilegeScopes,
+        private AccountPrivileges $accountPrivileges,
         #[Flow\InjectConfiguration(path: 'userInterface.availableLanguages', package: 'Neos.Neos')]
         array $availableLanguages,
         #[Flow\InjectConfiguration(path: 'userInterface.defaultLanguage', package: 'Neos.Neos')]
@@ -66,7 +70,7 @@ final readonly class Me
         path: '/me',
         method: 'GET',
         summary: 'Get the current account',
-        description: 'The account the access token acts as with its roles, the Neos user it belongs to, and the client and scopes of the token.',
+        description: 'The account the access token acts as with its roles, the Neos user it belongs to, the client and scopes of the token, and the scopes whose privileges the account holds (privileges), whatever scopes the token has.',
         operationId: 'getMe',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::ME_READ],
@@ -79,7 +83,24 @@ final readonly class Me
             Account::from($caller->account),
             $user !== null ? User::from($user) : null,
             new AccessTokenGrant(ClientIdentifier::fromString($caller->clientIdentifier), ScopeList::fromStrings(...$caller->scopes)),
+            ScopeList::fromStrings(...$this->privilegesOf($caller)),
         );
+    }
+
+    /**
+     * The scopes whose ApiPrivilege targets the account's roles grant, sorted
+     *
+     * @return list<string>
+     */
+    private function privilegesOf(ApiCaller $caller): array
+    {
+        $roles = $this->accountPrivileges->rolesOf($caller->account);
+        $scopes = array_keys(array_filter(
+            $this->privilegeScopes->privilegeTargets(),
+            fn (string $privilegeTarget) => $this->accountPrivileges->isGrantedForRoles($roles, $privilegeTarget),
+        ));
+        sort($scopes);
+        return $scopes;
     }
 
     #[Operation(

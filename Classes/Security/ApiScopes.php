@@ -18,6 +18,7 @@ final class ApiScopes
     public const string USERS_UPDATE = 'users.update';
     public const string USERS_CREATE = 'users.create';
     public const string USERS_DELETE = 'users.delete';
+    public const string PEOPLE_READ = 'people.read';
     public const string SITES_READ = 'sites.read';
     public const string SITES_UPDATE = 'sites.update';
     public const string SITES_CREATE = 'sites.create';

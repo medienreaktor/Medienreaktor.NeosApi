@@ -18,11 +18,13 @@ final readonly class ContentDimensionValue implements ProvidesSchema
      * @param string $value e.g. en_US
      * @param string|null $label the label of the configuration in the requested language, null if it has none
      * @param string|null $generalization the value it falls back to, null for a root value
+     * @param int $specializationDepth how many generalizations are above it, 0 for a root value, e.g. to indent it
      */
     public function __construct(
         public string $value,
         public string|null $label,
         public string|null $generalization,
+        public int $specializationDepth,
     ) {
     }
 
@@ -32,6 +34,7 @@ final readonly class ContentDimensionValue implements ProvidesSchema
             $value->value,
             $labels->label($value->getConfigurationValue('label')),
             $dimension->getGeneralization($value)?->value,
+            $value->specializationDepth->value,
         );
     }
 

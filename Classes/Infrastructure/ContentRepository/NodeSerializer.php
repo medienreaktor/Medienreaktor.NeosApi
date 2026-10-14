@@ -4,7 +4,9 @@ declare(strict_types=1);
 namespace Neos\Api\Infrastructure\ContentRepository;
 
 use Neos\ContentRepository\Core\NodeType\NodeType;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\CountChildNodesFilter;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindReferencesFilter;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\NodeType\NodeTypeCriteria;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepository\Core\Projection\ContentGraph\PropertyCollection;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Reference;
@@ -58,17 +60,34 @@ final readonly class NodeSerializer
     /**
      * The references the node type declares, each with the referenced nodes in their order as
      * {"nodeAggregateId": "…", "properties": {…}} (the reference's properties serialized as the node's), an empty list
-     * if there are none. Objects where they are empty, so they encode as {}, not []
+     * if there are none. Objects where they are empty, so they encode as {}, not []. With $referencedNode each one has
+     * the referenced node as well, as "node": what the closure makes of it
      *
-     * @return array<string, list<array{nodeAggregateId: string, properties: array<string, mixed>|\stdClass}>>|\stdClass
+     * @param \Closure(Node): mixed $referencedNode
+     * @return array<string, list<array{nodeAggregateId: string, properties: array<string, mixed>|\stdClass, node?: mixed}>>|\stdClass
      */
-    public function references(Node $node): array|\stdClass
+    public function references(Node $node, ?\Closure $referencedNode = null): array|\stdClass
     {
         $references = array_fill_keys(array_keys($this->nodeType($node)?->getReferences() ?? []), []);
+        // in the node's subgraph, so only the referenced nodes it may read
         foreach ($this->contentRepositoryRegistry->subgraphForNode($node)->findReferences($node->aggregateId, FindReferencesFilter::create()) as $reference) {
-            $references[$reference->name->value][] = $this->reference($reference);
+            $references[$reference->name->value][] = $this->reference($reference) + ($referencedNode !== null ? ['node' => $referencedNode($reference->node)] : []);
         }
         return $references === [] ? new \stdClass() : $references;
+    }
+
+    /**
+     * Whether the node has child nodes (of the node types, all if null), without loading them, in its subgraph: with
+     * the visibility it was read with
+     *
+     * @param NodeTypeCriteria|string|null $nodeTypes a node type filter, e.g. "Neos.Neos:Content,Neos.Neos:ContentCollection" or "!Neos.Neos:Document"
+     */
+    public function hasChildren(Node $node, NodeTypeCriteria|string|null $nodeTypes = null): bool
+    {
+        return $this->contentRepositoryRegistry->subgraphForNode($node)->countChildNodes(
+            $node->aggregateId,
+            CountChildNodesFilter::create(nodeTypes: $nodeTypes),
+        ) > 0;
     }
 
     /**

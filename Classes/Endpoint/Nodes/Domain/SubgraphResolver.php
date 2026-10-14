@@ -40,8 +40,9 @@ final readonly class SubgraphResolver
      *
      * @param string|null $withoutContentRepository the 404's detail if contentRepositoryId is omitted and there is no
      *     default site to take it from, null if it is required
+     * @param bool $includeRemoved find soft removed nodes as well, see ContentSubgraphs::find()
      */
-    public function resolve(?ContentRepositoryId $contentRepositoryId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint, bool $excludeDisabled, ?string $withoutContentRepository = null): ContentSubgraphInterface|BadRequest|NotFound
+    public function resolve(?ContentRepositoryId $contentRepositoryId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint, bool $excludeDisabled, ?string $withoutContentRepository = null, bool $includeRemoved = false): ContentSubgraphInterface|BadRequest|NotFound
     {
         // a syntax error is a 400 before anything is looked up
         try {
@@ -65,16 +66,16 @@ final readonly class SubgraphResolver
             return BadRequest::because(sprintf('There is no dimension space point %s in the content repository %s, GET /cr/%2$s lists its dimensions and their values', $point->toJson(), $id->value));
         }
         $workspace = $workspaceName?->toWorkspaceName() ?? SharedModel\Workspace\WorkspaceName::forLive();
-        return $this->contentSubgraphs->findIn($contentRepository, $workspace, $point, $excludeDisabled)
+        return $this->contentSubgraphs->findIn($contentRepository, $workspace, $point, $excludeDisabled, $includeRemoved)
             ?? NotFound::because(sprintf('There is no workspace %s in the content repository %s', $workspace->value, $id->value));
     }
 
     /**
      * The node in the subgraph of resolve(), see there and resolveNodeIn()
      */
-    public function resolveNode(?ContentRepositoryId $contentRepositoryId, SharedModel\Node\NodeAggregateId $nodeAggregateId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint, bool $excludeDisabled, ?string $withoutContentRepository = null): Node|BadRequest|NotFound
+    public function resolveNode(?ContentRepositoryId $contentRepositoryId, SharedModel\Node\NodeAggregateId $nodeAggregateId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint, bool $excludeDisabled, ?string $withoutContentRepository = null, bool $includeRemoved = false): Node|BadRequest|NotFound
     {
-        $subgraph = $this->resolve($contentRepositoryId, $workspaceName, $dimensionSpacePoint, $excludeDisabled, $withoutContentRepository);
+        $subgraph = $this->resolve($contentRepositoryId, $workspaceName, $dimensionSpacePoint, $excludeDisabled, $withoutContentRepository, $includeRemoved);
         return $subgraph instanceof ContentSubgraphInterface ? $this->resolveNodeIn($subgraph, $nodeAggregateId) : $subgraph;
     }
 

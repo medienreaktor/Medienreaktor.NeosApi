@@ -7,6 +7,7 @@ use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryList;
 use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryListing;
 use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepository;
 use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
+use Neos\Api\Infrastructure\ContentRepository\NodeTypeUi;
 use Neos\Api\Infrastructure\I18n\LabelTranslator;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiScopes;
@@ -31,6 +32,7 @@ final readonly class ContentRepositories
     public function __construct(
         private ContentRepositoryRegistry $contentRepositoryRegistry,
         private LabelTranslator $labelTranslator,
+        private NodeTypeUi $nodeTypeUi,
         private LoggerInterface $logger,
     ) {
     }
@@ -53,7 +55,7 @@ final readonly class ContentRepositories
         foreach ($this->contentRepositoryRegistry->getContentRepositoryIds() as $id) {
             $contentRepository = $this->build($id);
             if ($contentRepository !== null) {
-                $contentRepositories[] = ContentRepository::from($contentRepository, $labels);
+                $contentRepositories[] = ContentRepository::from($contentRepository, $labels, $this->nodeTypeUi);
             }
         }
         return ContentRepositoryListing::of(new ContentRepositoryList(...$contentRepositories));
@@ -83,7 +85,7 @@ final readonly class ContentRepositories
         if ($contentRepository === null) {
             return NotFound::contentRepository($contentRepositoryId->value);
         }
-        return ContentRepository::from($contentRepository, $this->labelTranslator->forAcceptLanguage($acceptLanguage));
+        return ContentRepository::from($contentRepository, $this->labelTranslator->forAcceptLanguage($acceptLanguage), $this->nodeTypeUi);
     }
 
     /**

@@ -24,6 +24,8 @@ use PHPUnit\Framework\Attributes\Test;
  */
 class NodesTest extends ContentRepositoryTestCase
 {
+    private const array IN_LIVE = ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"en_US"}'];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -79,10 +81,77 @@ class NodesTest extends ContentRepositoryTestCase
 
         $response = $this->get(self::nodePath('some-node', ['include' => 'references,parent,children.children,ancestors.references']), $token);
         self::assertSame(400, $response->getStatusCode(), (string)$response->getBody());
-        self::assertSame('Can\'t include parent, children.children, ancestors.references, only: references, children, children.references, variants, variants.references, ancestors', self::json($response)['detail']);
+        self::assertSame('Can\'t include parent, children.children, ancestors.references, only: references, references.node, children, children.references, children.hasChildren, variants, variants.references, ancestors, hasChildren', self::json($response)['detail']);
+        self::assertSame(404, $this->get(self::nodePath('some-node', ['include' => 'hasChildren,children.hasChildren,references.node', 'hasChildrenOfNodeType' => 'Neos.Neos:Document,!Neos.Neos:Shortcut', 'includeRemoved' => 'true']), $token)->getStatusCode());
 
         // not a list of paths, its schema rejects it
         self::assertSame(400, $this->get(self::nodePath('some-node', ['include' => 'references,']), $token)->getStatusCode());
+    }
+
+    #[Test]
+    public function rejectsInvalidHasChildrenNodeTypesAndIncludeRemoved(): void
+    {
+        $token = $this->token('nobody-machine', 'nodes.read');
+
+        // a syntax error before the content repository is looked up
+        foreach ([self::nodePath('some-node', ['include' => 'hasChildren', 'hasChildrenOfNodeType' => '!']), self::listPath(['hasChildrenOfNodeType' => 'Neos.Neos:Document,!'])] as $path) {
+            $response = $this->get($path, $token);
+            self::assertSame(400, $response->getStatusCode(), $path . ': ' . $response->getBody());
+            self::assertStringStartsWith('hasChildrenOfNodeType is invalid', self::json($response)['detail']);
+        }
+        // their schemas reject them
+        self::assertSame(400, $this->get(self::nodePath('some-node', ['hasChildrenOfNodeType' => '']), $token)->getStatusCode());
+        self::assertSame(400, $this->get(self::nodePath('some-node', ['includeRemoved' => 'yes']), $token)->getStatusCode());
+        self::assertSame(400, $this->get(self::listPath(['includeRemoved' => 'yes']), $token)->getStatusCode());
+        self::assertSame(404, $this->get(self::listPath(['includeRemoved' => '1', 'include' => 'hasChildren']), $token)->getStatusCode());
+    }
+
+    #[Test]
+    public function copiesNodesOnlyInAGivenWorkspace(): void
+    {
+        $token = $this->token('editor-machine', 'nodes.create');
+        $path = self::nodePath('some-node') . '/copy';
+
+        $response = $this->post($path . '?workspaceName=user-editor', $token, ['parentNodeAggregateId' => 'other-node', 'succeedingSiblingNodeAggregateId' => 'third-node', 'targetDimensionSpacePoint' => '{"language":"de"}']);
+        self::assertSame(404, $response->getStatusCode(), (string)$response->getBody());
+        self::assertSame('There is no content repository with the ID unknown', self::json($response)['detail']);
+
+        // no default workspace for changes
+        self::assertSame(400, $this->post($path, $token, ['parentNodeAggregateId' => 'other-node'])->getStatusCode());
+        // their schemas reject them: no parent, not an id, not a point, unknown fields
+        foreach ([[], ['parentNodeAggregateId' => 'Not_An_Id'], ['parentNodeAggregateId' => 'other-node', 'targetDimensionSpacePoint' => 'de'], ['parentNodeAggregateId' => 'other-node', 'nodeName' => 'x']] as $body) {
+            self::assertSame(400, $this->post($path . '?workspaceName=user-editor', $token, $body)->getStatusCode(), json_encode($body));
+        }
+
+        // changing isn't enough, only editors may create nodes
+        $response = $this->post($path . '?workspaceName=user-editor', $this->token('editor-machine', 'nodes.update'), ['parentNodeAggregateId' => 'other-node']);
+        self::assertSame(403, $response->getStatusCode(), (string)$response->getBody());
+        self::assertStringContainsString('nodes.create', self::json($response)['detail']);
+        self::assertSame(403, $this->post($path . '?workspaceName=user-editor', $this->token('nobody-machine', 'nodes.create'), ['parentNodeAggregateId' => 'other-node'])->getStatusCode());
+        self::assertSame(401, $this->post($path . '?workspaceName=user-editor', null, ['parentNodeAggregateId' => 'other-node'])->getStatusCode());
+
+        $post = self::json($this->get('/api/openapi.json', null))['paths']['/cr/{contentRepositoryId}/nodes/{nodeAggregateId}/copy']['post'];
+        self::assertSame('copyNode', $post['operationId']);
+        self::assertArrayHasKey('Location', $post['responses']['201']['headers']);
+    }
+
+    #[Test]
+    public function previewsUriPathSegmentsWithTheReadScope(): void
+    {
+        $token = $this->token('nobody-machine', 'nodes.read');
+
+        foreach ([[], ['workspaceName' => 'user-editor', 'dimensionSpacePoint' => '{"language":"de"}', 'text' => 'Über uns'], ['text' => '']] as $query) {
+            $response = $this->get(self::uriPathSegmentPath('some-node', $query), $token);
+            self::assertSame(404, $response->getStatusCode(), json_encode($query) . ': ' . $response->getBody());
+            self::assertSame('There is no content repository with the ID unknown', self::json($response)['detail']);
+        }
+        $response = $this->get(self::uriPathSegmentPath('some-node', []), $this->token('nobody-machine', 'me.read'));
+        self::assertSame(403, $response->getStatusCode(), (string)$response->getBody());
+        self::assertStringContainsString('nodes.read', self::json($response)['detail']);
+        self::assertSame(401, $this->get(self::uriPathSegmentPath('some-node', []), null)->getStatusCode());
+
+        $operations = self::json($this->get('/api/openapi.json', null))['paths']['/cr/{contentRepositoryId}/nodes/{nodeAggregateId}/uripathsegment'];
+        self::assertSame(['getNodeUriPathSegment', 'generateNodeUriPathSegment'], [$operations['get']['operationId'], $operations['post']['operationId']]);
     }
 
     #[Test]
@@ -597,6 +666,7 @@ class NodesTest extends ContentRepositoryTestCase
             ContentRepositoryId::fromString('default'),
             WorkspaceName::fromString('user-editor'),
             DimensionSpacePoint::fromString('{"language":"de"}'),
+            DimensionSpacePoint::fromString('{"language":"de"}'),
             NodeAggregateId::fromString('new-node'),
             null,
             NodeTypeName::fromString('Neos.Neos:Page'),
@@ -613,6 +683,7 @@ class NodesTest extends ContentRepositoryTestCase
             null,
             null,
             null,
+            null,
         );
         $query = '?workspaceName=user-editor&dimensionSpacePoint=%7B%22language%22%3A%22de%22%7D';
 
@@ -623,6 +694,9 @@ class NodesTest extends ContentRepositoryTestCase
         $variant = NodeCreated::variant($node)->headers()['Location'];
         self::assertSame('../new-node' . $query, $variant);
         self::assertSame('/api/cr/default/nodes/new-node' . $query, (string)UriResolver::resolve(new Uri('/api/cr/default/nodes/new-node/variants?workspaceName=user-editor'), new Uri($variant)));
+
+        $copy = NodeCreated::copy($node)->headers()['Location'];
+        self::assertSame('/api/cr/default/nodes/new-node' . $query, (string)UriResolver::resolve(new Uri('/api/cr/default/nodes/original-node/copy?workspaceName=user-editor'), new Uri($copy)));
     }
 
     #[Test]
@@ -678,6 +752,223 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
         self::assertSame([], self::json($response)['tags']);
         self::assertSame(404, $this->delete(self::path($id . '/tags/disabled', $inLive), $token)->getStatusCode());
+    }
+
+    #[Test]
+    public function readsWhetherNodesHaveChildrenTheirOriginAndReferencedNodes(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create nodes.update');
+        $parent = $this->createPage($token, $siteNodeId, 'Parent');
+        $child = $this->createPage($token, $parent, 'Child');
+
+        $response = $this->get(self::path($parent, self::IN_LIVE + ['include' => 'hasChildren,children.hasChildren', 'hasChildrenOfNodeType' => 'Neos.Neos:Document']), $token);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        $node = self::json($response);
+        self::assertTrue($node['hasChildren']);
+        // the main collection and the child page, neither has child documents
+        self::assertSame(['main' => false, $child => false], array_column(array_map(static fn (array $child) => [$child['name'] ?? $child['nodeAggregateId'], $child['hasChildren']], $node['children']), 1, 0));
+        self::assertNull($node['references']);
+
+        // all child nodes by default: the main collection
+        self::assertTrue(self::json($this->get(self::path($child, self::IN_LIVE + ['include' => 'hasChildren']), $token))['hasChildren']);
+        self::assertFalse(self::json($this->get(self::path($child, self::IN_LIVE + ['include' => 'hasChildren', 'hasChildrenOfNodeType' => 'Neos.Neos:Document']), $token))['hasChildren']);
+        self::assertNull(self::json($this->get(self::path($child, self::IN_LIVE), $token))['hasChildren']);
+        $response = $this->get(self::path($child, self::IN_LIVE + ['include' => 'hasChildren', 'hasChildrenOfNodeType' => 'Vendor.Unknown:Type']), $token);
+        self::assertSame(400, $response->getStatusCode(), (string)$response->getBody());
+        self::assertSame('There is no node type Vendor.Unknown:Type (hasChildrenOfNodeType)', self::json($response)['detail']);
+
+        // listNodes as well
+        $response = $this->get(self::path('', self::IN_LIVE + ['filterByHierarchy' => ['type' => 'childOf', 'nodeAggregateId' => $siteNodeId], 'filterByNodeType' => 'Neos.Demo:Document.Page,!Neos.Demo:Document.NotFoundPage', 'include' => 'hasChildren', 'hasChildrenOfNodeType' => 'Neos.Neos:Document']), $token);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        self::assertSame([$parent => true], array_column(self::json($response)['data'], 'hasChildren', 'nodeAggregateId'));
+
+        // the origin of what is shown: en_UK falls back to en_US
+        $node = self::json($this->get(self::path($child, ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"en_UK"}']), $token));
+        self::assertSame(['{"language":"en_UK"}', '{"language":"en_US"}', true], [$node['dimensionSpacePoint'], $node['originDimensionSpacePoint'], $node['isShineThrough']]);
+        self::assertSame('{"language":"en_US"}', self::json($this->get(self::path($child, self::IN_LIVE), $token))['originDimensionSpacePoint']);
+
+        // the referenced nodes with include=references.node
+        $response = $this->patch(self::path($siteNodeId . '/references', self::IN_LIVE), $token, ['metaNavigationItems' => [['nodeAggregateId' => $child], ['nodeAggregateId' => $parent]]]);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        self::assertArrayNotHasKey('node', self::json($response)['references']['metaNavigationItems'][0]);
+        $references = self::json($this->get(self::path($siteNodeId, self::IN_LIVE + ['include' => 'references.node']), $token))['references']['metaNavigationItems'];
+        self::assertSame([$child, $parent], array_column($references, 'nodeAggregateId'));
+        self::assertSame([$child, 'Child', null, null], [$references[0]['node']['nodeAggregateId'], $references[0]['node']['label'], $references[0]['node']['references'], $references[0]['node']['children']]);
+    }
+
+    #[Test]
+    public function readsDeletedNodesOnlyWithIncludeRemoved(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create nodes.delete');
+        $parent = $this->createPage($token, $siteNodeId, 'Parent');
+        $child = $this->createPage($token, $parent, 'Child');
+        self::assertSame(204, $this->delete(self::path($parent, self::IN_LIVE), $token)->getStatusCode());
+
+        self::assertSame(404, $this->get(self::path($child, self::IN_LIVE), $token)->getStatusCode());
+        $response = $this->get(self::path($parent, self::IN_LIVE + ['includeRemoved' => 'true', 'include' => 'children,ancestors,hasChildren']), $token);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        $node = self::json($response);
+        self::assertSame(['removed'], $node['tags']);
+        self::assertTrue($node['hasChildren']);
+        // what is below and above it as well
+        self::assertContains($child, array_column($node['children'], 'nodeAggregateId'));
+        self::assertSame([$siteNodeId], array_column($node['ancestors'], 'nodeAggregateId'));
+        $child = self::json($this->get(self::path($child, self::IN_LIVE + ['includeRemoved' => '1']), $token));
+        self::assertSame([[], ['removed']], [$child['tags'], $child['inheritedTags']]);
+
+        $below = ['filterByHierarchy' => ['type' => 'childOf', 'nodeAggregateId' => $siteNodeId], 'filterByNodeType' => 'Neos.Demo:Document.Page,!Neos.Demo:Document.NotFoundPage'];
+        self::assertSame([], self::json($this->get(self::path('', self::IN_LIVE + $below), $token))['data']);
+        self::assertSame([$parent], array_column(self::json($this->get(self::path('', self::IN_LIVE + $below + ['includeRemoved' => 'true']), $token))['data'], 'nodeAggregateId'));
+    }
+
+    #[Test]
+    public function listsVariantsWithTheDimensionSpacePointsTheNodeCovers(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create');
+        $page = $this->createPage($token, $siteNodeId, 'Page');
+
+        $meta = self::json($this->get(self::path($page . '/variants', ['workspaceName' => 'live']), $token))['meta'];
+        // en_UK falls back to en_US
+        self::assertSame(1, $meta['total']);
+        self::assertEqualsCanonicalizing(['{"language":"en_US"}', '{"language":"en_UK"}'], $meta['coveredDimensionSpacePoints']);
+
+        self::assertSame(201, $this->post(self::path($page . '/variants', self::IN_LIVE), $token, ['dimensionSpacePoint' => '{"language":"de"}'])->getStatusCode());
+        $meta = self::json($this->get(self::path($page . '/variants', ['workspaceName' => 'live']), $token))['meta'];
+        self::assertSame(2, $meta['total']);
+        self::assertEqualsCanonicalizing(['{"language":"en_US"}', '{"language":"en_UK"}', '{"language":"de"}'], $meta['coveredDimensionSpacePoints']);
+        $all = self::json($this->get('/api/cr/default', $this->token('admin-machine', 'contentrepositories.read')))['dimensionSpacePoints'];
+        // in the order of the variation graph
+        self::assertSame($all, array_values(array_intersect($all, $meta['coveredDimensionSpacePoints'])));
+    }
+
+    #[Test]
+    public function copiesNodesWithEverythingBelowThem(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create nodes.update');
+        $parent = $this->createPage($token, $siteNodeId, 'Parent');
+        $child = $this->createPage($token, $parent, 'Child');
+        $sibling = $this->createPage($token, $siteNodeId, 'Sibling');
+
+        $response = $this->post(self::path($parent . '/copy', self::IN_LIVE), $token, ['parentNodeAggregateId' => $siteNodeId, 'succeedingSiblingNodeAggregateId' => $sibling]);
+        self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
+        $copy = self::json($response);
+        self::assertNotSame($parent, $copy['nodeAggregateId']);
+        self::assertSame('../' . $copy['nodeAggregateId'] . '?workspaceName=live&dimensionSpacePoint=%7B%22language%22%3A%22en_US%22%7D', $response->getHeaderLine('Location'));
+        // the uriPathSegment of the original is taken by it
+        self::assertSame(['Parent', 'parent-1'], [$copy['properties']['title'], $copy['properties']['uriPathSegment']]);
+        $children = self::json($this->get(self::path($copy['nodeAggregateId'], self::IN_LIVE + ['include' => 'children']), $token))['children'];
+        $copiedChild = array_values(array_filter($children, static fn (array $node) => $node['nodeType'] === 'Neos.Demo:Document.Page'));
+        self::assertSame(['Child'], array_column($copiedChild, 'label'));
+        self::assertNotSame($child, $copiedChild[0]['nodeAggregateId']);
+        // before the sibling
+        $order = array_column(self::json($this->get(self::path('', self::IN_LIVE + ['filterByHierarchy' => ['type' => 'childOf', 'nodeAggregateId' => $siteNodeId], 'filterByNodeType' => 'Neos.Demo:Document.Page,!Neos.Demo:Document.NotFoundPage']), $token))['data'], 'nodeAggregateId');
+        self::assertSame([$parent, $copy['nodeAggregateId'], $sibling], $order);
+
+        // into another dimension space point
+        $response = $this->post(self::path($child . '/copy', self::IN_LIVE), $token, ['parentNodeAggregateId' => $siteNodeId, 'targetDimensionSpacePoint' => '{"language":"de"}']);
+        self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
+        self::assertSame(['{"language":"de"}', '{"language":"de"}', 'Child'], [self::json($response)['dimensionSpacePoint'], self::json($response)['originDimensionSpacePoint'], self::json($response)['label']]);
+
+        foreach ([
+            ['parentNodeAggregateId' => 'unknown-node'],
+            ['parentNodeAggregateId' => $siteNodeId, 'succeedingSiblingNodeAggregateId' => $child],
+            ['parentNodeAggregateId' => $siteNodeId, 'targetDimensionSpacePoint' => '{"language":"fr"}'],
+            ['parentNodeAggregateId' => $siteNodeId, 'targetDimensionSpacePoint' => '{not json}'],
+            // a content collection doesn't allow pages
+            ['parentNodeAggregateId' => $this->mainCollection($token, $parent)],
+        ] as $body) {
+            $response = $this->post(self::path($parent . '/copy', self::IN_LIVE), $token, $body);
+            self::assertSame(422, $response->getStatusCode(), json_encode($body) . ': ' . $response->getBody());
+        }
+        self::assertSame(404, $this->post(self::path('unknown-node/copy', self::IN_LIVE), $token, ['parentNodeAggregateId' => $siteNodeId])->getStatusCode());
+    }
+
+    #[Test]
+    public function previewsUriPathSegmentsInTheLanguageOfTheDimensionSpacePoint(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create');
+        $page = $this->createPage($token, $siteNodeId, 'Über uns');
+        self::assertSame(201, $this->post(self::path($page . '/variants', self::IN_LIVE), $token, ['dimensionSpacePoint' => '{"language":"de"}'])->getStatusCode());
+        $inGerman = ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"de"}'];
+
+        self::assertSame(['uriPathSegment' => 'ueber-uns'], self::json($this->get(self::path($page . '/uripathsegment', $inGerman), $token)));
+        self::assertSame(['uriPathSegment' => 'uber-uns'], self::json($this->get(self::path($page . '/uripathsegment', self::IN_LIVE), $token)));
+        self::assertSame(['uriPathSegment' => 'groesse'], self::json($this->get(self::path($page . '/uripathsegment', $inGerman + ['text' => 'Größe']), $token)));
+        self::assertSame(['uriPathSegment' => 'ueber-uns'], self::json($this->get(self::path($page . '/uripathsegment', $inGerman + ['text' => ' ']), $token)));
+        $response = $this->get(self::path($page . '/uripathsegment', $inGerman + ['text' => '!!!']), $token);
+        self::assertSame(422, $response->getStatusCode(), (string)$response->getBody());
+        // nothing was set
+        self::assertSame('uber-uns', self::json($this->get(self::path($page, $inGerman), $token))['properties']['uriPathSegment']);
+    }
+
+    #[Test]
+    public function createsNodesWithTheCreationHandlersOfTheirNodeType(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create');
+        $inGerman = ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"de"}'];
+
+        // Neos UI's promoted elements and uriPathSegment handlers: the title element becomes the title and the uriPathSegment
+        $response = $this->post(self::path('', $inGerman), $token, ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $siteNodeId, 'elements' => ['title' => 'Über uns', 'unknownElement' => 'ignored']]);
+        self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
+        self::assertSame(['Über uns', 'ueber-uns'], [self::json($response)['properties']['title'], self::json($response)['properties']['uriPathSegment']]);
+
+        // the properties given win
+        $response = $this->post(self::path('', $inGerman), $token, ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $siteNodeId, 'properties' => ['title' => 'Kontakt'], 'elements' => ['title' => 'Impressum']]);
+        self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
+        self::assertSame(['Kontakt', 'kontakt'], [self::json($response)['properties']['title'], self::json($response)['properties']['uriPathSegment']]);
+
+        // an element of the wrong type
+        $response = $this->post(self::path('', $inGerman), $token, ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $siteNodeId, 'elements' => ['title' => 42]]);
+        self::assertSame(422, $response->getStatusCode(), (string)$response->getBody());
+        // elements must be an object
+        self::assertSame(400, $this->post(self::path('', $inGerman), $token, ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $siteNodeId, 'elements' => 'title'])->getStatusCode());
+    }
+
+    #[Test]
+    public function listsOnlyTheNodesTheReadFiltersLetThrough(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create');
+        $visible = $this->createPage($token, $siteNodeId, 'Visible');
+        // TitleNodeReadFilter of the Testing settings
+        $filtered = $this->createPage($token, $siteNodeId, 'Filtered out');
+
+        $listing = self::json($this->get(self::path('', self::IN_LIVE + ['filterByHierarchy' => ['type' => 'childOf', 'nodeAggregateId' => $siteNodeId], 'filterByNodeType' => 'Neos.Demo:Document.Page,!Neos.Demo:Document.NotFoundPage']), $token));
+        self::assertSame([$visible], array_column($listing['data'], 'nodeAggregateId'));
+        // counted before filtering
+        self::assertSame(2, $listing['meta']['total']);
+        // single reads aren't filtered
+        self::assertSame(200, $this->get(self::path($filtered, self::IN_LIVE), $token)->getStatusCode());
+        self::assertContains($filtered, array_column(self::json($this->get(self::path($siteNodeId, self::IN_LIVE + ['include' => 'children']), $token))['children'], 'nodeAggregateId'));
+    }
+
+    /**
+     * A Neos.Demo page below the parent in live and en_US, its title the given one
+     */
+    private function createPage(string $token, string $parentNodeAggregateId, string $title): string
+    {
+        $response = $this->post(self::path('', self::IN_LIVE), $token, ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $parentNodeAggregateId, 'properties' => ['title' => $title]]);
+        self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
+        return self::json($response)['nodeAggregateId'];
+    }
+
+    private function mainCollection(string $token, string $pageNodeAggregateId): string
+    {
+        $children = self::json($this->get(self::path($pageNodeAggregateId, self::IN_LIVE + ['include' => 'children']), $token))['children'];
+        return array_column($children, 'nodeAggregateId', 'name')['main'];
     }
 
     /**
