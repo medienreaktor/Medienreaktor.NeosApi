@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Workspaces\Schema;
 
+use Neos\Api\Endpoint\Nodes\Schema\Node;
 use Neos\Api\Infrastructure\Json\JsonValues;
 use Neos\EventStore\Model\EventEnvelope;
 use Neos\JsonSchema\IntegerSchema;
@@ -23,6 +24,9 @@ final readonly class Event implements ProvidesSchema
     /**
      * @param array<string, mixed>|\stdClass $payload
      * @param array<string, mixed>|\stdClass|null $metadata
+     * @param EventDiff|null $diff what the event changed, null unless included (listWorkspaceEvents' include=diff)
+     * @param Node|null $node the node of the payload's nodeAggregateId now, null unless included (include=node)
+     * @param Node|null $document its closest document now, null unless included (include=document)
      */
     public function __construct(
         public SequenceNumber $sequenceNumber,
@@ -34,6 +38,9 @@ final readonly class Event implements ProvidesSchema
         public array|\stdClass|null $metadata,
         public string|null $causationId,
         public string|null $correlationId,
+        public EventDiff|null $diff = null,
+        public Node|null $node = null,
+        public Node|null $document = null,
     ) {
     }
 
@@ -61,6 +68,14 @@ final readonly class Event implements ProvidesSchema
         );
     }
 
+    /**
+     * The event with what is included, null for what isn't
+     */
+    public function withIncluded(EventDiff|null $diff, Node|null $node, Node|null $document): self
+    {
+        return new self($this->sequenceNumber, $this->version, $this->id, $this->type, $this->recordedAt, $this->payload, $this->metadata, $this->causationId, $this->correlationId, $diff, $node, $document);
+    }
+
     public static function schema(): Schema
     {
         static $schema = null;
@@ -82,9 +97,12 @@ final readonly class Event implements ProvidesSchema
                 )),
                 causationId: Nullable::wrap(StringSchema::create(description: 'The id of what caused the event, null if not recorded')),
                 correlationId: Nullable::wrap(StringSchema::create(description: 'The id the events of one command or one publish share, null if not recorded')),
+                diff: Nullable::wrap(EventDiff::schema()),
+                node: Nullable::wrap(Node::schema()),
+                document: Nullable::wrap(Node::schema()),
             ),
             additionalProperties: false,
-            required: ['sequenceNumber', 'version', 'id', 'type', 'recordedAt', 'payload', 'metadata', 'causationId', 'correlationId'],
+            required: ['sequenceNumber', 'version', 'id', 'type', 'recordedAt', 'payload', 'metadata', 'causationId', 'correlationId', 'diff', 'node', 'document'],
         );
     }
 }

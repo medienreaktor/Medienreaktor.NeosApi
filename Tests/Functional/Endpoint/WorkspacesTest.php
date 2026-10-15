@@ -94,7 +94,7 @@ class WorkspacesTest extends EndpointTestCase
         $operation = self::json($this->get('/api/openapi.json', null))['paths']['/cr/{contentRepositoryId}/workspaces/{workspaceName}/events']['get'];
         self::assertSame('listWorkspaceEvents', $operation['operationId']);
         self::assertSame(['Workspaces'], $operation['tags']);
-        self::assertSame(['contentRepositoryId', 'workspaceName', 'after', 'limit', 'sort'], array_column($operation['parameters'], 'name'));
+        self::assertSame(['contentRepositoryId', 'workspaceName', 'after', 'limit', 'sort', 'include'], array_column($operation['parameters'], 'name'));
     }
 
     #[Test]
@@ -137,7 +137,7 @@ class WorkspacesTest extends EndpointTestCase
         $operation = self::json($this->get('/api/openapi.json', null))['paths']['/cr/{contentRepositoryId}/workspaces/{workspaceName}/changes']['get'];
         self::assertSame('listWorkspaceChanges', $operation['operationId']);
         self::assertSame(['Workspaces'], $operation['tags']);
-        self::assertSame(['contentRepositoryId', 'workspaceName', 'filterByDocument', 'filterBySite', 'filterByChangeType', 'include', 'offset', 'limit'], array_column($operation['parameters'], 'name'));
+        self::assertSame(['contentRepositoryId', 'workspaceName', 'filterByDocument', 'filterBySite', 'filterByChangeType', 'filterByNodeType', 'include', 'offset', 'limit'], array_column($operation['parameters'], 'name'));
     }
 
     #[Test]
@@ -705,9 +705,9 @@ class WorkspacesTest extends EndpointTestCase
     {
         $token = $this->token('nobody-machine', 'workspaces.read');
 
-        $response = $this->get('/api/cr/unknown/workspaces/live/changes?include=diff,node', $token);
+        $response = $this->get('/api/cr/unknown/workspaces/live/changes?include=diff,parent', $token);
         self::assertSame(400, $response->getStatusCode(), (string)$response->getBody());
-        self::assertSame('Can\'t include node, only: diff', self::json($response)['detail']);
+        self::assertSame('Can\'t include parent, only: diff, node, node.ancestors, document, document.ancestors', self::json($response)['detail']);
         self::assertSame(400, $this->get('/api/cr/unknown/workspaces/live/changes?include=diff.properties', $token)->getStatusCode());
         self::assertSame(404, $this->get('/api/cr/unknown/workspaces/live/changes?include=diff', $token)->getStatusCode());
     }
@@ -803,7 +803,7 @@ class WorkspacesTest extends EndpointTestCase
     #[Test]
     public function aChangeMatchesIfItHasOneOfTheChangeTypes(): void
     {
-        $change = static fn (bool $created, bool $changed, bool $moved, bool $deleted) => new Schema\Change(NodeAggregateId::fromString('node'), null, null, null, $created, $changed, $moved, $deleted, null);
+        $change = static fn (bool $created, bool $changed, bool $moved, bool $deleted) => new Schema\Change(NodeAggregateId::fromString('node'), null, null, null, $created, $changed, $moved, $deleted, null, null, null);
 
         self::assertTrue(ChangeTypes::fromString('created')->matches($change(true, false, false, false)));
         self::assertTrue(ChangeTypes::fromString('moved,deleted')->matches($change(false, true, false, true)));

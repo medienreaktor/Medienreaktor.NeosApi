@@ -7,6 +7,7 @@ use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
 use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
 use Neos\ContentRepository\Core\Projection\ContentGraph\ContentSubgraphInterface;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
+use Neos\ContentRepository\Core\NodeType\NodeTypeName;
 use Neos\ContentRepository\Core\Projection\ContentGraph\VisibilityConstraints;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\Flow\Annotations as Flow;
@@ -30,6 +31,11 @@ final class ChangeLocator
      * @var array<string, array{document: NodeAggregateId|null, site: NodeAggregateId|null}> by node aggregate id and origin
      */
     private array $locations = [];
+
+    /**
+     * @var array<string, NodeTypeName|null> by node aggregate id
+     */
+    private array $nodeTypeNames = [];
 
     public function __construct(
         private readonly ReadableWorkspace $workspace,
@@ -58,6 +64,18 @@ final class ChangeLocator
             }
             return ['document' => $document, 'site' => $site];
         })();
+    }
+
+    /**
+     * The node type of the aggregate in the workspace, else in its base workspace (removed for good in the workspace)
+     */
+    public function nodeTypeName(NodeAggregateId $nodeAggregateId): NodeTypeName|null
+    {
+        if (!array_key_exists($nodeAggregateId->value, $this->nodeTypeNames)) {
+            $this->nodeTypeNames[$nodeAggregateId->value] = $this->workspace->contentGraph()->findNodeAggregateById($nodeAggregateId)?->nodeTypeName
+                ?? $this->workspace->contentGraph(base: true)?->findNodeAggregateById($nodeAggregateId)?->nodeTypeName;
+        }
+        return $this->nodeTypeNames[$nodeAggregateId->value];
     }
 
     private function anyCoveredDimensionSpacePoint(NodeAggregateId $nodeAggregateId): DimensionSpacePoint|null

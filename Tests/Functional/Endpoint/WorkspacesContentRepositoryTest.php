@@ -10,6 +10,8 @@ use Neos\ContentRepository\Core\Feature\NodeModification\Command\SetNodeProperti
 use Neos\ContentRepository\Core\Feature\NodeModification\Dto\PropertyValuesToWrite;
 use Neos\ContentRepository\Core\Feature\NodeRemoval\Command\RemoveNodeAggregate;
 use Neos\ContentRepository\Core\Feature\RootNodeCreation\Command\CreateRootNodeAggregateWithNode;
+use Neos\ContentRepository\Core\Feature\SubtreeTagging\Command\TagSubtree;
+use Neos\ContentRepository\Core\Feature\SubtreeTagging\Dto\SubtreeTag;
 use Neos\ContentRepository\Core\NodeType\NodeTypeName;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeVariantSelectionStrategy;
@@ -273,6 +275,61 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
         self::assertSame([self::PAGE], array_column($listing['data'], 'nodeAggregateId'));
         self::assertContains(['name' => 'title', 'old' => self::PAGE, 'new' => 'Changed'], $listing['data'][0]['diff']['properties']);
         self::assertSame(0, self::json($this->get('/api/cr/default/workspaces/team/changes?filterBySite=other-site', $token))['meta']['total']);
+
+        // the pages without their content collections
+        $listing = self::json($this->get('/api/cr/default/workspaces/team/changes?filterByNodeType=Neos.Neos:Document&include=node,document.ancestors', $token));
+        self::assertSame(['a-page', 'b-page', self::PAGE], array_column($listing['data'], 'nodeAggregateId'));
+        self::assertSame(['a-page', 'team'], [$listing['data'][0]['node']['label'], $listing['data'][0]['node']['workspaceName']]);
+        self::assertNull($listing['data'][0]['node']['ancestors']);
+        self::assertSame('Changed', $listing['data'][2]['document']['label']);
+        self::assertSame([self::SITE], array_column($listing['data'][2]['document']['ancestors'], 'nodeAggregateId'));
+        self::assertSame(400, $this->get('/api/cr/default/workspaces/team/changes?filterByNodeType=Unknown:Type', $token)->getStatusCode());
+        self::assertSame(400, $this->get('/api/cr/default/workspaces/team/changes?include=parent', $token)->getStatusCode());
+
+        // the trash: the deleted pages, found with their ancestors
+        $this->handle(TagSubtree::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString('b-page'), self::origin()->toDimensionSpacePoint(), NodeVariantSelectionStrategy::STRATEGY_ALL_SPECIALIZATIONS, SubtreeTag::fromString('removed')));
+        $listing = self::json($this->get('/api/cr/default/workspaces/team/changes?filterByChangeType=deleted&filterByNodeType=Neos.Neos:Document&include=node.ancestors', $token));
+        // a change per dimension space point the removal covers
+        self::assertSame(['b-page'], array_values(array_unique(array_column($listing['data'], 'nodeAggregateId'))));
+        self::assertSame(['removed'], $listing['data'][0]['node']['tags']);
+        self::assertSame([self::SITE], array_column($listing['data'][0]['node']['ancestors'], 'nodeAggregateId'));
+    }
+
+    #[Test]
+    public function diffsEventsAgainstTheEventsBeforeAndIncludesTheirNodes(): void
+    {
+        $this->createTeamWorkspace();
+        $token = $this->token('editor-machine', 'workspaces.read');
+        $this->createPage('team', 'one', self::SITE);
+        foreach (['First', 'Second'] as $title) {
+            $this->handle(SetNodeProperties::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString('one'), self::origin(), PropertyValuesToWrite::fromArray(['title' => $title])));
+        }
+        $this->handle(SetNodeProperties::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString(self::PAGE), self::origin(), PropertyValuesToWrite::fromArray(['title' => 'Changed'])));
+        $this->handle(TagSubtree::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString(self::PAGE), self::origin()->toDimensionSpacePoint(), NodeVariantSelectionStrategy::STRATEGY_ALL_SPECIALIZATIONS, SubtreeTag::fromString('disabled')));
+
+        $events = self::json($this->get('/api/cr/default/workspaces/team/events?limit=100&include=diff,node,document', $token))['data'];
+        self::assertNull($events[0]['diff']['tags'] ?? null, 'the fork changes nothing');
+        $created = array_values(array_filter($events, static fn (array $event) => $event['type'] === 'NodeAggregateWithNodeWasCreated' && $event['payload']['nodeAggregateId'] === 'one'))[0];
+        self::assertContains(['name' => 'title', 'old' => null, 'new' => 'one'], $created['diff']['properties']);
+        $set = array_values(array_filter($events, static fn (array $event) => $event['type'] === 'NodePropertiesWereSet'));
+        self::assertSame(
+            [['one', 'First'], ['First', 'Second'], [self::PAGE, 'Changed']],
+            array_map(static fn (array $event) => [$event['diff']['properties'][0]['old'], $event['diff']['properties'][0]['new']], $set),
+        );
+        // the node and document as they are now
+        self::assertSame(['one', 'Second', 'one'], [$set[0]['node']['nodeAggregateId'], $set[0]['node']['label'], $set[0]['document']['nodeAggregateId']]);
+        $tagged = end($events);
+        self::assertSame(['SubtreeWasTagged', ['added' => ['disabled'], 'removed' => []]], [$tagged['type'], $tagged['diff']['tags']]);
+
+        // the value before is found in the events before the page
+        $page = self::json($this->get('/api/cr/default/workspaces/team/events?limit=1&include=diff&after=' . $set[0]['sequenceNumber'], $token))['data'];
+        self::assertSame($set[1]['diff'], $page[0]['diff']);
+        self::assertNull($page[0]['node']);
+        // newest first as well
+        $page = self::json($this->get('/api/cr/default/workspaces/team/events?limit=3&include=diff&sort=-sequenceNumber', $token))['data'];
+        self::assertSame([$tagged['diff'], $set[2]['diff'], $set[1]['diff']], array_column($page, 'diff'));
+        self::assertNull(self::json($this->get('/api/cr/default/workspaces/team/events', $token))['data'][0]['diff']);
+        self::assertSame(400, $this->get('/api/cr/default/workspaces/team/events?include=parent', $token)->getStatusCode());
     }
 
     #[Test]

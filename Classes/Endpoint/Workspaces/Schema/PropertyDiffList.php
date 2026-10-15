@@ -8,7 +8,8 @@ use Neos\JsonSchema\Schema;
 use Neos\Schematic\Discovery\AutoDiscoveringSchema;
 
 /**
- * The properties a workspace changed on a node, compared to its base workspace, sorted by name
+ * The properties a workspace changed on a node compared to its base workspace, or an event compared to before it, sorted
+ * by name
  *
  * @implements \IteratorAggregate<PropertyDiff>
  */

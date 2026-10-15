@@ -58,6 +58,25 @@ final readonly class NodeSerializer
     }
 
     /**
+     * A plain property value as the content repository stores it, e.g. in an event's payload, as properties() returns
+     * it: assets, also in a list, by their identifier as {"id": "…", "url": "…"}, null if the asset is gone (left out
+     * of a list)
+     */
+    public function serializedValue(mixed $value): mixed
+    {
+        if (!is_array($value) || $value === []) {
+            return $value;
+        }
+        if (self::isSerializedAsset($value)) {
+            return $this->serializedAsset($value);
+        }
+        if (array_is_list($value) && array_filter($value, static fn (mixed $item) => !self::isSerializedAsset($item)) === []) {
+            return array_values(array_filter(array_map($this->serializedAsset(...), $value)));
+        }
+        return $value;
+    }
+
+    /**
      * The references the node type declares, each with the referenced nodes in their order as
      * {"nodeAggregateId": "…", "properties": {…}} (the reference's properties serialized as the node's), an empty list
      * if there are none. Objects where they are empty, so they encode as {}, not []. With $referencedNode each one has
@@ -162,6 +181,27 @@ final readonly class NodeSerializer
         }
         // a single asset that is gone deserializes to null
         return $value === null && isset($serialized['__flow_object_type']) && is_a($serialized['__flow_object_type'], AssetInterface::class, true) ? null : $serialized;
+    }
+
+    /**
+     * Whether the value is an asset as the content repository's property converter serializes persisted objects
+     */
+    private static function isSerializedAsset(mixed $value): bool
+    {
+        return is_array($value)
+            && is_string($value['__flow_object_type'] ?? null)
+            && is_string($value['__identifier'] ?? null)
+            && is_a($value['__flow_object_type'], AssetInterface::class, true);
+    }
+
+    /**
+     * @param array<mixed> $serialized
+     * @return array{id: string, url: string|null}|null
+     */
+    private function serializedAsset(array $serialized): ?array
+    {
+        $asset = $this->persistenceManager->getObjectByIdentifier($serialized['__identifier'], $serialized['__flow_object_type']);
+        return $asset instanceof AssetInterface ? $this->asset($asset) : null;
     }
 
     /**

@@ -9,13 +9,13 @@ use Neos\JsonSchema\Schema;
 use Neos\Schematic\Discovery\AutoDiscoveringSchema;
 
 /**
- * A node name changed by a workspace, compared to its base workspace
+ * A node name changed by a workspace compared to its base workspace, or by an event compared to before it
  */
 final readonly class NodeNameDiff implements ProvidesSchema
 {
     /**
-     * @param NodeName|null $old the name in the base workspace, null if it had none
-     * @param NodeName|null $new the name in the workspace, null if it has none
+     * @param NodeName|null $old the name before (in the base workspace, or before the event), null if it had none
+     * @param NodeName|null $new the name after (in the workspace, or as the event changed it), null if it has none
      */
     public function __construct(
         public NodeName|null $old,

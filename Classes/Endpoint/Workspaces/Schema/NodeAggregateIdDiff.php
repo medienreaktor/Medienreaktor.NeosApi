@@ -9,13 +9,14 @@ use Neos\JsonSchema\Schema;
 use Neos\Schematic\Discovery\AutoDiscoveringSchema;
 
 /**
- * A node aggregate id changed by a workspace, compared to its base workspace, e.g. the parent of a moved node
+ * A node aggregate id changed by a workspace compared to its base workspace, or by an event compared to before it, e.g.
+ * the parent of a moved node
  */
 final readonly class NodeAggregateIdDiff implements ProvidesSchema
 {
     /**
-     * @param NodeAggregateId $old the id in the base workspace
-     * @param NodeAggregateId $new the id in the workspace
+     * @param NodeAggregateId $old the id before (in the base workspace, or before the event)
+     * @param NodeAggregateId $new the id after (in the workspace, or as the event changed it)
      */
     public function __construct(
         public NodeAggregateId $old,

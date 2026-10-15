@@ -4,11 +4,14 @@ declare(strict_types=1);
 namespace Neos\Api\Endpoint\Workspaces;
 
 use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
+use Neos\Api\Endpoint\Nodes\Parameter\NodeTypeCriteria;
 use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
 use Neos\Api\Endpoint\Workspaces\Domain\ChangeDiffer;
 use Neos\Api\Endpoint\Workspaces\Domain\ChangeQuery;
 use Neos\Api\Endpoint\Workspaces\Domain\DocumentAncestry;
+use Neos\Api\Endpoint\Workspaces\Domain\EventDiffer;
 use Neos\Api\Endpoint\Workspaces\Domain\EventQuery;
+use Neos\Api\Endpoint\Workspaces\Domain\IncludedNodes;
 use Neos\Api\Endpoint\Workspaces\Domain\ReadableWorkspace;
 use Neos\Api\Endpoint\Workspaces\Domain\WorkspaceResolver;
 use Neos\Api\Endpoint\Workspaces\Domain\WorkspaceRoleSubjects;
@@ -44,6 +47,8 @@ use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceRoleSubjectType;
 use Neos\Api\Infrastructure\ContentRepository\ContentRepositoryFinder;
 use Neos\Api\Infrastructure\ContentRepository\ContentStreamEvents;
 use Neos\Api\Infrastructure\ContentRepository\ContentStreamEventsFactory;
+use Neos\Api\Infrastructure\ContentRepository\ContentSubgraphs;
+use Neos\Api\Infrastructure\ContentRepository\NodeSerializer;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiCaller;
 use Neos\Api\Security\ApiScopes;
@@ -100,6 +105,8 @@ final readonly class Workspaces
         private ContentCacheFlusher $contentCacheFlusher,
         private ChangeDiffer $changeDiffer,
         private WorkspaceRoleSubjects $workspaceRoleSubjects,
+        private ContentSubgraphs $contentSubgraphs,
+        private NodeSerializer $nodeSerializer,
     ) {
     }
 
@@ -912,7 +919,7 @@ final readonly class Workspaces
         path: '/cr/{contentRepositoryId}/workspaces/{workspaceName}/changes',
         method: 'GET',
         summary: 'List the changes of a workspace',
-        description: 'What changed in the workspace compared to its base workspace and isn\'t published yet, one item per node variant (or per node aggregate for changes to all of its variants, like its name or node type), as Neos\' pending changes projection keeps it, sorted by documentAggregateId (the changes of one document together, the ones without a document last), then by aggregate id and dimension space point. documentAggregateId and siteAggregateId are the closest document (the node itself if it is one) and the site of the node in the workspace, found also for hidden and deleted nodes (in the base workspace for a node removed for good), e.g. to group the changes by document as the Neos workspace module does. filterByDocument keeps the changes in a document (of the document itself and its content, not of its child documents), filterBySite the ones in a site, filterByChangeType the ones with one of the kinds of change: filterByChangeType=deleted is the workspace\'s trash, the nodes deleted in it and not published yet, which restoreNode brings back. The filters combine. include=diff adds what each change of the page does to its node compared to the base workspace (diff, null if not included). The workspace must be one the account may read, by its workspace roles or as the owner. Changes of a node the account may not read are left out. Changes of a node that no longer exists in the workspace are listed: it has no permissions left to check. offset and limit (25 by default, 100 at most) choose the page of the filtered changes, meta.total counts them, links tell about the other pages.',
+        description: 'What changed in the workspace compared to its base workspace and isn\'t published yet, one item per node variant (or per node aggregate for changes to all of its variants, like its name or node type), as Neos\' pending changes projection keeps it, sorted by documentAggregateId (the changes of one document together, the ones without a document last), then by aggregate id and dimension space point. documentAggregateId and siteAggregateId are the closest document (the node itself if it is one) and the site of the node in the workspace, found also for hidden and deleted nodes (in the base workspace for a node removed for good), e.g. to group the changes by document as the Neos workspace module does. filterByDocument keeps the changes in a document (of the document itself and its content, not of its child documents), filterBySite the ones in a site, filterByChangeType the ones with one of the kinds of change: filterByChangeType=deleted is the workspace\'s trash, the nodes deleted in it and not published yet, which restoreNode brings back. filterByNodeType the changes of nodes of these node types, e.g. Neos.Neos:Document with filterByChangeType=deleted for the deleted pages. The filters combine. include=diff adds what each change of the page does to its node compared to the base workspace (diff, null if not included). include=node adds the changed node and include=document the node of documentAggregateId, as getNode returns them: in the change\'s origin dimension space point (one the aggregate covers for a change to the whole aggregate), deleted nodes included, else from the base workspace (removed for good in the workspace, its workspaceName tells), null if there is none the account may read. node.ancestors and document.ancestors add their ancestors as getNode\'s include=ancestors, e.g. for a breadcrumb. The workspace must be one the account may read, by its workspace roles or as the owner. Changes of a node the account may not read are left out. Changes of a node that no longer exists in the workspace are listed: it has no permissions left to check. offset and limit (25 by default, 100 at most) choose the page of the filtered changes, meta.total counts them, links tell about the other pages.',
         operationId: 'listWorkspaceChanges',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::WORKSPACES_READ],
@@ -929,14 +936,16 @@ final readonly class Workspaces
         NodeAggregateId|null $filterBySite = null,
         #[Parameter(in: 'query', description: 'Only the changes with one of these kinds of change, comma-separated: created, changed, moved, deleted. deleted is the workspace\'s trash: the nodes deleted in it and not published yet')]
         ChangeTypes|null $filterByChangeType = null,
-        #[Parameter(in: 'query', description: 'What to include beyond each change\'s own fields: diff, what the change does to its node compared to the base workspace')]
+        #[Parameter(in: 'query', description: 'Only the changes of nodes of these node types or ones inheriting from them, comma-separated, a ! in front excludes a type, as filterByNodeType of listNodes. Unknown node types are a 400')]
+        NodeTypeCriteria|null $filterByNodeType = null,
+        #[Parameter(in: 'query', description: 'What to include beyond each change\'s own fields, comma-separated: diff, what the change does to its node compared to the base workspace, node, the changed node, document, its document, node.ancestors and document.ancestors, their ancestors')]
         IncludePaths|null $include = null,
         #[Parameter(in: 'query', description: 'How many items to skip, 0 if omitted')]
         Offset|null $offset = null,
         #[Parameter(in: 'query', description: 'How many items at most, 25 if omitted, 100 at most')]
         Limit|null $limit = null,
     ): PaginatedChangeListing|BadRequest|NotFound {
-        $query = ChangeQuery::create($filterByDocument, $filterBySite, $filterByChangeType, $include ?? IncludePaths::none(), $offset ?? Offset::none(), $limit ?? Limit::default());
+        $query = ChangeQuery::create($filterByDocument, $filterBySite, $filterByChangeType, $filterByNodeType, $include ?? IncludePaths::none(), $offset ?? Offset::none(), $limit ?? Limit::default());
         if ($query instanceof BadRequest) {
             return $query;
         }
@@ -944,14 +953,20 @@ final readonly class Workspaces
         if ($workspace instanceof NotFound) {
             return $workspace;
         }
-        return $query->page($request, $this->workspacePublishingService->pendingWorkspaceChanges($workspace->contentRepository->id, $workspace->workspace->workspaceName), $workspace, $this->changeDiffer);
+        return $query->page(
+            $request,
+            $this->workspacePublishingService->pendingWorkspaceChanges($workspace->contentRepository->id, $workspace->workspace->workspaceName),
+            $workspace,
+            $this->changeDiffer,
+            IncludedNodes::for($query->include(), $workspace, $this->contentSubgraphs, $this->nodeSerializer, $this->contentRepositoryRegistry),
+        );
     }
 
     #[Operation(
         path: '/cr/{contentRepositoryId}/workspaces/{workspaceName}/events',
         method: 'GET',
         summary: 'List the events of a workspace',
-        description: 'The events of the workspace\'s current content stream: what was changed in it since it was created or last published, discarded or rebased, which each start a new content stream. Oldest first, sort=-sequenceNumber for newest first (sequenceNumber is the only field to sort by). The workspace must be one the account may read, by its workspace roles or as the owner. Events about a node the account may not read are left out. Events about a node that no longer exists in the workspace, e.g. its removal, are listed: it has no permissions left to check. In the events listed, the IDs of other nodes the account may not read (parent, siblings, reference targets, tethered children: every value of a payload key ending in nodeAggregateId or nodeAggregateIds) are null. after and limit (25 by default, 100 at most) choose the page: after is the sequenceNumber of the last event of the page before in the listing\'s order (so newer events oldest first, older ones newest first). Newest first, links.next continues after this page and is null on the last one. Oldest first, links.next is always there, after the last event of the page or, on an empty page, with the same after: a client polling for new events follows it. meta.contentStreamId is the content stream the events are from, meta.forkedFrom where it branched off its base workspace\'s (null for one that wasn\'t forked, e.g. live\'s). An after lower than the sequenceNumber of the current content stream\'s first event is from an earlier one: the workspace was published, discarded or rebased since, the events the client has are no longer the workspace\'s, and it is a 409, the client starts over without after.',
+        description: 'The events of the workspace\'s current content stream: what was changed in it since it was created or last published, discarded or rebased, which each start a new content stream. Oldest first, sort=-sequenceNumber for newest first (sequenceNumber is the only field to sort by). The workspace must be one the account may read, by its workspace roles or as the owner. Events about a node the account may not read are left out. Events about a node that no longer exists in the workspace, e.g. its removal, are listed: it has no permissions left to check. In the events listed, the IDs of other nodes the account may not read (parent, siblings, reference targets, tethered children: every value of a payload key ending in nodeAggregateId or nodeAggregateIds) are null. after and limit (25 by default, 100 at most) choose the page: after is the sequenceNumber of the last event of the page before in the listing\'s order (so newer events oldest first, older ones newest first). Newest first, links.next continues after this page and is null on the last one. Oldest first, links.next is always there, after the last event of the page or, on an empty page, with the same after: a client polling for new events follows it. meta.contentStreamId is the content stream the events are from, meta.forkedFrom where it branched off its base workspace\'s (null for one that wasn\'t forked, e.g. live\'s). include=diff adds what each event changed about its node compared to just before it (diff, null if not included): the value before is the one the latest earlier event of the content stream set (looking back 1000 events before the page at most), else the base workspace\'s. include=node adds the node of the payload\'s nodeAggregateId and include=document its closest document, as getNode returns them now (not as they were then): in the dimension space point the event is about (a new variant\'s origin, the node\'s origin, else the first it affects, else one the aggregate covers), deleted nodes included, else from the base workspace, null if there is none the account may read; node.ancestors and document.ancestors add their ancestors. An after lower than the sequenceNumber of the current content stream\'s first event is from an earlier one: the workspace was published, discarded or rebased since, the events the client has are no longer the workspace\'s, and it is a 409, the client starts over without after.',
         operationId: 'listWorkspaceEvents',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::WORKSPACES_READ],
@@ -968,8 +983,10 @@ final readonly class Workspaces
         Limit|null $limit = null,
         #[Parameter(in: 'query', description: 'sequenceNumber (oldest first, the default) or -sequenceNumber (newest first)')]
         Sort|null $sort = null,
+        #[Parameter(in: 'query', description: 'What to include beyond each event\'s own fields, comma-separated: diff, what the event changed about its node, node, the node, document, its closest document, node.ancestors and document.ancestors, their ancestors')]
+        IncludePaths|null $include = null,
     ): PaginatedEventListing|BadRequest|NotFound|Conflict {
-        $query = EventQuery::create($after, $limit ?? Limit::default(), $sort);
+        $query = EventQuery::create($after, $limit ?? Limit::default(), $sort, $include ?? IncludePaths::none());
         if ($query instanceof BadRequest) {
             return $query;
         }
@@ -985,7 +1002,14 @@ final readonly class Workspaces
         }
         $fork = $firstEvent !== null ? ContentStreamEvents::forkOf($firstEvent) : null;
         $meta = new EventListingMeta(ContentStreamId::from($contentStreamId), $fork !== null ? ContentStreamPosition::from($fork) : null);
-        return $query->page($request, $contentStreamEvents->load($contentStreamId), $workspace, $meta);
+        return $query->page(
+            $request,
+            $contentStreamEvents->load($contentStreamId),
+            $workspace,
+            $meta,
+            IncludedNodes::for($query->include(), $workspace, $this->contentSubgraphs, $this->nodeSerializer, $this->contentRepositoryRegistry),
+            new EventDiffer($workspace, $this->nodeSerializer),
+        );
     }
 
     /**
