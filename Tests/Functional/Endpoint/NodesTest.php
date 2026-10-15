@@ -911,50 +911,6 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame('uber-uns', self::json($this->get(self::path($page, $inGerman), $token))['properties']['uriPathSegment']);
     }
 
-    #[Test]
-    public function createsNodesWithTheCreationHandlersOfTheirNodeType(): void
-    {
-        $this->requireLiveWorkspaceAndAdministrator();
-        $siteNodeId = $this->siteNodeId();
-        $token = $this->token('admin-machine', 'nodes.read nodes.create');
-        $inGerman = ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"de"}'];
-
-        // Neos UI's promoted elements and uriPathSegment handlers: the title element becomes the title and the uriPathSegment
-        $response = $this->post(self::path('', $inGerman), $token, ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $siteNodeId, 'elements' => ['title' => 'Über uns', 'unknownElement' => 'ignored']]);
-        self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
-        self::assertSame(['Über uns', 'ueber-uns'], [self::json($response)['properties']['title'], self::json($response)['properties']['uriPathSegment']]);
-
-        // the properties given win
-        $response = $this->post(self::path('', $inGerman), $token, ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $siteNodeId, 'properties' => ['title' => 'Kontakt'], 'elements' => ['title' => 'Impressum']]);
-        self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
-        self::assertSame(['Kontakt', 'kontakt'], [self::json($response)['properties']['title'], self::json($response)['properties']['uriPathSegment']]);
-
-        // an element of the wrong type
-        $response = $this->post(self::path('', $inGerman), $token, ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $siteNodeId, 'elements' => ['title' => 42]]);
-        self::assertSame(422, $response->getStatusCode(), (string)$response->getBody());
-        // elements must be an object
-        self::assertSame(400, $this->post(self::path('', $inGerman), $token, ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $siteNodeId, 'elements' => 'title'])->getStatusCode());
-    }
-
-    #[Test]
-    public function listsOnlyTheNodesTheReadFiltersLetThrough(): void
-    {
-        $this->requireLiveWorkspaceAndAdministrator();
-        $siteNodeId = $this->siteNodeId();
-        $token = $this->token('admin-machine', 'nodes.read nodes.create');
-        $visible = $this->createPage($token, $siteNodeId, 'Visible');
-        // TitleNodeReadFilter of the Testing settings
-        $filtered = $this->createPage($token, $siteNodeId, 'Filtered out');
-
-        $listing = self::json($this->get(self::path('', self::IN_LIVE + ['filterByHierarchy' => ['type' => 'childOf', 'nodeAggregateId' => $siteNodeId], 'filterByNodeType' => 'Neos.Demo:Document.Page,!Neos.Demo:Document.NotFoundPage']), $token));
-        self::assertSame([$visible], array_column($listing['data'], 'nodeAggregateId'));
-        // counted before filtering
-        self::assertSame(2, $listing['meta']['total']);
-        // single reads aren't filtered
-        self::assertSame(200, $this->get(self::path($filtered, self::IN_LIVE), $token)->getStatusCode());
-        self::assertContains($filtered, array_column(self::json($this->get(self::path($siteNodeId, self::IN_LIVE + ['include' => 'children']), $token))['children'], 'nodeAggregateId'));
-    }
-
     /**
      * A Neos.Demo page below the parent in live and en_US, its title the given one
      */

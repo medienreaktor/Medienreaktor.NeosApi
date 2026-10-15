@@ -25,11 +25,6 @@ Neos:
         # an element that fails to render shows its error in its place, as in the Neos backend
         renderErrors: true
 
-    # Implementations of Neos\Api\Extension\NodeReadFilter that narrow down the nodes of listNodes (searches, trees),
-    # applied in this order to each page after it is read. A filter is removed by setting it to ~, e.g.
-    #   'Vendor.Package:hiddenItems': 'Vendor\Package\Api\HiddenItemsFilter'
-    nodeReadFilters: {}
-
   OpenApi:
     FlowAdapter:
       apis:

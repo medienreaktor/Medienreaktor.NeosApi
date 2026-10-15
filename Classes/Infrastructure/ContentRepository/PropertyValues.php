@@ -8,7 +8,6 @@ use Neos\ContentRepository\Core\Feature\NodeReferencing\Dto\NodeReferencesForNam
 use Neos\ContentRepository\Core\Feature\NodeReferencing\Dto\NodeReferencesToWrite;
 use Neos\ContentRepository\Core\Feature\NodeReferencing\Dto\NodeReferenceToWrite;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
-use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateIds;
 use Neos\ContentRepository\Core\SharedModel\Node\ReferenceName;
 use Neos\ContentRepository\Core\NodeType\NodeType;
 use Neos\Flow\Annotations as Flow;
@@ -81,64 +80,6 @@ final readonly class PropertyValues
             );
         }
         return NodeReferencesToWrite::create(...$referencesForNames);
-    }
-
-    /**
-     * The values of the creation dialog (the node type's ui.creationDialog.elements, promoted properties and references
-     * included) as node creation handlers expect them, as Neos UI's NodePropertyConversionService converts them:
-     * reference and references elements to NodeAggregateIds (one id or a list), the others by their type as
-     * properties, values of types properties can't be written yet as they are. Elements the node type doesn't declare
-     * and null values are left out, handlers find them as given in NodeCreationElements::serialized()
-     *
-     * @param array<mixed> $values by element name
-     * @return array<string, mixed>
-     * @throws InvalidPropertyValue
-     */
-    public function creationElements(NodeType $nodeType, array $values): array
-    {
-        $declared = $nodeType->getConfiguration('ui.creationDialog.elements');
-        $converted = [];
-        foreach (is_array($declared) ? $declared : [] as $name => $configuration) {
-            $name = (string)$name;
-            $value = $values[$name] ?? null;
-            if ($value === null) {
-                continue;
-            }
-            $type = is_array($configuration) && is_string($configuration['type'] ?? null) ? $configuration['type'] : 'string';
-            $converted[$name] = match (true) {
-                $type === 'reference' || $type === 'references' => self::nodeAggregateIds($name, $value),
-                self::isWritable($type) => $this->convert($name, $type, $value),
-                default => $value,
-            };
-        }
-        return $converted;
-    }
-
-    /**
-     * @throws InvalidPropertyValue
-     */
-    private static function nodeAggregateIds(string $name, mixed $value): NodeAggregateIds
-    {
-        $ids = match (true) {
-            is_string($value) => $value !== '' ? [$value] : [],
-            is_array($value) && array_is_list($value) => $value,
-            default => throw new InvalidPropertyValue(sprintf('The element %s must be a node aggregate id or a list of them', $name)),
-        };
-        try {
-            return NodeAggregateIds::fromArray($ids);
-        } catch (\InvalidArgumentException | \TypeError $exception) {
-            throw new InvalidPropertyValue(sprintf('The element %s must be a node aggregate id or a list of them: %s', $name, $exception->getMessage()));
-        }
-    }
-
-    /**
-     * Whether convert() takes the type
-     */
-    private static function isWritable(string $type): bool
-    {
-        return in_array($type, ['string', 'integer', 'int', 'float', 'double', 'boolean', 'bool', 'array', ...self::DATE_TYPES], true)
-            || self::isAssetType($type)
-            || self::isAssetListType($type);
     }
 
     /**

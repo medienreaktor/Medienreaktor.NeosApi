@@ -7,5 +7,3 @@ Neos:
         prototype: 'Neos.Api:View'
         description: 'A test view'
       removed: ~
-    nodeReadFilters:
-      'Neos.Api:test': 'Neos\Api\Tests\Functional\Fixtures\TitleNodeReadFilter'

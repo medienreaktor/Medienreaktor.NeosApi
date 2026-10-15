@@ -4,10 +4,8 @@ declare(strict_types=1);
 namespace Neos\Api\Endpoint\Nodes;
 
 use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
-use Neos\Api\Endpoint\Nodes\Domain\NodeCreationHandlers;
 use Neos\Api\Endpoint\Nodes\Domain\NodeMoveCommand;
 use Neos\Api\Endpoint\Nodes\Domain\NodeQuery;
-use Neos\Api\Endpoint\Nodes\Domain\NodeReadFilters;
 use Neos\Api\Endpoint\Nodes\Domain\NodeRestoration;
 use Neos\Api\Endpoint\Nodes\Domain\NodeVariation;
 use Neos\Api\Endpoint\Nodes\Domain\SubgraphResolver;
@@ -134,8 +132,6 @@ final readonly class Nodes
         private NodeVariation $nodeVariation,
         private NodeRestoration $nodeRestoration,
         private NodeMoveCommand $nodeMoveCommand,
-        private NodeCreationHandlers $nodeCreationHandlers,
-        private NodeReadFilters $nodeReadFilters,
         private NodeDuplicationService $nodeDuplicationService,
     ) {
     }
@@ -153,7 +149,6 @@ final readonly class Nodes
     public function list(
         ContentRepositoryId $contentRepositoryId,
         ServerRequestInterface $request,
-        #[AuthContext] ApiCaller $caller,
         #[Parameter(in: 'query', description: 'The workspace to read the nodes in, live if omitted')]
         WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'The dimension space point to read the nodes in, as JSON. If omitted, the default one of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name), the only one of a content repository without a site')]
@@ -215,7 +210,6 @@ final readonly class Nodes
             return $unknownNodeTypes;
         }
         [$nodes, $total] = $found;
-        $nodes = $this->nodeReadFilters->apply($nodes, $caller);
         return new PaginatedNodeListing(
             new NodeList(...array_map(fn (ContentGraph\Node $node) => $this->node($node, $include, $hasChildrenOf), $nodes)),
             new ListingMeta($total),
@@ -227,7 +221,7 @@ final readonly class Nodes
         path: '/cr/{contentRepositoryId}/nodes',
         method: 'POST',
         summary: 'Create a node',
-        description: 'Creates a node of the node type below the parent in the workspace, with the dimension space point as its origin (CreateNodeAggregateWithNode): before the succeeding sibling, else as the parent\'s last child, with the given aggregate id, else a new one. The properties are set as for updateNodeProperties, over the node type\'s defaults, a document without uriPathSegment gets one from its title as in the Neos backend. The references are set as for updateNodeReferences right after the node is created: if they can\'t be (e.g. an unknown target), it\'s a 422 and the node stays without them. Tethered child nodes (e.g. a page\'s main collection) are created with it. If neos/neos-ui is installed, the node type\'s node creation handlers (options.nodeCreationHandlers, e.g. Flowpack.NodeTemplates\' templates) run as for the Neos UI\'s creation dialog, with the creation dialog\'s values in elements; the properties given win over what they set, and if one of the commands they add fails, it\'s a 422 and the node stays as far as it got. Without neos/neos-ui elements are ignored. An unknown, abstract or root node type, one the parent doesn\'t allow below it, a sibling that isn\'t a child of the parent or properties that can\'t be written are a 422, an aggregate id that is taken a 409. Whether the account may create the node there is up to its workspace roles and node privileges (else a 403), as in the Neos backend. The response is the new node as getNode returns it without include.',
+        description: 'Creates a node of the node type below the parent in the workspace, with the dimension space point as its origin (CreateNodeAggregateWithNode): before the succeeding sibling, else as the parent\'s last child, with the given aggregate id, else a new one. The properties are set as for updateNodeProperties, over the node type\'s defaults, a document without uriPathSegment gets one from its title as in the Neos backend. The references are set as for updateNodeReferences right after the node is created: if they can\'t be (e.g. an unknown target), it\'s a 422 and the node stays without them. Tethered child nodes (e.g. a page\'s main collection) are created with it. An unknown, abstract or root node type, one the parent doesn\'t allow below it, a sibling that isn\'t a child of the parent or properties that can\'t be written are a 422, an aggregate id that is taken a 409. Whether the account may create the node there is up to its workspace roles and node privileges (else a 403), as in the Neos backend. The response is the new node as getNode returns it without include.',
         operationId: 'createNode',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_CREATE],
@@ -262,7 +256,6 @@ final readonly class Nodes
         $isDocument = UriPathSegments::appliesTo($nodeType);
         $title = $values['title'] ?? null;
         if ($isDocument && !isset($values['uriPathSegment']) && is_string($title)) {
-            // as stated, so it wins over the node creation handlers', see there
             $fromTitle = $this->uriPathSegments->fromText($title, $subgraph->getDimensionSpacePoint());
             if ($fromTitle !== '') {
                 $values['uriPathSegment'] = $fromTitle;
@@ -272,38 +265,23 @@ final readonly class Nodes
         try {
             $propertyValues = $this->propertyValues->toWrite($nodeType, $values);
             $referencesToWrite = $this->propertyValues->referencesToWrite($nodeType, $newNode->references);
-            // without neos/neos-ui there are no handlers to take them
-            $elements = NodeCreationHandlers::areAvailable() ? $this->propertyValues->creationElements($nodeType, $newNode->elements) : [];
         } catch (InvalidPropertyValue $exception) {
             return UnprocessableContent::because($exception->getMessage());
         }
         $nodeAggregateId = $newNode->nodeAggregateId?->toNodeAggregateId() ?? SharedModel\Node\NodeAggregateId::create();
         $origin = OriginDimensionSpacePoint::fromDimensionSpacePoint($subgraph->getDimensionSpacePoint());
         $action = sprintf('create a node below the node %s', $parent->aggregateId->value);
-        try {
-            $commands = $this->nodeCreationHandlers->apply(
-                CreateNodeAggregateWithNode::create(
-                    $parent->workspaceName,
-                    $nodeAggregateId,
-                    $nodeTypeName,
-                    $origin,
-                    $parent->aggregateId,
-                    $newNode->succeedingSiblingNodeAggregateId?->toNodeAggregateId(),
-                    $propertyValues,
-                ),
-                $nodeType,
-                $elements,
-                $newNode->elements,
-                $contentRepository,
-            );
-        } catch (\Exception $exception) {
-            // a handler's own rules or its misconfiguration, as Medienreaktor.NeosApi and the Neos UI report them
-            return UnprocessableContent::because(sprintf('The node creation handlers of the node type %s failed: %s', $nodeTypeName->value, $exception->getMessage()));
-        }
-        /** @var CreateNodeAggregateWithNode $create the handlers keep it first */
-        $create = array_shift($commands);
+        $create = CreateNodeAggregateWithNode::create(
+            $parent->workspaceName,
+            $nodeAggregateId,
+            $nodeTypeName,
+            $origin,
+            $parent->aggregateId,
+            $newNode->succeedingSiblingNodeAggregateId?->toNodeAggregateId(),
+            $propertyValues,
+        );
         if ($isDocument && !isset($create->initialPropertyValues->values['uriPathSegment'])) {
-            // without handlers: from the title, else <node type suffix>-<random number> as in the Neos backend
+            // from the title, else <node type suffix>-<random number> as in the Neos backend
             $title = $create->initialPropertyValues->values['title'] ?? null;
             $create = $create->withInitialPropertyValues($create->initialPropertyValues->withValue(
                 'uriPathSegment',
@@ -321,20 +299,6 @@ final readonly class Nodes
         }
         if ($failed !== null) {
             return $failed;
-        }
-        // what the node creation handlers add, e.g. a template's child nodes
-        foreach ($commands as $command) {
-            try {
-                $failed = $this->send($parent, $action, $command);
-            } catch (\Exception $exception) {
-                $failed = UnprocessableContent::because($exception->getMessage());
-            }
-            if ($failed instanceof UnprocessableContent) {
-                return UnprocessableContent::because(sprintf('The node %s was created without everything its node creation handlers add: %s', $nodeAggregateId->value, $failed->body()->detail));
-            }
-            if ($failed !== null) {
-                return $failed;
-            }
         }
         // CreateNodeAggregateWithNode takes references as well, but doesn't check them (targets, constraints), SetNodeReferences does
         if ($newNode->references !== []) {
