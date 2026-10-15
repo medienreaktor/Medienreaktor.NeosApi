@@ -381,6 +381,75 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
         self::assertNotSame($all['meta']['contentStreamId'], $current['meta']['contentStreamId']);
     }
 
+    #[Test]
+    public function filtersEventsByTypeNodeDocumentAndTag(): void
+    {
+        $this->createTeamWorkspace();
+        $token = $this->token('editor-machine', 'workspaces.read');
+        $this->createPage('team', 'one', self::SITE);
+        $this->createPage('team', 'sub', 'one');
+        $this->handle(SetNodeProperties::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString('one'), self::origin(), PropertyValuesToWrite::fromArray(['title' => 'First'])));
+        $this->handle(SetNodeProperties::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString('sub'), self::origin(), PropertyValuesToWrite::fromArray(['title' => 'Sub'])));
+        $this->handle(TagSubtree::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString(self::PAGE), self::origin()->toDimensionSpacePoint(), NodeVariantSelectionStrategy::STRATEGY_ALL_SPECIALIZATIONS, SubtreeTag::fromString('disabled')));
+        $this->handle(TagSubtree::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString('one'), self::origin()->toDimensionSpacePoint(), NodeVariantSelectionStrategy::STRATEGY_ALL_SPECIALIZATIONS, SubtreeTag::fromString('removed')));
+        $all = self::json($this->get('/api/cr/default/workspaces/team/events?limit=100', $token))['data'];
+        $about = static fn (array $events) => array_map(static fn (array $event) => [$event['type'], $event['payload']['nodeAggregateId'] ?? null], $events);
+        $events = fn (string $query) => self::json($this->get('/api/cr/default/workspaces/team/events?limit=100&' . $query, $token))['data'];
+
+        self::assertSame(
+            [['SubtreeWasTagged', self::PAGE], ['SubtreeWasTagged', 'one']],
+            $about($events('filterByEventType=SubtreeWasTagged,SubtreeWasUntagged')),
+        );
+        self::assertSame([['NodePropertiesWereSet', 'one'], ['NodePropertiesWereSet', 'sub']], $about($events('filterByEventType=NodePropertiesWereSet')));
+        self::assertSame([], $events('filterByEventType=NoSuchEvent'));
+        self::assertSame(
+            array_values(array_filter($about($all), static fn (array $item) => in_array($item[1], ['one', self::PAGE], true))),
+            $about($events('filterByNodeAggregateId=one,' . self::PAGE)),
+        );
+        // the document itself and its content (e.g. what the page's template created in it), not its child document
+        $inOne = $events('filterByDocument=one&include=document');
+        foreach ([['NodeAggregateWithNodeWasCreated', 'one'], ['NodePropertiesWereSet', 'one'], ['SubtreeWasTagged', 'one']] as $expected) {
+            self::assertContains($expected, $about($inOne));
+        }
+        self::assertSame(['one'], array_values(array_unique(array_column(array_column($inOne, 'document'), 'nodeAggregateId'))));
+        self::assertNotContains('sub', array_column($about($inOne), 1));
+        self::assertSame([['SubtreeWasTagged', 'one']], $about($events('filterByTag=removed')));
+        // who deleted the nodes and when: newest first, the tag events of removed of the nodes
+        $removed = $events('filterByTag=removed&filterByEventType=SubtreeWasTagged&filterByNodeAggregateId=one,sub,' . self::PAGE . '&sort=-sequenceNumber');
+        self::assertSame([['SubtreeWasTagged', 'one']], $about($removed));
+        self::assertSame('removed', $removed[0]['payload']['tag']);
+        self::assertSame([], $events('filterByTag=removed&filterByNodeAggregateId=' . self::PAGE));
+        self::assertSame([], $events('filterByTag=removed&filterByEventType=NodePropertiesWereSet'));
+
+        // filtered pages are full and their links work in both directions
+        $expected = array_column(array_values(array_filter($all, static fn (array $event) => ($event['payload']['nodeAggregateId'] ?? null) === 'one')), 'sequenceNumber');
+        self::assertGreaterThan(2, count($expected));
+        foreach (['', '&sort=-sequenceNumber'] as $sort) {
+            $seen = [];
+            $next = '/api/cr/default/workspaces/team/events?limit=1&filterByNodeAggregateId=one' . $sort;
+            for ($pages = 0; $pages < 10; $pages++) {
+                $page = self::json($this->get($next, $token));
+                if ($page['data'] === []) {
+                    break;
+                }
+                self::assertCount(1, $page['data']);
+                array_push($seen, ...array_column($page['data'], 'sequenceNumber'));
+                if ($page['links']['next'] === null) {
+                    break;
+                }
+                self::assertStringContainsString('filterByNodeAggregateId=one', $page['links']['next']);
+                $next = substr($page['links']['next'], strlen('http://localhost'));
+            }
+            self::assertSame($sort === '' ? $expected : array_reverse($expected), $seen, $sort);
+        }
+
+        // their schemas reject them
+        foreach (['filterByEventType=Not-A-Type', 'filterByEventType=', 'filterByNodeAggregateId=Not_An_Id', 'filterByNodeAggregateId=one,', 'filterByDocument=Not_An_Id', 'filterByTag=Removed', 'filterByTag='] as $query) {
+            self::assertSame(400, $this->get('/api/cr/default/workspaces/team/events?' . $query, $token)->getStatusCode(), $query);
+        }
+        self::assertSame(400, $this->get('/api/cr/default/workspaces/team/events?filterByNodeAggregateId=' . implode(',', array_map(static fn (int $i) => 'node-' . $i, range(1, 101))), $token)->getStatusCode());
+    }
+
     private function createTeamWorkspace(string $title = 'Team'): void
     {
         $response = $this->post('/api/cr/default/workspaces', $this->token('editor-machine', 'workspaces.create'), ['title' => $title]);

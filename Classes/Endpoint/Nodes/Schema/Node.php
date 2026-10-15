@@ -11,6 +11,7 @@ use Neos\ContentRepository\Core\Projection\ContentGraph;
 use Neos\JsonSchema\ArraySchema;
 use Neos\JsonSchema\BooleanSchema;
 use Neos\JsonSchema\Nullable;
+use Neos\JsonSchema\NullSchema;
 use Neos\JsonSchema\ObjectSchema;
 use Neos\JsonSchema\ProvidesSchema;
 use Neos\JsonSchema\Schema;
@@ -103,8 +104,29 @@ final readonly class Node implements ProvidesSchema
     public static function schema(): Schema
     {
         static $schema = null;
-        return $schema ??= ObjectSchema::create(
-            description: 'A node in a workspace and dimension space point',
+        return $schema ??= self::objectSchema(
+            'A node in a workspace and dimension space point',
+            Nullable::wrap(ObjectSchema::create(
+                description: 'Only if included (e.g. include=references or children.references), else null: the references the node type declares, by name, each with the referenced nodes in their order (an empty list if there are none) as {"nodeAggregateId": "…", "properties": {…}}, the properties of the reference serialized as the node\'s. With include=references.node each one has the referenced node as well, {"nodeAggregateId": "…", "properties": {…}, "node": {…}}, as getNode returns it without include, null if the account may not read it',
+                examples: [['relatedPages' => [['nodeAggregateId' => 'a3474e1d-dd60-4a84-82b1-18d2f21891a3', 'properties' => new \stdClass()]]]],
+                additionalProperties: ArraySchema::create(
+                    description: 'The referenced nodes of one reference, in their order',
+                    items: self::referenceSchema(),
+                ),
+            )),
+            // the very schema of NodeList, a copy with another description would be no branch the serializer knows
+            Nullable::wrap(NodeList::schema()),
+            Nullable::wrap(BooleanSchema::create(description: 'Only if included (include=hasChildren or children.hasChildren), else null: whether the node has child nodes, of the node types of hasChildrenOfNodeType if given, e.g. for the toggle of a tree')),
+        );
+    }
+
+    /**
+     * The schema of a node, with what may be included: Node's, or the one of a referenced node, which has nothing included
+     */
+    private static function objectSchema(string $description, Schema $references, Schema $nodeList, Schema $hasChildren): ObjectSchema
+    {
+        return ObjectSchema::create(
+            description: $description,
             properties: ObjectProperties::create(
                 contentRepositoryId: ContentRepositoryId::schema(),
                 workspaceName: WorkspaceName::schema(),
@@ -134,19 +156,41 @@ final readonly class Node implements ProvidesSchema
                     examples: [['title' => 'Home', 'image' => ['id' => 'a3474e1d-dd60-4a84-82b1-18d2f21891a3', 'url' => 'https://example.com/_Resources/Persistent/…/image.jpg']]],
                     additionalProperties: true,
                 ),
-                references: Nullable::wrap(ObjectSchema::create(
-                    description: 'Only if included (e.g. include=references or children.references), else null: the references the node type declares, each with the referenced nodes in their order (an empty list if there are none) as {"nodeAggregateId": "…", "properties": {…}}, the properties of the reference serialized as the node\'s. With include=references.node each one has the referenced node as well, {"nodeAggregateId": "…", "properties": {…}, "node": {…}}, as getNode returns it without include, null if the account may not read it',
-                    examples: [['relatedPages' => [['nodeAggregateId' => 'a3474e1d-dd60-4a84-82b1-18d2f21891a3', 'properties' => new \stdClass()]]]],
-                    additionalProperties: true,
-                )),
-                // the very schema of NodeList, a copy with another description would be no branch the serializer knows
-                children: Nullable::wrap(NodeList::schema()),
-                variants: Nullable::wrap(NodeList::schema()),
-                ancestors: Nullable::wrap(NodeList::schema()),
-                hasChildren: Nullable::wrap(BooleanSchema::create(description: 'Only if included (include=hasChildren or children.hasChildren), else null: whether the node has child nodes, of the node types of hasChildrenOfNodeType if given, e.g. for the toggle of a tree')),
+                references: $references,
+                children: $nodeList,
+                variants: $nodeList,
+                ancestors: $nodeList,
+                hasChildren: $hasChildren,
             ),
             additionalProperties: false,
             required: ['contentRepositoryId', 'workspaceName', 'dimensionSpacePoint', 'originDimensionSpacePoint', 'nodeAggregateId', 'name', 'nodeType', 'label', 'classification', 'isHidden', 'isHiddenByAncestor', 'isShineThrough', 'tags', 'inheritedTags', 'timestamps', 'properties', 'references', 'children', 'variants', 'ancestors', 'hasChildren'],
+        );
+    }
+
+    /**
+     * A reference in references, written out: the serializer gets references as an array (NodeSerializer::references())
+     * and validates it against this to tell it from null, which it can't with a $ref, so the referenced node is a copy
+     * of Node with nothing included (its includes are null) instead of a $ref to Node as in NodeList
+     */
+    private static function referenceSchema(): Schema
+    {
+        return ObjectSchema::create(
+            description: 'A referenced node of a reference',
+            properties: ObjectProperties::create(
+                nodeAggregateId: NodeAggregateId::schema(),
+                properties: ObjectSchema::create(
+                    description: 'The properties of the reference, serialized as the node\'s',
+                    additionalProperties: true,
+                ),
+                node: Nullable::wrap(self::objectSchema(
+                    'Only with include=references.node: the referenced node as getNode returns it without include, null if the account may not read it',
+                    NullSchema::create(),
+                    NullSchema::create(),
+                    NullSchema::create(),
+                )),
+            ),
+            additionalProperties: false,
+            required: ['nodeAggregateId', 'properties'],
         );
     }
 

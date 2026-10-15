@@ -94,7 +94,7 @@ class WorkspacesTest extends EndpointTestCase
         $operation = self::json($this->get('/api/openapi.json', null))['paths']['/cr/{contentRepositoryId}/workspaces/{workspaceName}/events']['get'];
         self::assertSame('listWorkspaceEvents', $operation['operationId']);
         self::assertSame(['Workspaces'], $operation['tags']);
-        self::assertSame(['contentRepositoryId', 'workspaceName', 'after', 'limit', 'sort', 'include'], array_column($operation['parameters'], 'name'));
+        self::assertSame(['contentRepositoryId', 'workspaceName', 'after', 'limit', 'sort', 'include', 'filterByEventType', 'filterByNodeAggregateId', 'filterByDocument', 'filterByTag'], array_column($operation['parameters'], 'name'));
     }
 
     #[Test]

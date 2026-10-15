@@ -8,7 +8,10 @@ use Neos\ContentRepository\Core\Feature\ContentStreamEventStreamName;
 use Neos\ContentRepository\Core\Feature\ContentStreamForking\Event\ContentStreamWasForked;
 use Neos\ContentRepository\Core\SharedModel\Workspace\ContentStreamId;
 use Neos\EventStore\EventStoreInterface;
+use Neos\EventStore\Model\Event\EventType;
+use Neos\EventStore\Model\Event\EventTypes;
 use Neos\EventStore\Model\EventEnvelope;
+use Neos\EventStore\Model\EventStream\EventStreamFilter;
 use Neos\EventStore\Model\EventStream\EventStreamInterface;
 
 /**
@@ -25,11 +28,17 @@ final readonly class ContentStreamEvents implements ContentRepositoryServiceInte
     }
 
     /**
-     * The events of the content stream, oldest first (backwards() for newest first)
+     * The events of the content stream, oldest first (backwards() for newest first), with $eventTypes only the ones of
+     * these types (the short names of the event classes), filtered by the event store
+     *
+     * @param list<string>|null $eventTypes
      */
-    public function load(ContentStreamId $contentStreamId): EventStreamInterface
+    public function load(ContentStreamId $contentStreamId, array|null $eventTypes = null): EventStreamInterface
     {
-        return $this->eventStore->load(ContentStreamEventStreamName::fromContentStreamId($contentStreamId)->getEventStreamName());
+        return $this->eventStore->load(
+            ContentStreamEventStreamName::fromContentStreamId($contentStreamId)->getEventStreamName(),
+            $eventTypes !== null ? EventStreamFilter::create(EventTypes::create(...array_map(EventType::fromString(...), $eventTypes))) : null,
+        );
     }
 
     /**

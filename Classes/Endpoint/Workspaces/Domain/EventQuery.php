@@ -3,6 +3,10 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Workspaces\Domain;
 
+use Neos\Api\Endpoint\Nodes\Parameter\NodeAggregateIds;
+use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
+use Neos\Api\Endpoint\Workspaces\Parameter\EventTypes;
+use Neos\Api\Endpoint\Workspaces\Parameter\SubtreeTags;
 use Neos\Api\Endpoint\Workspaces\Schema\Event;
 use Neos\Api\Endpoint\Workspaces\Schema\EventDiff;
 use Neos\Api\Endpoint\Workspaces\Schema\EventList;
@@ -16,19 +20,23 @@ use Neos\Api\Shared\Parameter\Sort;
 use Neos\Api\Shared\Response\BadRequest;
 use Neos\Api\Shared\Schema\CursorListingLinks;
 use Neos\ContentRepository\Core\DimensionSpace\DimensionSpacePoint;
+use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
 use Neos\ContentRepository\Core\SharedModel;
 use Neos\EventStore\Model\EventEnvelope;
 use Neos\EventStore\Model\EventStream\EventStreamInterface;
 use Psr\Http\Message\ServerRequestInterface;
 
 /**
- * The query of listWorkspaceEvents in the event store's terms: sort, after and limit → a page of the content stream's
- * events the account may see
+ * The query of listWorkspaceEvents in the event store's terms: filters, sort, after and limit → a page of the content
+ * stream's events the account may see
  *
  * The event store has no offset and no count, and the sequence numbers have gaps (other streams, pruning), so the
  * page starts after a sequence number. The Doctrine event store reads all events of a query at once, so they are read
- * in batches of limit + 1 until the page is full, events left out don't count. What is included is read for the page
- * only: the diffs by replaying the events before it (EventDiffer), the nodes as for the changes (IncludedNodes)
+ * in batches of limit + 1 until the page is full, events left out don't count. The event store filters by type
+ * (filterByEventType, or the tag events for filterByTag), the other filters are applied here like the permissions,
+ * in larger batches: a filtered page is full unless the content stream ends, and its links work as without filters.
+ * What is included is read for the page only: the diffs by replaying the events before it (EventDiffer, from all the
+ * content stream's events, not only the filtered ones), the nodes as for the changes (IncludedNodes)
  */
 final readonly class EventQuery
 {
@@ -37,19 +45,41 @@ final readonly class EventQuery
      */
     private const array INCLUDE_PATHS = ['diff', ...IncludedNodes::PATHS];
 
+    /**
+     * The events with a tag in their payload, for filterByTag
+     */
+    private const array TAG_EVENT_TYPES = ['SubtreeWasTagged', 'SubtreeWasUntagged'];
+
+    /**
+     * How many events are read at once at least when filters are applied here, which may leave many out
+     */
+    private const int FILTERED_BATCH_SIZE = 500;
+
     private function __construct(
         private bool $newestFirst,
         private SequenceNumber|null $after,
         private Limit $limit,
         private IncludePaths $include,
+        private EventTypes|null $eventTypes,
+        private NodeAggregateIds|null $nodeAggregateIds,
+        private NodeAggregateId|null $document,
+        private SubtreeTags|null $tags,
     ) {
     }
 
     /**
      * The query, a 400 for a sort other than by sequenceNumber or an include it can't include
      */
-    public static function create(SequenceNumber|null $after, Limit $limit, Sort|null $sort, IncludePaths $include): self|BadRequest
-    {
+    public static function create(
+        SequenceNumber|null $after,
+        Limit $limit,
+        Sort|null $sort,
+        IncludePaths $include,
+        EventTypes|null $filterByEventType = null,
+        NodeAggregateIds|null $filterByNodeAggregateId = null,
+        NodeAggregateId|null $filterByDocument = null,
+        SubtreeTags|null $filterByTag = null,
+    ): self|BadRequest {
         $unsupported = $include->unsupported(self::INCLUDE_PATHS);
         if ($unsupported !== null) {
             return $unsupported;
@@ -62,7 +92,18 @@ final readonly class EventQuery
         if ($newestFirst === null) {
             return BadRequest::because(sprintf('Can\'t sort by %s, only by sequenceNumber or -sequenceNumber', $sort?->value));
         }
-        return new self($newestFirst, $after, $limit, $include);
+        return new self($newestFirst, $after, $limit, $include, $filterByEventType, $filterByNodeAggregateId, $filterByDocument, $filterByTag);
+    }
+
+    /**
+     * The event types to read from the event store (short class names), null for all: filterByEventType, else the tag
+     * events for filterByTag
+     *
+     * @return list<string>|null
+     */
+    public function eventTypes(): array|null
+    {
+        return $this->eventTypes?->types() ?? ($this->tags !== null ? self::TAG_EVENT_TYPES : null);
     }
 
     /**
@@ -85,13 +126,19 @@ final readonly class EventQuery
 
     /**
      * The page of the content stream's events, oldest first or with backwards() newest first. Events about a node the
-     * account may not read are left out, the IDs of other nodes it may not read in their payloads are null
+     * account may not read are left out, so are the ones the filters don't match, the IDs of other nodes it may not
+     * read in their payloads are null
      *
      * @param EventStreamInterface $contentStream the content stream's events, oldest first
+     * @param EventStreamInterface|null $selected the ones of eventTypes() if not null, oldest first, else all of them
      */
-    public function page(ServerRequestInterface $request, EventStreamInterface $contentStream, ReadableWorkspace $workspace, EventListingMeta $meta, IncludedNodes $includedNodes, EventDiffer $eventDiffer): PaginatedEventListing
+    public function page(ServerRequestInterface $request, EventStreamInterface $contentStream, EventStreamInterface|null $selected, ReadableWorkspace $workspace, EventListingMeta $meta, IncludedNodes $includedNodes, EventDiffer $eventDiffer): PaginatedEventListing
     {
-        $stream = $this->newestFirst ? $contentStream->backwards() : $contentStream;
+        $selected ??= $contentStream;
+        $stream = $this->newestFirst ? $selected->backwards() : $selected;
+        $filtered = $this->nodeAggregateIds !== null || $this->document !== null || $this->tags !== null;
+        $batchSize = $filtered ? max($this->limit->value + 1, self::FILTERED_BATCH_SIZE) : $this->limit->value + 1;
+        $locator = $this->document !== null ? new ChangeLocator($workspace) : null;
         /** @var list<array{EventEnvelope, array<mixed>|\stdClass}> $events with the decoded payloads */
         $events = [];
         $hasMore = false;
@@ -104,13 +151,19 @@ final readonly class EventQuery
             $page = $next === null ? $stream : ($this->newestFirst
                 ? $stream->withMaximumSequenceNumber(SequenceNumber::fromInteger($next)->toSequenceNumber())
                 : $stream->withMinimumSequenceNumber(SequenceNumber::fromInteger($next)->toSequenceNumber()));
-            $batch = iterator_to_array($page->limit($this->limit->value + 1), false);
+            $batch = iterator_to_array($page->limit($batchSize), false);
             foreach ($batch as $envelope) {
                 $next = $envelope->sequenceNumber->value + ($this->newestFirst ? -1 : 1);
                 // decoded once, for the check and the response
                 $payload = JsonValues::decodeObject($envelope->event->data->value);
                 $nodeAggregateId = is_array($payload) ? ($payload['nodeAggregateId'] ?? null) : null;
+                if (!$this->matchesPayload($payload, $nodeAggregateId)) {
+                    continue;
+                }
                 if (is_string($nodeAggregateId) && !$workspace->mayReadNodeAggregate(SharedModel\Node\NodeAggregateId::fromString($nodeAggregateId))) {
+                    continue;
+                }
+                if ($locator !== null && !$this->isInDocument($locator, $payload, $nodeAggregateId)) {
                     continue;
                 }
                 // one more than the page, so there is a next one
@@ -120,8 +173,46 @@ final readonly class EventQuery
                 }
                 $events[] = [$envelope, $payload];
             }
-        } while (count($batch) === $this->limit->value + 1);
+        } while (count($batch) === $batchSize);
         return $this->listing($request, $this->events($events, $contentStream, $workspace, $includedNodes, $eventDiffer), $meta, $hasMore);
+    }
+
+    /**
+     * Whether the event matches filterByNodeAggregateId and filterByTag, which its payload tells
+     *
+     * @param array<mixed>|\stdClass $payload
+     */
+    private function matchesPayload(array|\stdClass $payload, mixed $nodeAggregateId): bool
+    {
+        if ($this->nodeAggregateIds !== null && (!is_string($nodeAggregateId) || !$this->nodeAggregateIds->contains($nodeAggregateId))) {
+            return false;
+        }
+        if ($this->tags !== null) {
+            $tag = is_array($payload) ? ($payload['tag'] ?? null) : null;
+            return is_string($tag) && $this->tags->contains($tag);
+        }
+        return true;
+    }
+
+    /**
+     * Whether the event's node is the document of filterByDocument or in it (not in a child document): its closest
+     * document now, as for the changes, in the dimension space point the event is about
+     *
+     * @param array<mixed>|\stdClass $payload
+     */
+    private function isInDocument(ChangeLocator $locator, array|\stdClass $payload, mixed $nodeAggregateId): bool
+    {
+        if (!is_string($nodeAggregateId) || !is_array($payload)) {
+            return false;
+        }
+        try {
+            $id = SharedModel\Node\NodeAggregateId::fromString($nodeAggregateId);
+        } catch (\InvalidArgumentException) {
+            return false;
+        }
+        $dimensionSpacePoint = self::dimensionSpacePointOf($payload);
+        $origin = $dimensionSpacePoint !== null ? OriginDimensionSpacePoint::fromDimensionSpacePoint($dimensionSpacePoint) : null;
+        return $locator->locate($id, $origin)['document']?->value === $this->document?->value;
     }
 
     /**

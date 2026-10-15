@@ -172,6 +172,7 @@ class NodesTest extends ContentRepositoryTestCase
             ['filterByReference' => ['nodeAggregateId' => 'some-node']],
             ['filterByReference' => ['nodeAggregateId' => 'some-node', 'name' => 'relatedPages']],
             ['filterByNodeType' => 'Neos.Neos:Document,!Neos.Neos:Shortcut', 'search' => 'neos'],
+            ['filterByNodeAggregateId' => 'some-node,other-node', 'filterByNodeType' => 'Neos.Neos:Document'],
         ] as $query) {
             $response = $this->get(self::listPath($query + ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"de"}']), $token);
             self::assertSame(404, $response->getStatusCode(), json_encode($query) . ': ' . $response->getBody());
@@ -191,8 +192,19 @@ class NodesTest extends ContentRepositoryTestCase
             ['filterByNodeType' => ''],
             ['filterByProperty' => ''],
             ['search' => ''],
+            ['filterByNodeAggregateId' => ''],
+            ['filterByNodeAggregateId' => 'some-node,'],
+            ['filterByNodeAggregateId' => 'Not_An_Id'],
+            ['filterByNodeAggregateId' => implode(',', array_map(static fn (int $i) => 'node-' . $i, range(1, 101)))],
         ] as $query) {
             self::assertSame(400, $this->get(self::listPath($query), $token)->getStatusCode(), json_encode($query));
+        }
+
+        // filterByNodeAggregateId is a query of its own
+        foreach (['filterByHierarchy' => $hierarchy, 'filterByReference' => ['nodeAggregateId' => 'other-node'], 'filterByProperty' => 'title = \'x\'', 'search' => 'neos', 'sort' => 'properties.title'] as $name => $value) {
+            $response = $this->get(self::listPath(['filterByNodeAggregateId' => 'some-node', $name => $value]), $token);
+            self::assertSame(400, $response->getStatusCode(), $name . ': ' . $response->getBody());
+            self::assertSame('filterByNodeAggregateId can\'t be combined with ' . $name, self::json($response)['detail']);
         }
     }
 
@@ -796,6 +808,53 @@ class NodesTest extends ContentRepositoryTestCase
         $references = self::json($this->get(self::path($siteNodeId, self::IN_LIVE + ['include' => 'references.node']), $token))['references']['metaNavigationItems'];
         self::assertSame([$child, $parent], array_column($references, 'nodeAggregateId'));
         self::assertSame([$child, 'Child', null, null], [$references[0]['node']['nodeAggregateId'], $references[0]['node']['label'], $references[0]['node']['references'], $references[0]['node']['children']]);
+    }
+
+    #[Test]
+    public function listsNodesByTheirIds(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create nodes.delete');
+        $first = $this->createPage($token, $siteNodeId, 'First');
+        $second = $this->createPage($token, $siteNodeId, 'Second');
+        $deleted = $this->createPage($token, $siteNodeId, 'Deleted');
+        self::assertSame(204, $this->delete(self::path($deleted, self::IN_LIVE), $token)->getStatusCode());
+        $main = $this->mainCollection($token, $first);
+
+        // in the order of the ids, each once, unknown and deleted ones left out
+        $response = $this->get(self::path('', self::IN_LIVE + ['filterByNodeAggregateId' => implode(',', [$second, 'unknown-node', $first, $deleted, $second, $main]), 'include' => 'ancestors']), $token);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        $listing = self::json($response);
+        self::assertSame([$second, $first, $main], array_column($listing['data'], 'nodeAggregateId'));
+        self::assertSame(['Second', 'First'], [$listing['data'][0]['label'], $listing['data'][1]['label']]);
+        self::assertSame(3, $listing['meta']['total']);
+        self::assertSame([$siteNodeId], array_column($listing['data'][0]['ancestors'], 'nodeAggregateId'));
+
+        // with filterByNodeType and paged
+        $ids = implode(',', [$second, $first, $main]);
+        $listing = self::json($this->get(self::path('', self::IN_LIVE + ['filterByNodeAggregateId' => $ids, 'filterByNodeType' => 'Neos.Neos:Document', 'limit' => '1', 'offset' => '1']), $token));
+        self::assertSame([$first], array_column($listing['data'], 'nodeAggregateId'));
+        self::assertSame(2, $listing['meta']['total']);
+        self::assertNull($listing['links']['next']);
+        $response = $this->get(self::path('', self::IN_LIVE + ['filterByNodeAggregateId' => $ids, 'filterByNodeType' => 'Vendor.Unknown:Type']), $token);
+        self::assertSame(400, $response->getStatusCode(), (string)$response->getBody());
+
+        // deleted ones with includeRemoved
+        self::assertSame([$deleted], array_column(self::json($this->get(self::path('', self::IN_LIVE + ['filterByNodeAggregateId' => $deleted, 'includeRemoved' => 'true']), $token))['data'], 'nodeAggregateId'));
+    }
+
+    #[Test]
+    public function documentsTheItemsOfReferences(): void
+    {
+        $node = self::json($this->get('/api/openapi.json', null))['components']['schemas']['Node'];
+        $references = $node['properties']['references']['anyOf'][0];
+        $reference = $references['additionalProperties']['items'];
+        self::assertSame(['nodeAggregateId', 'properties', 'node'], array_keys($reference['properties']));
+        self::assertSame(['nodeAggregateId', 'properties'], $reference['required']);
+        $referencedNode = $reference['properties']['node']['anyOf'][0];
+        self::assertSame(array_keys($node['properties']), array_keys($referencedNode['properties']));
+        self::assertSame(['type' => 'null'], $referencedNode['properties']['references']);
     }
 
     #[Test]

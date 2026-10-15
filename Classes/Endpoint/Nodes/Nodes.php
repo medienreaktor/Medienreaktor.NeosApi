@@ -10,6 +10,7 @@ use Neos\Api\Endpoint\Nodes\Domain\NodeRestoration;
 use Neos\Api\Endpoint\Nodes\Domain\NodeVariation;
 use Neos\Api\Endpoint\Nodes\Domain\SubgraphResolver;
 use Neos\Api\Endpoint\Nodes\Parameter\HierarchyFilter;
+use Neos\Api\Endpoint\Nodes\Parameter\NodeAggregateIds;
 use Neos\Api\Endpoint\Nodes\Parameter\NodeTypeCriteria;
 use Neos\Api\Endpoint\Nodes\Parameter\PropertyCriteria;
 use Neos\Api\Endpoint\Nodes\Parameter\ReferenceFilter;
@@ -140,7 +141,7 @@ final readonly class Nodes
         path: '/cr/{contentRepositoryId}/nodes',
         method: 'GET',
         summary: 'List nodes',
-        description: 'A page of the nodes in the workspace and dimension space point: with filterByHierarchy the nodes below a node (type childOf its direct child nodes, in their order unless sorted, type descendantOf all of them), with filterByReference the nodes that reference a node, a node once per reference. The two can\'t be combined, each is a query of its own. Without either, all nodes below the site node of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name). filterByNodeType, filterByProperty and search narrow them down. sort takes properties.<name> and timestamps.created, timestamps.lastModified, timestamps.originalCreated, timestamps.originalLastModified. offset and limit (25 by default, 100 at most) choose the page, meta.total and links tell about the others. include, hasChildrenOfNodeType and includeRemoved work as in getNode, for each node. Hidden nodes are visible as in getNode.',
+        description: 'A page of the nodes in the workspace and dimension space point: with filterByHierarchy the nodes below a node (type childOf its direct child nodes, in their order unless sorted, type descendantOf all of them), with filterByReference the nodes that reference a node, a node once per reference. The two can\'t be combined, each is a query of its own. With filterByNodeAggregateId the nodes with these ids, in their order, e.g. to read the labels of several nodes in one request: ids of nodes the workspace and dimension space point don\'t have, or the account may not read, are left out (no 404), filterByNodeType applies, filterByHierarchy, filterByReference, filterByProperty, search and sort can\'t be combined with it. Without any of them, all nodes below the site node of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name). filterByNodeType, filterByProperty and search narrow them down. sort takes properties.<name> and timestamps.created, timestamps.lastModified, timestamps.originalCreated, timestamps.originalLastModified. offset and limit (25 by default, 100 at most) choose the page, meta.total and links tell about the others. include, hasChildrenOfNodeType and includeRemoved work as in getNode, for each node. Hidden nodes are visible as in getNode.',
         operationId: 'listNodes',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_READ],
@@ -159,6 +160,8 @@ final readonly class Nodes
         ReferenceFilter|null $filterByReference = null,
         #[Parameter(in: 'query', description: 'Only nodes of these node types or ones inheriting from them, comma-separated, a ! in front excludes a type and the ones inheriting from it. Unknown node types are a 400')]
         NodeTypeCriteria|null $filterByNodeType = null,
+        #[Parameter(in: 'query', description: 'The nodes with these aggregate ids, comma-separated, at most 100, in their order (limit applies, up to 100), the ones not found or not readable left out. Not with filterByHierarchy, filterByReference, filterByProperty, search or sort')]
+        NodeAggregateIds|null $filterByNodeAggregateId = null,
         #[Parameter(in: 'query', description: 'Only nodes whose properties match, in the content repository\'s syntax, e.g. title *= \'Neos\' AND NOT (hideInMenu = true)')]
         PropertyCriteria|null $filterByProperty = null,
         #[Parameter(in: 'query', description: 'Only nodes with a property containing this text')]
@@ -183,7 +186,7 @@ final readonly class Nodes
         if ($unsupported !== null) {
             return $unsupported;
         }
-        $query = NodeQuery::create($filterByHierarchy, $filterByReference, $filterByNodeType, $filterByProperty, $search, $sort, $offset, $limit);
+        $query = NodeQuery::create($filterByHierarchy, $filterByReference, $filterByNodeType, $filterByNodeAggregateId, $filterByProperty, $search, $sort, $offset, $limit);
         if ($query instanceof BadRequest) {
             return $query;
         }
@@ -195,17 +198,21 @@ final readonly class Nodes
         if (!$subgraph instanceof ContentSubgraphInterface) {
             return $subgraph;
         }
-        $entryPointId = $query->entryPoint();
-        $entryPoint = $entryPointId !== null ? $this->subgraphResolver->resolveNodeIn($subgraph, $entryPointId->toNodeAggregateId()) : $this->defaultSiteNode($subgraph);
-        if (!$entryPoint instanceof ContentGraph\Node) {
-            return $entryPoint;
+        $nodeTypeManager = $this->contentRepositoryRegistry->get($subgraph->getContentRepositoryId())->getNodeTypeManager();
+        if ($query->selectsByNodeAggregateId()) {
+            $found = $query->findByNodeAggregateIds($subgraph, $nodeTypeManager);
+        } else {
+            $entryPointId = $query->entryPoint();
+            $entryPoint = $entryPointId !== null ? $this->subgraphResolver->resolveNodeIn($subgraph, $entryPointId->toNodeAggregateId()) : $this->defaultSiteNode($subgraph);
+            if (!$entryPoint instanceof ContentGraph\Node) {
+                return $entryPoint;
+            }
+            $found = $query->find($entryPoint, $subgraph, $nodeTypeManager);
         }
-        $nodeTypeManager = $this->contentRepositoryRegistry->get($entryPoint->contentRepositoryId)->getNodeTypeManager();
-        $found = $query->find($entryPoint, $subgraph, $nodeTypeManager);
         if ($found instanceof BadRequest) {
             return $found;
         }
-        $unknownNodeTypes = $this->unknownNodeTypes($hasChildrenOf, $entryPoint);
+        $unknownNodeTypes = $this->unknownNodeTypes($hasChildrenOf, $subgraph->getContentRepositoryId());
         if ($unknownNodeTypes !== null) {
             return $unknownNodeTypes;
         }
@@ -352,7 +359,7 @@ final readonly class Nodes
         if (!$node instanceof ContentGraph\Node) {
             return $node;
         }
-        return $this->unknownNodeTypes($hasChildrenOf, $node) ?? $this->node($node, $include, $hasChildrenOf);
+        return $this->unknownNodeTypes($hasChildrenOf, $node->contentRepositoryId) ?? $this->node($node, $include, $hasChildrenOf);
     }
 
     #[Operation(
@@ -1049,11 +1056,11 @@ final readonly class Nodes
     }
 
     /**
-     * The 400 if hasChildrenOfNodeType names node types the node's content repository doesn't have, as filterByNodeType
+     * The 400 if hasChildrenOfNodeType names node types the content repository doesn't have, as filterByNodeType
      */
-    private function unknownNodeTypes(?ContentGraph\Filter\NodeType\NodeTypeCriteria $hasChildrenOf, ContentGraph\Node $node): ?BadRequest
+    private function unknownNodeTypes(?ContentGraph\Filter\NodeType\NodeTypeCriteria $hasChildrenOf, SharedModel\ContentRepository\ContentRepositoryId $contentRepositoryId): ?BadRequest
     {
-        $unknown = $hasChildrenOf !== null ? NodeQuery::unknownNodeTypes($hasChildrenOf, $this->contentRepositoryRegistry->get($node->contentRepositoryId)->getNodeTypeManager()) : [];
+        $unknown = $hasChildrenOf !== null ? NodeQuery::unknownNodeTypes($hasChildrenOf, $this->contentRepositoryRegistry->get($contentRepositoryId)->getNodeTypeManager()) : [];
         return $unknown !== [] ? BadRequest::because(sprintf('There is no node type %s (hasChildrenOfNodeType)', implode(', ', $unknown))) : null;
     }
 

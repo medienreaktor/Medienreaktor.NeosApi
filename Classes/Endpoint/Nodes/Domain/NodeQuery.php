@@ -5,6 +5,7 @@ namespace Neos\Api\Endpoint\Nodes\Domain;
 
 use Neos\Api\Endpoint\Nodes\Parameter\HierarchyFilter;
 use Neos\Api\Endpoint\Nodes\Parameter\HierarchyFilterType;
+use Neos\Api\Endpoint\Nodes\Parameter\NodeAggregateIds;
 use Neos\Api\Endpoint\Nodes\Parameter\NodeTypeCriteria;
 use Neos\Api\Endpoint\Nodes\Parameter\PropertyCriteria;
 use Neos\Api\Endpoint\Nodes\Parameter\ReferenceFilter;
@@ -23,7 +24,8 @@ use Neos\ContentRepository\Core\SharedModel\Node\PropertyName;
 /**
  * The query of listNodes in the content repository's terms: the filters, search, sort, offset and limit of the request as the
  * filter of the subgraph query its entry point needs, the child nodes or descendant nodes (filterByHierarchy), the back
- * references (filterByReference), descendant nodes without an entry point
+ * references (filterByReference), descendant nodes without an entry point. filterByNodeAggregateId is a query of its own,
+ * the nodes looked up one by one (findByNodeAggregateIds())
  */
 final readonly class NodeQuery
 {
@@ -40,22 +42,27 @@ final readonly class NodeQuery
     private function __construct(
         private ?HierarchyFilter $hierarchy,
         private ?ReferenceFilter $reference,
+        private ?NodeAggregateIds $nodeAggregateIds,
         private ?Filter\NodeType\NodeTypeCriteria $nodeTypes,
         private ?Filter\SearchTerm\SearchTerm $searchTerm,
         private ?Filter\PropertyValue\Criteria\PropertyValueCriteriaInterface $propertyValue,
         private ?Filter\Ordering\Ordering $ordering,
         private Filter\Pagination\Pagination $pagination,
+        private Offset $offset,
+        private Limit $limit,
     ) {
     }
 
     /**
-     * The query, a 400 if both filterByHierarchy and filterByReference are given or the sort, filterByProperty or the
-     * syntax of filterByNodeType is invalid. The node types are checked by find(), they are the ones of the entry point's content repository
+     * The query, a 400 if both filterByHierarchy and filterByReference are given, filterByNodeAggregateId with any of
+     * them, filterByProperty, search or sort, or the sort, filterByProperty or the syntax of filterByNodeType is
+     * invalid. The node types are checked by find(), they are the ones of the entry point's content repository
      */
     public static function create(
         ?HierarchyFilter $hierarchy,
         ?ReferenceFilter $reference,
         ?NodeTypeCriteria $nodeTypes,
+        ?NodeAggregateIds $nodeAggregateIds,
         ?PropertyCriteria $properties,
         ?SearchTerm $search,
         ?Sort $sort,
@@ -64,6 +71,12 @@ final readonly class NodeQuery
     ): self|BadRequest {
         if ($hierarchy !== null && $reference !== null) {
             return BadRequest::because('filterByHierarchy and filterByReference can\'t be combined');
+        }
+        if ($nodeAggregateIds !== null) {
+            $others = array_keys(array_filter(['filterByHierarchy' => $hierarchy, 'filterByReference' => $reference, 'filterByProperty' => $properties, 'search' => $search, 'sort' => $sort]));
+            if ($others !== []) {
+                return BadRequest::because(sprintf('filterByNodeAggregateId can\'t be combined with %s', implode(', ', $others)));
+            }
         }
         $invalidSort = self::invalidSort($sort);
         if ($invalidSort !== null) {
@@ -83,12 +96,48 @@ final readonly class NodeQuery
         return new self(
             $hierarchy,
             $reference,
+            $nodeAggregateIds,
             $nodeTypeCriteria,
             $search !== null ? Filter\SearchTerm\SearchTerm::fulltext($search->value) : null,
             $propertyValue,
             self::ordering($sort),
             Filter\Pagination\Pagination::fromLimitAndOffset($limit->value, $offset->value),
+            $offset,
+            $limit,
         );
+    }
+
+    /**
+     * Whether the nodes are selected by their ids (filterByNodeAggregateId): no entry point, findByNodeAggregateIds()
+     * instead of find()
+     */
+    public function selectsByNodeAggregateId(): bool
+    {
+        return $this->nodeAggregateIds !== null;
+    }
+
+    /**
+     * The page of the nodes of filterByNodeAggregateId found in the subgraph, in the order of the ids, and the total;
+     * ids of nodes the subgraph doesn't have, or the account may not read, are left out. A 400 if a node type of
+     * filterByNodeType doesn't exist
+     *
+     * @return array{list<ContentGraph\Node>, int}|BadRequest
+     */
+    public function findByNodeAggregateIds(ContentSubgraphInterface $subgraph, NodeTypeManager $nodeTypeManager): array|BadRequest
+    {
+        $unknownNodeTypes = $this->nodeTypes !== null ? self::unknownNodeTypes($this->nodeTypes, $nodeTypeManager) : [];
+        if ($unknownNodeTypes !== []) {
+            return BadRequest::because(sprintf('There is no node type %s', implode(', ', $unknownNodeTypes)));
+        }
+        $nodeTypes = $this->nodeTypes !== null ? Filter\NodeType\ExpandedNodeTypeCriteria::create($this->nodeTypes, $nodeTypeManager) : null;
+        $nodes = [];
+        foreach ($this->nodeAggregateIds?->toNodeAggregateIds() ?? [] as $nodeAggregateId) {
+            $node = $subgraph->findNodeById($nodeAggregateId);
+            if ($node !== null && ($nodeTypes === null || $nodeTypes->matches($node->nodeTypeName))) {
+                $nodes[] = $node;
+            }
+        }
+        return [array_slice($nodes, $this->offset->value, $this->limit->value), count($nodes)];
     }
 
     /**
