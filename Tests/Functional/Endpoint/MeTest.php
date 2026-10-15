@@ -54,7 +54,7 @@ class MeTest extends EndpointTestCase
                 'contentrepositories.read', 'datasources.read',
                 'me.password', 'me.read', 'me.update',
                 'nodes.create', 'nodes.delete', 'nodes.read', 'nodes.update',
-                'nodetypes.read', 'people.read', 'sites.read', 'views.read',
+                'nodetypes.read', 'sites.read', 'views.read',
                 'workspaces.create', 'workspaces.delete', 'workspaces.publish', 'workspaces.read', 'workspaces.roles', 'workspaces.update',
             ],
         ], self::json($response));

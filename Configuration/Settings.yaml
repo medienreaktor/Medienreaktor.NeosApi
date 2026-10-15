@@ -41,7 +41,6 @@ Neos:
           classes:
             'Neos\Api\Endpoint\Me\Me': true
             'Neos\Api\Endpoint\Users\Users': true
-            'Neos\Api\Endpoint\People\People': true
             'Neos\Api\Endpoint\Sites\Sites': true
             'Neos\Api\Endpoint\ContentRepositories\ContentRepositories': true
             'Neos\Api\Endpoint\Nodes\Nodes': true
@@ -82,10 +81,6 @@ Neos:
         label: 'Users'
         icon: 'resource://Neos.Api/Public/Icons/Scopes/users.svg'
         position: 20
-      "people":
-        label: 'People'
-        icon: 'resource://Neos.Api/Public/Icons/Scopes/address-book.svg'
-        position: 25
       "sites":
         label: 'Sites'
         icon: 'resource://Neos.Api/Public/Icons/Scopes/globe.svg'
