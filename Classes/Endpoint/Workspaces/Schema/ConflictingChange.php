@@ -32,8 +32,8 @@ final readonly class ConflictingChange implements ProvidesSchema
      * @param NodeAggregateId|null $nodeAggregateId the node the change is about, null if it isn't about one
      * @param NodeAggregateId|null $documentAggregateId the document the node is in (or is), to group the conflicts, null if unknown
      * @param NodeAggregateId|null $siteAggregateId the site the node is in, null if unknown
-     * @param string|null $reason node_has_been_deleted if the node was removed in the base workspace, else null
-     * @param string|null $typeOfChange what the change does, as the Neos UI tells it: node_has_been_created, node_has_been_changed (its properties, references, tags or node type), node_has_been_moved or node_has_been_deleted, null for another change
+     * @param string|null $reason why the change conflicts, as the Neos UI's ReasonForConflict: node_has_been_deleted if the node was removed in the base workspace (by someone else), else null
+     * @param string|null $typeOfChange what the conflicting change of this workspace does, as the Neos UI's TypeOfChange: node_has_been_created, node_has_been_changed (its properties, references, tags or node type), node_has_been_moved or node_has_been_deleted (this workspace deletes it), null for another change. Not the same as reason: a change of a node deleted in the base workspace has reason node_has_been_deleted and e.g. typeOfChange node_has_been_changed
      * @param string $message what the content repository says about it
      */
     public function __construct(

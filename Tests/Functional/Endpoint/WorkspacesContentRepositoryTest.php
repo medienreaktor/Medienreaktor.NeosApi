@@ -382,6 +382,80 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
     }
 
     #[Test]
+    public function marksDiffsIncompleteWhereTheValueBeforeIsUnknown(): void
+    {
+        // Neos.Api.workspaceEvents.diffLookback is 5 in Testing
+        $this->createTeamWorkspace();
+        $token = $this->token('editor-machine', 'workspaces.read');
+        $this->createPage('team', 'one', self::SITE);
+        for ($i = 1; $i <= 6; $i++) {
+            $this->handle(SetNodeProperties::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString(self::PAGE), self::origin(), PropertyValuesToWrite::fromArray(['title' => 'Title ' . $i])));
+        }
+        $this->handle(SetNodeProperties::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString('one'), self::origin(), PropertyValuesToWrite::fromArray(['title' => 'Later'])));
+        $diffs = fn (string $nodeAggregateId, string $sort) => array_column(self::json($this->get('/api/cr/default/workspaces/team/events?limit=1&include=diff&filterByEventType=NodePropertiesWereSet&filterByNodeAggregateId=' . $nodeAggregateId . $sort, $token))['data'], 'diff');
+
+        // one was created further back than the events looked back at, and live doesn't have it
+        [$later] = $diffs('one', '');
+        self::assertFalse($later['complete']);
+        self::assertSame([['name' => 'title', 'old' => null, 'new' => 'Later']], $later['properties']);
+        // the page's title before is the one of an earlier event, or live's
+        [$last] = $diffs(self::PAGE, '&sort=-sequenceNumber');
+        self::assertSame([true, 'Title 5', 'Title 6'], [$last['complete'], $last['properties'][0]['old'], $last['properties'][0]['new']]);
+        [$first] = $diffs(self::PAGE, '');
+        self::assertSame([true, self::PAGE, 'Title 1'], [$first['complete'], $first['properties'][0]['old'], $first['properties'][0]['new']]);
+    }
+
+    #[Test]
+    public function readsAtMostMaxReadEventsPerRequest(): void
+    {
+        // Neos.Api.workspaceEvents.maxRead is 40 in Testing
+        $this->createTeamWorkspace();
+        $token = $this->token('editor-machine', 'workspaces.read');
+        $this->createPage('team', 'one', self::SITE);
+        for ($i = 1; $i <= 45; $i++) {
+            $this->handle(SetNodeProperties::create(WorkspaceName::fromString('team'), NodeAggregateId::fromString(self::PAGE), self::origin(), PropertyValuesToWrite::fromArray(['title' => 'Title ' . $i])));
+        }
+        // the pages of a listing newest first, followed by links.next until it ends
+        $pages = function (string $query) use ($token): array {
+            $pages = [];
+            $next = '/api/cr/default/workspaces/team/events?sort=-sequenceNumber&limit=100&' . $query;
+            while ($next !== null && count($pages) < 10) {
+                $page = self::json($this->get($next, $token));
+                $pages[] = $page['data'];
+                $next = $page['links']['next'] !== null ? substr($page['links']['next'], strlen('http://localhost')) : null;
+            }
+            return $pages;
+        };
+
+        $all = $pages('');
+        self::assertCount(40, $all[0]);
+        $all = array_merge(...$all);
+        self::assertGreaterThan(45, count($all));
+        $oldestFirst = self::json($this->get('/api/cr/default/workspaces/team/events?limit=100', $token));
+        self::assertCount(40, $oldestFirst['data']);
+        self::assertStringContainsString('after=' . $oldestFirst['data'][39]['sequenceNumber'], $oldestFirst['links']['next']);
+
+        // the events about one are older than the 40 newest: the first page reads only those and is empty, links.next
+        // goes on after them
+        $aboutOne = $pages('filterByNodeAggregateId=one');
+        self::assertSame([], $aboutOne[0]);
+        self::assertSame(
+            array_column(array_values(array_filter($all, static fn (array $event) => ($event['payload']['nodeAggregateId'] ?? null) === 'one')), 'sequenceNumber'),
+            array_column(array_merge(...$aboutOne), 'sequenceNumber'),
+        );
+
+        // a page with diffs spans at most 40 sequence numbers, the next one replays the events before it
+        $titles = $pages('include=diff&filterByEventType=NodePropertiesWereSet&filterByNodeAggregateId=' . self::PAGE);
+        self::assertGreaterThan(1, count($titles));
+        $first = $titles[0];
+        self::assertLessThanOrEqual(40, $first[0]['sequenceNumber'] - $first[array_key_last($first)]['sequenceNumber'] + 1);
+        $diffs = array_map(static fn (array $event) => [$event['diff']['properties'][0]['old'], $event['diff']['properties'][0]['new']], array_merge(...$titles));
+        self::assertCount(45, $diffs);
+        self::assertSame(['Title 44', 'Title 45'], $diffs[0]);
+        self::assertSame(['Title 1', 'Title 2'], $diffs[43]);
+    }
+
+    #[Test]
     public function filtersEventsByTypeNodeDocumentAndTag(): void
     {
         $this->createTeamWorkspace();

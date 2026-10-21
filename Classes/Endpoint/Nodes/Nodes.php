@@ -142,7 +142,7 @@ final readonly class Nodes
         path: '/cr/{contentRepositoryId}/nodes',
         method: 'GET',
         summary: 'List nodes',
-        description: 'A page of the nodes in the workspace and dimension space point: with filterByHierarchy the nodes below a node (type childOf its direct child nodes, in their order unless sorted, type descendantOf all of them), with filterByReference the nodes that reference a node, a node once per reference. The two can\'t be combined, each is a query of its own. With filterByNodeAggregateId the nodes with these ids, in their order, e.g. to read the labels of several nodes in one request: ids of nodes the workspace and dimension space point don\'t have, or the account may not read, are left out (no 404), filterByNodeType applies, filterByHierarchy, filterByReference, filterByProperty, search and sort can\'t be combined with it. Without any of them, all nodes below the site node of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name). filterByNodeType, filterByProperty and search narrow them down. sort takes properties.<name> and timestamps.created, timestamps.lastModified, timestamps.originalCreated, timestamps.originalLastModified. offset and limit (25 by default, 100 at most) choose the page, meta.total and links tell about the others. include, hasChildrenOfNodeType and includeRemoved work as in getNode, for each node. Hidden nodes are visible as in getNode.',
+        description: 'A page of the nodes in the workspace and dimension space point: with filterByHierarchy the nodes below a node (type childOf its direct child nodes, in their order unless sorted, type descendantOf all of them), with filterByReference the nodes that reference a node, a node once per reference. The two can\'t be combined, each is a query of its own. With filterByNodeAggregateId the nodes with these ids, in their order, all on one page unless limit is given, e.g. to read the labels of several nodes in one request: ids of nodes the workspace and dimension space point don\'t have, or the account may not read, are left out (no 404), filterByNodeType applies, filterByHierarchy, filterByReference, filterByProperty, search and sort can\'t be combined with it. Without any of them, all nodes below the site node of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name). filterByNodeType, filterByProperty and search narrow them down. sort takes properties.<name> and timestamps.created, timestamps.lastModified, timestamps.originalCreated, timestamps.originalLastModified. offset and limit (25 by default, 100 at most) choose the page, meta.total and links tell about the others. include, hasChildrenOfNodeType and includeRemoved work as in getNode, for each node. Hidden nodes are visible as in getNode.',
         operationId: 'listNodes',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_READ],
@@ -161,7 +161,7 @@ final readonly class Nodes
         ReferenceFilter|null $filterByReference = null,
         #[Parameter(in: 'query', description: 'Only nodes of these node types or ones inheriting from them, comma-separated, a ! in front excludes a type and the ones inheriting from it. Unknown node types are a 400')]
         NodeTypeCriteria|null $filterByNodeType = null,
-        #[Parameter(in: 'query', description: 'The nodes with these aggregate ids, comma-separated, at most 100, in their order (limit applies, up to 100), the ones not found or not readable left out. Not with filterByHierarchy, filterByReference, filterByProperty, search or sort')]
+        #[Parameter(in: 'query', description: 'The nodes with these aggregate ids, comma-separated, at most 100, in their order (all on one page unless limit is given), the ones not found or not readable left out. Not with filterByHierarchy, filterByReference, filterByProperty, search or sort')]
         NodeAggregateIds|null $filterByNodeAggregateId = null,
         #[Parameter(in: 'query', description: 'Only nodes whose properties match, in the content repository\'s syntax, e.g. title *= \'Neos\' AND NOT (hideInMenu = true)')]
         PropertyCriteria|null $filterByProperty = null,
@@ -171,7 +171,7 @@ final readonly class Nodes
         Sort|null $sort = null,
         #[Parameter(in: 'query', description: 'How many items to skip, 0 if omitted')]
         Offset|null $offset = null,
-        #[Parameter(in: 'query', description: 'How many items at most, 25 if omitted, 100 at most')]
+        #[Parameter(in: 'query', description: 'How many items at most, 25 if omitted (with filterByNodeAggregateId as many as it has), 100 at most')]
         Limit|null $limit = null,
         #[Parameter(in: 'query', description: 'What to include beyond each node\'s own fields, comma-separated: references, references.node, children, children.references, children.hasChildren, variants, variants.references, ancestors, hasChildren')]
         IncludePaths|null $include = null,
@@ -181,7 +181,8 @@ final readonly class Nodes
         bool $includeRemoved = false,
     ): PaginatedNodeListing|NotFound|BadRequest {
         $offset ??= Offset::none();
-        $limit ??= Limit::default();
+        // all the nodes asked for by their ids on one page, unless a limit says otherwise
+        $limit ??= $filterByNodeAggregateId !== null ? Limit::fromInteger(count($filterByNodeAggregateId->toNodeAggregateIds())) : Limit::default();
         $include ??= IncludePaths::none();
         $unsupported = $include->unsupported(self::INCLUDE_PATHS);
         if ($unsupported !== null) {
@@ -419,7 +420,7 @@ final readonly class Nodes
         if (!UriPathSegments::appliesTo($nodeType)) {
             return UnprocessableContent::because(sprintf('The node %s is no document with a uriPathSegment property', $node->aggregateId->value));
         }
-        $uriPathSegment = $this->uriPathSegmentOf($node, $source->text, withLabel: false);
+        $uriPathSegment = $this->uriPathSegmentOf($node, $source->text);
         if ($uriPathSegment === '') {
             return UnprocessableContent::because(sprintf('There is nothing to generate the uriPathSegment of the node %s from, it has no title', $node->aggregateId->value));
         }
@@ -430,7 +431,7 @@ final readonly class Nodes
         path: '/cr/{contentRepositoryId}/nodes/{nodeAggregateId}/uripathsegment',
         method: 'GET',
         summary: 'Preview the URI path segment of a node',
-        description: 'The uriPathSegment generateNodeUriPathSegment would set, without setting it, e.g. while a title is typed: generated from the text, else from the node\'s title property, else its label, transliterated in the language of the dimension space point in the same way. A node without a uriPathSegment property gets one as well. Nothing to generate it from (e.g. "!!!") is a 422.',
+        description: 'The uriPathSegment generateNodeUriPathSegment would set, without setting it, e.g. while a title is typed: generated from the text, else from the node\'s title, transliterated in the language of the dimension space point in the same way. As there, a node that isn\'t a document with a uriPathSegment property or nothing to generate it from (no text and no title, or e.g. "!!!") is a 422.',
         operationId: 'getNodeUriPathSegment',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_READ],
@@ -443,27 +444,34 @@ final readonly class Nodes
         WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'The dimension space point to read the node in, its language the one to transliterate in, as JSON. If omitted, as for getNode')]
         DimensionSpacePoint|null $dimensionSpacePoint = null,
-        #[Parameter(in: 'query', description: 'The text to generate it from, e.g. a title not saved yet. If omitted or empty, the node\'s title, else its label')]
+        #[Parameter(in: 'query', description: 'The text to generate it from, e.g. a title not saved yet. If omitted or empty, the node\'s title')]
         string|null $text = null,
     ): UriPathSegment|NotFound|BadRequest|UnprocessableContent {
         $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
         if (!$node instanceof ContentGraph\Node) {
             return $node;
         }
-        $uriPathSegment = $this->uriPathSegmentOf($node, $text, withLabel: true);
+        $nodeType = $this->nodeType($node);
+        if (!$nodeType instanceof NodeType\NodeType) {
+            return $nodeType;
+        }
+        if (!UriPathSegments::appliesTo($nodeType)) {
+            return UnprocessableContent::because(sprintf('The node %s is no document with a uriPathSegment property', $node->aggregateId->value));
+        }
+        $uriPathSegment = $this->uriPathSegmentOf($node, $text);
         return $uriPathSegment !== ''
             ? new UriPathSegment($uriPathSegment)
             : UnprocessableContent::because(sprintf('There is nothing to generate the uriPathSegment of the node %s from', $node->aggregateId->value));
     }
 
     /**
-     * The uriPathSegment generated for the node as the Neos backend's "sync" button does: from the text, else its title
-     * (and with $withLabel its label), '' if there is nothing to generate it from
+     * The uriPathSegment generated for the node as the Neos backend's "sync" button does: from the text, else its title,
+     * '' if there is nothing to generate it from
      */
-    private function uriPathSegmentOf(ContentGraph\Node $node, ?string $text, bool $withLabel): string
+    private function uriPathSegmentOf(ContentGraph\Node $node, ?string $text): string
     {
         $title = $node->getProperty('title');
-        foreach ([$text, is_string($title) ? $title : null, $withLabel ? $this->nodeSerializer->label($node) : null] as $source) {
+        foreach ([$text, is_string($title) ? $title : null] as $source) {
             if ($source !== null && trim($source) !== '') {
                 return $this->uriPathSegments->fromText($source, $node->dimensionSpacePoint);
             }

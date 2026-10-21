@@ -2,6 +2,10 @@ Neos:
   OAuth:
     issuer: 'http://localhost'
   Api:
+    workspaceEvents:
+      # small, so the tests reach it
+      maxRead: 40
+      diffLookback: 5
     views:
       navigation:
         prototype: 'Neos.Api:View'

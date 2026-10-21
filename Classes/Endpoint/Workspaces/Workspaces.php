@@ -88,6 +88,7 @@ use Neos\Neos\Fusion\Cache\ContentCacheFlusher;
 use Neos\Neos\Fusion\Cache\FlushWorkspaceRequest;
 use Neos\Flow\Security\Account;
 use Neos\OpenApi\Attributes\AuthContext;
+use Neos\Flow\Annotations as Flow;
 use Neos\OpenApi\Attributes\Operation;
 use Neos\OpenApi\Attributes\Parameter;
 use Neos\OpenApi\Attributes\RequestBody;
@@ -99,6 +100,16 @@ use Psr\Http\Message\ServerRequestInterface;
  */
 final readonly class Workspaces
 {
+    /**
+     * How many events listWorkspaceEvents reads at most (Neos.Api.workspaceEvents.maxRead), see EventQuery
+     */
+    private int $maxEventsRead;
+
+    /**
+     * How many events before a page its diffs replay (Neos.Api.workspaceEvents.diffLookback), see EventDiffer
+     */
+    private int $eventDiffLookback;
+
     public function __construct(
         private ContentRepositoryFinder $contentRepositoryFinder,
         private ContentRepositoryRegistry $contentRepositoryRegistry,
@@ -110,7 +121,13 @@ final readonly class Workspaces
         private WorkspaceRoleSubjects $workspaceRoleSubjects,
         private ContentSubgraphs $contentSubgraphs,
         private NodeSerializer $nodeSerializer,
+        #[Flow\InjectConfiguration(path: 'workspaceEvents.maxRead')]
+        int|null $maxEventsRead = null,
+        #[Flow\InjectConfiguration(path: 'workspaceEvents.diffLookback')]
+        int|null $eventDiffLookback = null,
     ) {
+        $this->maxEventsRead = $maxEventsRead ?? EventQuery::DEFAULT_MAX_READ;
+        $this->eventDiffLookback = max(0, $eventDiffLookback ?? EventDiffer::DEFAULT_LOOKBACK);
     }
 
     #[Operation(
@@ -969,7 +986,7 @@ final readonly class Workspaces
         path: '/cr/{contentRepositoryId}/workspaces/{workspaceName}/events',
         method: 'GET',
         summary: 'List the events of a workspace',
-        description: 'The events of the workspace\'s current content stream: what was changed in it since it was created or last published, discarded or rebased, which each start a new content stream. Oldest first, sort=-sequenceNumber for newest first (sequenceNumber is the only field to sort by). filterByEventType keeps the events of these types, filterByNodeAggregateId the ones about these nodes (the payload\'s nodeAggregateId), filterByDocument the ones in a document (about the document itself and its content, not its child documents: the closest document of the payload\'s node now, as documentAggregateId of the changes), filterByTag the SubtreeWasTagged and SubtreeWasUntagged events of these tags. The filters combine, e.g. filterByTag=removed&filterByEventType=SubtreeWasTagged&filterByNodeAggregateId=… and sort=-sequenceNumber for when and by whom (metadata.initiatingUserId) nodes were deleted. A filtered page is filled with the events that match as an unfiltered one, after and links work the same. The workspace must be one the account may read, by its workspace roles or as the owner. Events about a node the account may not read are left out. Events about a node that no longer exists in the workspace, e.g. its removal, are listed: it has no permissions left to check. In the events listed, the IDs of other nodes the account may not read (parent, siblings, reference targets, tethered children: every value of a payload key ending in nodeAggregateId or nodeAggregateIds) are null. after and limit (25 by default, 100 at most) choose the page: after is the sequenceNumber of the last event of the page before in the listing\'s order (so newer events oldest first, older ones newest first). Newest first, links.next continues after this page and is null on the last one. Oldest first, links.next is always there, after the last event of the page or, on an empty page, with the same after: a client polling for new events follows it. meta.contentStreamId is the content stream the events are from, meta.forkedFrom where it branched off its base workspace\'s (null for one that wasn\'t forked, e.g. live\'s). include=diff adds what each event changed about its node compared to just before it (diff, null if not included): the value before is the one the latest earlier event of the content stream set (looking back 1000 events before the page at most), else the base workspace\'s. include=node adds the node of the payload\'s nodeAggregateId and include=document its closest document, as getNode returns them now (not as they were then): in the dimension space point the event is about (a new variant\'s origin, the node\'s origin, else the first it affects, else one the aggregate covers), deleted nodes included, else from the base workspace, null if there is none the account may read; node.ancestors and document.ancestors add their ancestors. An after lower than the sequenceNumber of the current content stream\'s first event is from an earlier one: the workspace was published, discarded or rebased since, the events the client has are no longer the workspace\'s, and it is a 409, the client starts over without after.',
+        description: 'The events of the workspace\'s current content stream: what was changed in it since it was created or last published, discarded or rebased, which each start a new content stream. Oldest first, sort=-sequenceNumber for newest first (sequenceNumber is the only field to sort by). filterByEventType keeps the events of these types, filterByNodeAggregateId the ones about these nodes (the payload\'s nodeAggregateId), filterByDocument the ones in a document (about the document itself and its content, not its child documents: the closest document of the payload\'s node now, as documentAggregateId of the changes), filterByTag the SubtreeWasTagged and SubtreeWasUntagged events of these tags. The filters combine, e.g. filterByTag=removed&filterByEventType=SubtreeWasTagged&filterByNodeAggregateId=… and sort=-sequenceNumber for when and by whom (metadata.initiatingUserId) nodes were deleted. A request reads at most 10000 events (Neos.Api.workspaceEvents.maxRead), and a page with include=diff spans at most as many sequence numbers: a page that gets there ends before it is full, filtered ones may even be empty, and links.next continues after the last event read. So a client follows links.next (newest first until it is null), it doesn\'t stop at a short or empty page or take after from the last event listed. The workspace must be one the account may read, by its workspace roles or as the owner. Events about a node the account may not read are left out. Events about a node that no longer exists in the workspace, e.g. its removal, are listed: it has no permissions left to check. In the events listed, the IDs of other nodes the account may not read (parent, siblings, reference targets, tethered children: every value of a payload key ending in nodeAggregateId or nodeAggregateIds) are null. after and limit (25 by default, 100 at most) choose the page: after is a sequenceNumber, the page has the events after it in the listing\'s order (so newer events oldest first, older ones newest first), links.next has the one of the last event read. Newest first, links.next continues after this page and is null on the last one. Oldest first, links.next is always there, after the last event read or, if there was none, with the same after: a client polling for new events follows it. meta.contentStreamId is the content stream the events are from, meta.forkedFrom where it branched off its base workspace\'s (null for one that wasn\'t forked, e.g. live\'s). include=diff adds what each event changed about its node compared to just before it (diff, null if not included): the value before is the one the latest earlier event of the content stream set (looking back 1000 events before the page at most, Neos.Api.workspaceEvents.diffLookback), else the base workspace\'s current one; where neither has it (no base workspace, as for live, or a node created before the events looked back at) it is unknown and diff.complete is false. include=node adds the node of the payload\'s nodeAggregateId and include=document its closest document, as getNode returns them now (not as they were then): in the dimension space point the event is about (a new variant\'s origin, the node\'s origin, else the first it affects, else one the aggregate covers), deleted nodes included, else from the base workspace, null if there is none the account may read; node.ancestors and document.ancestors add their ancestors. An after lower than the sequenceNumber of the current content stream\'s first event is from an earlier one: the workspace was published, discarded or rebased since, the events the client has are no longer the workspace\'s, and it is a 409, the client starts over without after.',
         operationId: 'listWorkspaceEvents',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::WORKSPACES_READ],
@@ -997,7 +1014,7 @@ final readonly class Workspaces
         #[Parameter(in: 'query', description: 'Only the SubtreeWasTagged and SubtreeWasUntagged events of these tags, comma-separated, e.g. removed for deletions and restorations, disabled for hiding and showing')]
         SubtreeTags|null $filterByTag = null,
     ): PaginatedEventListing|BadRequest|NotFound|Conflict {
-        $query = EventQuery::create($after, $limit ?? Limit::default(), $sort, $include ?? IncludePaths::none(), $filterByEventType, $filterByNodeAggregateId, $filterByDocument, $filterByTag);
+        $query = EventQuery::create($after, $limit ?? Limit::default(), $sort, $include ?? IncludePaths::none(), $filterByEventType, $filterByNodeAggregateId, $filterByDocument, $filterByTag, $this->maxEventsRead);
         if ($query instanceof BadRequest) {
             return $query;
         }
@@ -1021,7 +1038,7 @@ final readonly class Workspaces
             $workspace,
             $meta,
             IncludedNodes::for($query->include(), $workspace, $this->contentSubgraphs, $this->nodeSerializer, $this->contentRepositoryRegistry),
-            new EventDiffer($workspace, $this->nodeSerializer),
+            new EventDiffer($workspace, $this->nodeSerializer, $this->eventDiffLookback),
         );
     }
 

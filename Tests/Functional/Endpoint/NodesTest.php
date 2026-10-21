@@ -863,6 +863,9 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(['Second', 'First'], [$listing['data'][0]['label'], $listing['data'][1]['label']]);
         self::assertSame(3, $listing['meta']['total']);
         self::assertSame([$siteNodeId], array_column($listing['data'][0]['ancestors'], 'nodeAggregateId'));
+        // without a limit, as many as there are ids: all on one page
+        self::assertStringContainsString('limit=5', $listing['links']['self']);
+        self::assertNull($listing['links']['next']);
 
         // with filterByNodeType and paged
         $ids = implode(',', [$second, $first, $main]);
@@ -1001,6 +1004,10 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(422, $response->getStatusCode(), (string)$response->getBody());
         // nothing was set
         self::assertSame('uber-uns', self::json($this->get(self::path($page, $inGerman), $token))['properties']['uriPathSegment']);
+        // as generateNodeUriPathSegment, only for documents with a uriPathSegment
+        $response = $this->get(self::path($this->mainCollection($token, $page) . '/uripathsegment', self::IN_LIVE + ['text' => 'Main']), $token);
+        self::assertSame(422, $response->getStatusCode(), (string)$response->getBody());
+        self::assertStringContainsString('no document with a uriPathSegment property', self::json($response)['detail']);
     }
 
     /**

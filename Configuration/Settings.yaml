@@ -9,6 +9,14 @@ Neos:
     #     # instead of failing the view with a 500
     #     renderErrors: false
     # A view is removed by setting it to ~
+    workspaceEvents:
+      # How many events one request of listWorkspaceEvents reads at most, and how many sequence numbers a page with
+      # include=diff spans at most (they are replayed for the diffs): a page that gets there ends early, links.next
+      # continues. Keeps a filtered request on a long content stream (e.g. live's) from reading all of it
+      maxRead: 10000
+      # How many events before a page include=diff replays at most to find the values before: earlier ones are taken
+      # from the base workspace (EventDiff.complete is false where it doesn't have them)
+      diffLookback: 1000
     views:
       documentNodesTree:
         prototype: "Neos.Api:View.DocumentNodesTree"

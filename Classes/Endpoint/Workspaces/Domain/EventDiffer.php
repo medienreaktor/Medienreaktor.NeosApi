@@ -30,20 +30,23 @@ use Neos\Flow\Annotations as Flow;
  * Events of a content stream → what each changed about its node compared to just before it (events, not state), for
  * listWorkspaceEvents' include=diff, for one request
  *
- * The events are replayed oldest first from some events before the diffed ones (LOOKBACK), keeping what they set of
+ * The events are replayed oldest first from some events before the diffed ones ($lookback), keeping what they set of
  * each node: its properties and references per origin dimension space point, its node type, name and parent. A value
- * no event set is the base workspace's then, read as ChangeDiffer reads it (without visibility constraints, compared
- * by the serialized values), unless the node or variant was created in the stream: it had none. A variant created in
- * the stream has its source's values. The payloads are the content repository's (see EventQuery), read by their keys
- * as the event classes serialize them
+ * no event set is the base workspace's current one, read as ChangeDiffer reads it (without visibility constraints,
+ * compared by the serialized values), unless the node or variant was created in the stream: it had none. A variant
+ * created in the stream has its source's values. If the base workspace doesn't have the node either (there is none,
+ * as for live, or the node was created before the events replayed), the value before is unknown: the diff is
+ * incomplete. The payloads are the content repository's (see EventQuery), read by their keys as the event classes
+ * serialize them
  */
 #[Flow\Proxy(false)]
 final class EventDiffer
 {
     /**
-     * How many events before the diffed ones are replayed at most: earlier values are taken from the base workspace
+     * How many events before the diffed ones are replayed at most, unless the settings say otherwise
+     * (Neos.Api.workspaceEvents.diffLookback): earlier values are taken from the base workspace
      */
-    public const int LOOKBACK = 1000;
+    public const int DEFAULT_LOOKBACK = 1000;
 
     /**
      * @var array<string, array<string, array<string, mixed>>> the plain property values set (null unset), by node aggregate id, origin hash and name
@@ -85,9 +88,18 @@ final class EventDiffer
      */
     private array $baseSubgraphs = [];
 
+    /**
+     * Whether a value before of the event diffed now is unknown, see diffOf()
+     */
+    private bool $unknownBefore = false;
+
+    /**
+     * @param int $lookback how many events before the diffed ones are replayed at most
+     */
     public function __construct(
         private readonly ReadableWorkspace $workspace,
         private readonly NodeSerializer $nodeSerializer,
+        public readonly int $lookback = self::DEFAULT_LOOKBACK,
     ) {
     }
 
@@ -120,7 +132,8 @@ final class EventDiffer
      */
     private function diffOf(string $type, string $node, array $payload): EventDiff
     {
-        return match ($type) {
+        $this->unknownBefore = false;
+        $diff = match ($type) {
             'NodePropertiesWereSet' => $this->propertiesSet($node, $payload),
             'NodeAggregateWithNodeWasCreated' => $this->nodeCreated($payload),
             'NodeReferencesWereSet' => $this->referencesSet($node, $payload),
@@ -130,6 +143,7 @@ final class EventDiffer
             'SubtreeWasTagged', 'SubtreeWasUntagged' => self::tagged($type === 'SubtreeWasTagged', $payload),
             default => EventDiff::none(),
         };
+        return $this->unknownBefore ? $diff->incomplete() : $diff;
     }
 
     /**
@@ -225,7 +239,7 @@ final class EventDiffer
                 $diffs[] = new PropertyDiff($name, $this->nodeSerializer->serializedValue($old), $this->nodeSerializer->serializedValue($value));
             }
         }
-        return new EventDiff(null, null, null, new PropertyDiffList(...$diffs), new ReferenceDiffList(), null);
+        return new EventDiff(null, null, null, new PropertyDiffList(...$diffs), new ReferenceDiffList(), null, true);
     }
 
     /**
@@ -250,7 +264,7 @@ final class EventDiffer
                 $references[] = new ReferenceDiff($name, [], $new);
             }
         }
-        return new EventDiff(null, null, null, new PropertyDiffList(...$properties), new ReferenceDiffList(...$references), null);
+        return new EventDiff(null, null, null, new PropertyDiffList(...$properties), new ReferenceDiffList(...$references), null, true);
     }
 
     /**
@@ -272,7 +286,7 @@ final class EventDiffer
                 $diffs[] = new ReferenceDiff($name, $old, $new);
             }
         }
-        return new EventDiff(null, null, null, new PropertyDiffList(), new ReferenceDiffList(...$diffs), null);
+        return new EventDiff(null, null, null, new PropertyDiffList(), new ReferenceDiffList(...$diffs), null, true);
     }
 
     /**
@@ -282,10 +296,13 @@ final class EventDiffer
     {
         $new = $payload['newNodeTypeName'] ?? null;
         $old = $this->nodeTypeNames[$node] ?? $this->baseNodeAggregate($node)?->nodeTypeName->value;
+        if ($old === null) {
+            $this->unknownBefore = true;
+        }
         if (!is_string($new) || $old === null || $old === $new) {
             return EventDiff::none();
         }
-        return new EventDiff(new NodeTypeDiff(NodeTypeName::fromString($old), NodeTypeName::fromString($new)), null, null, new PropertyDiffList(), new ReferenceDiffList(), null);
+        return new EventDiff(new NodeTypeDiff(NodeTypeName::fromString($old), NodeTypeName::fromString($new)), null, null, new PropertyDiffList(), new ReferenceDiffList(), null, true);
     }
 
     /**
@@ -294,12 +311,21 @@ final class EventDiffer
     private function nodeNameChanged(string $node, array $payload): EventDiff
     {
         $new = is_string($payload['newNodeName'] ?? null) ? $payload['newNodeName'] : null;
-        $old = array_key_exists($node, $this->nodeNames) ? $this->nodeNames[$node] : $this->baseNodeAggregate($node)?->nodeName?->value;
+        if (array_key_exists($node, $this->nodeNames)) {
+            $old = $this->nodeNames[$node];
+        } else {
+            $baseNodeAggregate = $this->baseNodeAggregate($node);
+            if ($baseNodeAggregate === null) {
+                $this->unknownBefore = true;
+                return EventDiff::none();
+            }
+            $old = $baseNodeAggregate->nodeName?->value;
+        }
         if ($old === $new) {
             return EventDiff::none();
         }
         $diff = new NodeNameDiff($old !== null ? NodeName::fromString($old) : null, $new !== null ? NodeName::fromString($new) : null);
-        return new EventDiff(null, $diff, null, new PropertyDiffList(), new ReferenceDiffList(), null);
+        return new EventDiff(null, $diff, null, new PropertyDiffList(), new ReferenceDiffList(), null, true);
     }
 
     /**
@@ -318,10 +344,13 @@ final class EventDiffer
             $coverage = self::coordinates(((array)($payload['succeedingSiblingsForCoverage'] ?? []))[0]['dimensionSpacePoint'] ?? null);
             $old = $coverage !== null ? $this->baseSubgraph($coverage)?->findParentNode(SharedModel\Node\NodeAggregateId::fromString($node))?->aggregateId->value : null;
         }
+        if ($old === null) {
+            $this->unknownBefore = true;
+        }
         if ($old === null || $old === $new || $this->readable([$old, $new]) !== [$old, $new]) {
             return EventDiff::none();
         }
-        return new EventDiff(null, null, new NodeAggregateIdDiff(NodeAggregateId::fromString($old), NodeAggregateId::fromString($new)), new PropertyDiffList(), new ReferenceDiffList(), null);
+        return new EventDiff(null, null, new NodeAggregateIdDiff(NodeAggregateId::fromString($old), NodeAggregateId::fromString($new)), new PropertyDiffList(), new ReferenceDiffList(), null, true);
     }
 
     /**
@@ -333,7 +362,7 @@ final class EventDiffer
         if (!is_string($tag)) {
             return EventDiff::none();
         }
-        return new EventDiff(null, null, null, new PropertyDiffList(), new ReferenceDiffList(), $tagged ? new TagDiff([$tag], []) : new TagDiff([], [$tag]));
+        return new EventDiff(null, null, null, new PropertyDiffList(), new ReferenceDiffList(), $tagged ? new TagDiff([$tag], []) : new TagDiff([], [$tag]), true);
     }
 
     /**
@@ -350,7 +379,12 @@ final class EventDiffer
         if ($this->created[$node][$hash] ?? false) {
             return null;
         }
-        return $this->baseNode($node, $this->baseOrigins[$node][$hash] ?? $origin)?->properties->serialized()->getProperty($name)?->value;
+        $baseNode = $this->baseNode($node, $this->baseOrigins[$node][$hash] ?? $origin);
+        if ($baseNode === null) {
+            $this->unknownBefore = true;
+            return null;
+        }
+        return $baseNode->properties->serialized()->getProperty($name)?->value;
     }
 
     /**
@@ -369,7 +403,8 @@ final class EventDiffer
             return [];
         }
         $baseSubgraph = $this->baseSubgraph($this->baseOrigins[$node][$hash] ?? $origin);
-        if ($baseSubgraph === null) {
+        if ($baseSubgraph?->findNodeById(SharedModel\Node\NodeAggregateId::fromString($node)) === null) {
+            $this->unknownBefore = true;
             return [];
         }
         $targets = [];

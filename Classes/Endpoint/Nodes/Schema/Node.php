@@ -107,7 +107,7 @@ final readonly class Node implements ProvidesSchema
         return $schema ??= self::objectSchema(
             'A node in a workspace and dimension space point',
             Nullable::wrap(ObjectSchema::create(
-                description: 'Only if included (e.g. include=references or children.references), else null: the references the node type declares, by name, each with the referenced nodes in their order (an empty list if there are none) as {"nodeAggregateId": "…", "properties": {…}}, the properties of the reference serialized as the node\'s. With include=references.node each one has the referenced node as well, {"nodeAggregateId": "…", "properties": {…}, "node": {…}}, as getNode returns it without include, null if the account may not read it',
+                description: 'Only if included (e.g. include=references or children.references), else null: the references the node type declares, by name, each with the referenced nodes in their order (an empty list if there are none) as {"nodeAggregateId": "…", "properties": {…}}, the properties of the reference serialized as the node\'s. With include=references.node each one has the referenced node as well, {"nodeAggregateId": "…", "properties": {…}, "node": {…}}, as getNode returns it without include. Only the referenced nodes the account may read are listed',
                 examples: [['relatedPages' => [['nodeAggregateId' => 'a3474e1d-dd60-4a84-82b1-18d2f21891a3', 'properties' => new \stdClass()]]]],
                 additionalProperties: ArraySchema::create(
                     description: 'The referenced nodes of one reference, in their order',
@@ -183,7 +183,7 @@ final readonly class Node implements ProvidesSchema
                     additionalProperties: true,
                 ),
                 node: Nullable::wrap(self::objectSchema(
-                    'Only with include=references.node: the referenced node as getNode returns it without include, null if the account may not read it',
+                    'Only with include=references.node, else null: the referenced node as getNode returns it without include',
                     NullSchema::create(),
                     NullSchema::create(),
                     NullSchema::create(),

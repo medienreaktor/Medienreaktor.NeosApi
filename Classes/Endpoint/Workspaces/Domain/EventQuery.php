@@ -34,7 +34,8 @@ use Psr\Http\Message\ServerRequestInterface;
  * page starts after a sequence number. The Doctrine event store reads all events of a query at once, so they are read
  * in batches of limit + 1 until the page is full, events left out don't count. The event store filters by type
  * (filterByEventType, or the tag events for filterByTag), the other filters are applied here like the permissions,
- * in larger batches: a filtered page is full unless the content stream ends, and its links work as without filters.
+ * in larger batches. A request reads at most maxRead events, and a page with diffs spans at most maxRead, so a
+ * page may end before it is full; its links continue after the last event read, which may be past the last one listed.
  * What is included is read for the page only: the diffs by replaying the events before it (EventDiffer, from all the
  * content stream's events, not only the filtered ones), the nodes as for the changes (IncludedNodes)
  */
@@ -55,6 +56,13 @@ final readonly class EventQuery
      */
     private const int FILTERED_BATCH_SIZE = 500;
 
+    /**
+     * How many events a request reads at most, and how many a page with diffs spans at most (they are replayed for the
+     * diffs), unless the settings say otherwise (Neos.Api.workspaceEvents.maxRead): a page that gets there ends early,
+     * its links continue after the last event read
+     */
+    public const int DEFAULT_MAX_READ = 10000;
+
     private function __construct(
         private bool $newestFirst,
         private SequenceNumber|null $after,
@@ -64,6 +72,7 @@ final readonly class EventQuery
         private NodeAggregateIds|null $nodeAggregateIds,
         private NodeAggregateId|null $document,
         private SubtreeTags|null $tags,
+        private int $maxRead,
     ) {
     }
 
@@ -79,6 +88,7 @@ final readonly class EventQuery
         NodeAggregateIds|null $filterByNodeAggregateId = null,
         NodeAggregateId|null $filterByDocument = null,
         SubtreeTags|null $filterByTag = null,
+        int $maxRead = self::DEFAULT_MAX_READ,
     ): self|BadRequest {
         $unsupported = $include->unsupported(self::INCLUDE_PATHS);
         if ($unsupported !== null) {
@@ -92,7 +102,7 @@ final readonly class EventQuery
         if ($newestFirst === null) {
             return BadRequest::because(sprintf('Can\'t sort by %s, only by sequenceNumber or -sequenceNumber', $sort?->value));
         }
-        return new self($newestFirst, $after, $limit, $include, $filterByEventType, $filterByNodeAggregateId, $filterByDocument, $filterByTag);
+        return new self($newestFirst, $after, $limit, $include, $filterByEventType, $filterByNodeAggregateId, $filterByDocument, $filterByTag, max(1, $maxRead));
     }
 
     /**
@@ -139,9 +149,14 @@ final readonly class EventQuery
         $filtered = $this->nodeAggregateIds !== null || $this->document !== null || $this->tags !== null;
         $batchSize = $filtered ? max($this->limit->value + 1, self::FILTERED_BATCH_SIZE) : $this->limit->value + 1;
         $locator = $this->document !== null ? new ChangeLocator($workspace) : null;
+        $withDiff = $this->include->includes('diff');
         /** @var list<array{EventEnvelope, array<mixed>|\stdClass}> $events with the decoded payloads */
         $events = [];
         $hasMore = false;
+        $read = 0;
+        // the sequence number of the last event read, the page's cursor: past the last one listed if the ones after
+        // it don't match
+        $cursor = null;
         // the next sequence number to read from in the listing's order; sequence numbers start at 1
         $next = $this->newestFirst ? ($this->after !== null ? $this->after->value - 1 : null) : ($this->after !== null ? $this->after->value + 1 : 1);
         do {
@@ -153,28 +168,45 @@ final readonly class EventQuery
                 : $stream->withMinimumSequenceNumber(SequenceNumber::fromInteger($next)->toSequenceNumber()));
             $batch = iterator_to_array($page->limit($batchSize), false);
             foreach ($batch as $envelope) {
-                $next = $envelope->sequenceNumber->value + ($this->newestFirst ? -1 : 1);
-                // decoded once, for the check and the response
-                $payload = JsonValues::decodeObject($envelope->event->data->value);
-                $nodeAggregateId = is_array($payload) ? ($payload['nodeAggregateId'] ?? null) : null;
-                if (!$this->matchesPayload($payload, $nodeAggregateId)) {
-                    continue;
-                }
-                if (is_string($nodeAggregateId) && !$workspace->mayReadNodeAggregate(SharedModel\Node\NodeAggregateId::fromString($nodeAggregateId))) {
-                    continue;
-                }
-                if ($locator !== null && !$this->isInDocument($locator, $payload, $nodeAggregateId)) {
-                    continue;
-                }
-                // one more than the page, so there is a next one
-                if (count($events) === $this->limit->value) {
+                if ($read === $this->maxRead) {
                     $hasMore = true;
                     break 2;
                 }
-                $events[] = [$envelope, $payload];
+                $read++;
+                $sequenceNumber = $envelope->sequenceNumber->value;
+                $next = $sequenceNumber + ($this->newestFirst ? -1 : 1);
+                // decoded once, for the check and the response
+                $payload = JsonValues::decodeObject($envelope->event->data->value);
+                if ($this->matches($payload, $workspace, $locator)) {
+                    // one more than the page, so there is a next one
+                    if (count($events) === $this->limit->value) {
+                        $hasMore = true;
+                        break 2;
+                    }
+                    // the diffs replay the events the page spans
+                    if ($withDiff && $events !== [] && abs($sequenceNumber - $events[0][0]->sequenceNumber->value) >= $this->maxRead) {
+                        $hasMore = true;
+                        break 2;
+                    }
+                    $events[] = [$envelope, $payload];
+                }
+                $cursor = $sequenceNumber;
             }
         } while (count($batch) === $batchSize);
-        return $this->listing($request, $this->events($events, $contentStream, $workspace, $includedNodes, $eventDiffer), $meta, $hasMore);
+        return $this->listing($request, $this->events($events, $contentStream, $workspace, $includedNodes, $eventDiffer), $meta, $hasMore, $cursor);
+    }
+
+    /**
+     * Whether the event is listed: the filters match and the account may read its node
+     *
+     * @param array<mixed>|\stdClass $payload
+     */
+    private function matches(array|\stdClass $payload, ReadableWorkspace $workspace, ChangeLocator|null $locator): bool
+    {
+        $nodeAggregateId = is_array($payload) ? ($payload['nodeAggregateId'] ?? null) : null;
+        return $this->matchesPayload($payload, $nodeAggregateId)
+            && (!is_string($nodeAggregateId) || $workspace->mayReadNodeAggregate(SharedModel\Node\NodeAggregateId::fromString($nodeAggregateId)))
+            && ($locator === null || $this->isInDocument($locator, $payload, $nodeAggregateId));
     }
 
     /**
@@ -239,7 +271,7 @@ final readonly class EventQuery
     }
 
     /**
-     * The diffs of the events, by sequence number: the content stream replayed from EventDiffer::LOOKBACK events before
+     * The diffs of the events, by sequence number: the content stream replayed from the differ's lookback events before
      * the first of them to the last
      *
      * @param non-empty-list<array{EventEnvelope, mixed}> $events
@@ -249,13 +281,18 @@ final readonly class EventQuery
     {
         $sequenceNumbers = array_map(static fn (array $item): int => $item[0]->sequenceNumber->value, $events);
         $first = min($sequenceNumbers);
-        $before = $first > 1
-            ? array_reverse(iterator_to_array($contentStream->backwards()->withMaximumSequenceNumber(SequenceNumber::fromInteger($first - 1)->toSequenceNumber())->limit(EventDiffer::LOOKBACK), false))
+        $before = $first > 1 && $eventDiffer->lookback > 0
+            ? array_reverse(iterator_to_array($contentStream->backwards()->withMaximumSequenceNumber(SequenceNumber::fromInteger($first - 1)->toSequenceNumber())->limit($eventDiffer->lookback), false))
             : [];
         $diffed = $contentStream
             ->withMinimumSequenceNumber(SequenceNumber::fromInteger($first)->toSequenceNumber())
             ->withMaximumSequenceNumber(SequenceNumber::fromInteger(max($sequenceNumbers))->toSequenceNumber());
-        return $eventDiffer->diff([...$before, ...iterator_to_array($diffed, false)], array_fill_keys($sequenceNumbers, true));
+        // read as they are replayed, at most maxRead, see page()
+        $replayed = (static function () use ($before, $diffed): \Generator {
+            yield from $before;
+            yield from $diffed;
+        })();
+        return $eventDiffer->diff($replayed, array_fill_keys($sequenceNumbers, true));
     }
 
     /**
@@ -324,19 +361,19 @@ final readonly class EventQuery
 
     /**
      * Oldest first, the list grows at its end and is polled: next is always there. Newest first, it ends with the
-     * oldest event
+     * oldest event. Both continue after the last event read, which may be past the last one listed
      *
      * @param list<Event> $events
+     * @param int|null $cursor the sequence number of the last event read, null if none was
      */
-    private function listing(ServerRequestInterface $request, array $events, EventListingMeta $meta, bool $hasMore): PaginatedEventListing
+    private function listing(ServerRequestInterface $request, array $events, EventListingMeta $meta, bool $hasMore, int|null $cursor): PaginatedEventListing
     {
-        $last = $events !== [] ? $events[array_key_last($events)]->sequenceNumber->value : null;
         return new PaginatedEventListing(
             new EventList(...$events),
             $meta,
             $this->newestFirst
-                ? CursorListingLinks::for($request, $this->limit, $hasMore ? $last : null)
-                : CursorListingLinks::forGrowingList($request, $this->limit, $last ?? $this->after?->value),
+                ? CursorListingLinks::for($request, $this->limit, $hasMore ? $cursor : null)
+                : CursorListingLinks::forGrowingList($request, $this->limit, $cursor ?? $this->after?->value),
         );
     }
 }
