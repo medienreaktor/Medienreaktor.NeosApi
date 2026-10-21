@@ -396,6 +396,8 @@ class NodesTest extends ContentRepositoryTestCase
             ['nodeType' => 'Neos.Neos:Page', 'parentNodeAggregateId' => 'Not_An_Id'],
             $body + ['nodeAggregateId' => 'Not_An_Id'],
             $body + ['properties' => 'title'],
+            $body + ['tetheredDescendantNodeAggregateIds' => ['main' => 'Not_An_Id']],
+            $body + ['tetheredDescendantNodeAggregateIds' => ['main']],
         ] as $invalid) {
             self::assertSame(400, $this->post($path, $token, $invalid)->getStatusCode(), json_encode($invalid));
         }
@@ -764,6 +766,37 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
         self::assertSame([], self::json($response)['tags']);
         self::assertSame(404, $this->delete(self::path($id . '/tags/disabled', $inLive), $token)->getStatusCode());
+    }
+
+    #[Test]
+    public function createsTetheredNodesWithTheGivenIds(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create');
+        $page = ['nodeType' => 'Neos.Demo:Document.Page', 'parentNodeAggregateId' => $siteNodeId, 'properties' => ['title' => 'Tethered']];
+
+        $response = $this->post(self::path('', self::IN_LIVE), $token, $page + ['tetheredDescendantNodeAggregateIds' => ['main' => 'known-main']]);
+        self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
+        self::assertSame('known-main', $this->mainCollection($token, self::json($response)['nodeAggregateId']));
+        // content can go into it right away
+        $response = $this->post(self::path('', self::IN_LIVE), $token, ['nodeType' => 'Neos.Demo:Content.Text', 'parentNodeAggregateId' => 'known-main']);
+        self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
+
+        // the content repository checks none of these
+        foreach ([
+            ['sidebar' => 'some-sidebar'],
+            ['main/' => 'some-main'],
+            ['main' => 'own-id'],
+        ] as $invalid) {
+            $response = $this->post(self::path('', self::IN_LIVE), $token, $page + ['nodeAggregateId' => 'own-id', 'tetheredDescendantNodeAggregateIds' => $invalid]);
+            self::assertSame(422, $response->getStatusCode(), json_encode($invalid) . ': ' . $response->getBody());
+        }
+        self::assertSame(404, $this->get(self::path('own-id', self::IN_LIVE), $token)->getStatusCode());
+
+        $response = $this->post(self::path('', self::IN_LIVE), $token, $page + ['tetheredDescendantNodeAggregateIds' => ['main' => 'known-main']]);
+        self::assertSame(409, $response->getStatusCode(), (string)$response->getBody());
+        self::assertStringContainsString('tetheredDescendantNodeAggregateIds', self::json($response)['detail']);
     }
 
     #[Test]

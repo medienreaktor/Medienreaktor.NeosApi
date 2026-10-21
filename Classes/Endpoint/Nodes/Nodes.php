@@ -60,6 +60,7 @@ use Neos\Api\Shared\Schema\ListingMeta;
 use Neos\ContentRepository\Core\CommandHandler\CommandInterface;
 use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
 use Neos\ContentRepository\Core\Feature\NodeCreation\Command\CreateNodeAggregateWithNode;
+use Neos\ContentRepository\Core\Feature\NodeCreation\Dto\NodeAggregateIdsByNodePaths;
 use Neos\ContentRepository\Core\Feature\NodeModification\Command\SetNodeProperties;
 use Neos\ContentRepository\Core\Feature\NodeReferencing\Command\SetNodeReferences;
 use Neos\ContentRepository\Core\Feature\NodeTypeChange\Command\ChangeNodeAggregateType;
@@ -228,7 +229,7 @@ final readonly class Nodes
         path: '/cr/{contentRepositoryId}/nodes',
         method: 'POST',
         summary: 'Create a node',
-        description: 'Creates a node of the node type below the parent in the workspace, with the dimension space point as its origin (CreateNodeAggregateWithNode): before the succeeding sibling, else as the parent\'s last child, with the given aggregate id, else a new one. The properties are set as for updateNodeProperties, over the node type\'s defaults, a document without uriPathSegment gets one from its title as in the Neos backend. The references are set as for updateNodeReferences right after the node is created: if they can\'t be (e.g. an unknown target), it\'s a 422 and the node stays without them. Tethered child nodes (e.g. a page\'s main collection) are created with it. An unknown, abstract or root node type, one the parent doesn\'t allow below it, a sibling that isn\'t a child of the parent or properties that can\'t be written are a 422, an aggregate id that is taken a 409. Whether the account may create the node there is up to its workspace roles and node privileges (else a 403), as in the Neos backend. The response is the new node as getNode returns it without include.',
+        description: 'Creates a node of the node type below the parent in the workspace, with the dimension space point as its origin (CreateNodeAggregateWithNode): before the succeeding sibling, else as the parent\'s last child, with the given aggregate id, else a new one. The properties are set as for updateNodeProperties, over the node type\'s defaults, a document without uriPathSegment gets one from its title as in the Neos backend. The references are set as for updateNodeReferences right after the node is created: if they can\'t be (e.g. an unknown target), it\'s a 422 and the node stays without them. Tethered child nodes (e.g. a page\'s main collection) are created with it, with the ids of tetheredDescendantNodeAggregateIds by node path, else new ones: a client that knows them in advance can create content in them right away. A path the node type has no tethered descendant at, or an id given twice or the node\'s own, is a 422. An unknown, abstract or root node type, one the parent doesn\'t allow below it, a sibling that isn\'t a child of the parent or properties that can\'t be written are a 422, an aggregate id that is taken a 409. Whether the account may create the node there is up to its workspace roles and node privileges (else a 403), as in the Neos backend. The response is the new node as getNode returns it without include.',
         operationId: 'createNode',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::NODES_CREATE],
@@ -260,15 +261,10 @@ final readonly class Nodes
             return UnprocessableContent::because(sprintf('There is no node type %s', $nodeTypeName->value));
         }
         $values = $newNode->properties;
-        $isDocument = UriPathSegments::appliesTo($nodeType);
-        $title = $values['title'] ?? null;
-        if ($isDocument && !isset($values['uriPathSegment']) && is_string($title)) {
-            $fromTitle = $this->uriPathSegments->fromText($title, $subgraph->getDimensionSpacePoint());
-            if ($fromTitle !== '') {
-                $values['uriPathSegment'] = $fromTitle;
-            }
+        if (UriPathSegments::appliesTo($nodeType) && !isset($values['uriPathSegment'])) {
+            // from the title, else <node type suffix>-<random number> as in the Neos backend
+            $values['uriPathSegment'] = $this->uriPathSegments->forNewDocument($nodeTypeName, is_string($values['title'] ?? null) ? $values['title'] : null, $subgraph->getDimensionSpacePoint());
         }
-        $contentRepository = $this->contentRepositoryRegistry->get($parent->contentRepositoryId);
         try {
             $propertyValues = $this->propertyValues->toWrite($nodeType, $values);
             $referencesToWrite = $this->propertyValues->referencesToWrite($nodeType, $newNode->references);
@@ -276,29 +272,26 @@ final readonly class Nodes
             return UnprocessableContent::because($exception->getMessage());
         }
         $nodeAggregateId = $newNode->nodeAggregateId?->toNodeAggregateId() ?? SharedModel\Node\NodeAggregateId::create();
+        $tetheredIds = self::tetheredDescendantNodeAggregateIds($newNode->tetheredDescendantNodeAggregateIds, $nodeType, $nodeAggregateId, $this->contentRepositoryRegistry->get($parent->contentRepositoryId)->getNodeTypeManager());
+        if ($tetheredIds instanceof UnprocessableContent) {
+            return $tetheredIds;
+        }
         $origin = OriginDimensionSpacePoint::fromDimensionSpacePoint($subgraph->getDimensionSpacePoint());
         $action = sprintf('create a node below the node %s', $parent->aggregateId->value);
-        $create = CreateNodeAggregateWithNode::create(
-            $parent->workspaceName,
-            $nodeAggregateId,
-            $nodeTypeName,
-            $origin,
-            $parent->aggregateId,
-            $newNode->succeedingSiblingNodeAggregateId?->toNodeAggregateId(),
-            $propertyValues,
-        );
-        if ($isDocument && !isset($create->initialPropertyValues->values['uriPathSegment'])) {
-            // from the title, else <node type suffix>-<random number> as in the Neos backend
-            $title = $create->initialPropertyValues->values['title'] ?? null;
-            $create = $create->withInitialPropertyValues($create->initialPropertyValues->withValue(
-                'uriPathSegment',
-                $this->uriPathSegments->forNewDocument($nodeTypeName, is_string($title) ? $title : null, $subgraph->getDimensionSpacePoint()),
-            ));
-        }
         try {
-            $failed = $this->send($parent, $action, $create);
+            $failed = $this->send($parent, $action, CreateNodeAggregateWithNode::create(
+                $parent->workspaceName,
+                $nodeAggregateId,
+                $nodeTypeName,
+                $origin,
+                $parent->aggregateId,
+                $newNode->succeedingSiblingNodeAggregateId?->toNodeAggregateId(),
+                $propertyValues,
+            )->withTetheredDescendantNodeAggregateIds($tetheredIds));
         } catch (NodeAggregateCurrentlyExists) {
-            return Conflict::because(sprintf('There is a node with the aggregate id %s already', $nodeAggregateId->value));
+            return Conflict::because($tetheredIds->isEmpty()
+                ? sprintf('There is a node with the aggregate id %s already', $nodeAggregateId->value)
+                : sprintf('There is a node with the aggregate id %s or one of the tetheredDescendantNodeAggregateIds already', $nodeAggregateId->value));
         } catch (NodeAggregateDoesCurrentlyNotCoverDimensionSpacePoint) {
             return Conflict::because(sprintf('The node %s isn\'t in the dimension space point %s', $parent->aggregateId->value, $subgraph->getDimensionSpacePoint()->toJson()));
         } catch (NodeTypeIsAbstract | NodeTypeIsOfTypeRoot | NodeConstraintException | PropertyCannotBeSet $exception) {
@@ -1040,6 +1033,30 @@ final readonly class Nodes
     private function subgraph(ContentRepositoryId $contentRepositoryId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint, bool $includeRemoved = false): ContentSubgraphInterface|BadRequest|NotFound
     {
         return $this->subgraphResolver->resolve($contentRepositoryId, $workspaceName, $dimensionSpacePoint, excludeDisabled: false, includeRemoved: $includeRemoved);
+    }
+
+    /**
+     * The tethered descendants' ids of the body as the content repository takes them, a 422 for a path the node type
+     * has no tethered descendant at, or an id given twice or the node's own: the content repository checks neither
+     *
+     * @param array<string, string> $byPath
+     */
+    private static function tetheredDescendantNodeAggregateIds(array $byPath, NodeType\NodeType $nodeType, SharedModel\Node\NodeAggregateId $nodeAggregateId, NodeType\NodeTypeManager $nodeTypeManager): NodeAggregateIdsByNodePaths|UnprocessableContent
+    {
+        try {
+            $ids = NodeAggregateIdsByNodePaths::fromArray($byPath);
+        } catch (\InvalidArgumentException $exception) {
+            return UnprocessableContent::because(sprintf('The tetheredDescendantNodeAggregateIds are invalid: %s', $exception->getMessage()));
+        }
+        $unknown = array_diff(array_keys($ids->getNodeAggregateIds()), array_keys(NodeAggregateIdsByNodePaths::createForNodeType($nodeType->name, $nodeTypeManager)->getNodeAggregateIds()));
+        if ($unknown !== []) {
+            return UnprocessableContent::because(sprintf('The node type %s has no tethered descendant at %s (tetheredDescendantNodeAggregateIds)', $nodeType->name->value, implode(', ', $unknown)));
+        }
+        $values = array_map(static fn (SharedModel\Node\NodeAggregateId $id) => $id->value, array_values($ids->getNodeAggregateIds()));
+        if (count(array_unique($values)) !== count($values) || in_array($nodeAggregateId->value, $values, true)) {
+            return UnprocessableContent::because('The tetheredDescendantNodeAggregateIds must differ from each other and from the node\'s nodeAggregateId');
+        }
+        return $ids;
     }
 
     /**

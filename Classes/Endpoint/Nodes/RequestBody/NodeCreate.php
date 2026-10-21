@@ -22,6 +22,7 @@ final readonly class NodeCreate implements ProvidesSchema
     /**
      * @param array<string, mixed> $properties
      * @param array<string, mixed> $references
+     * @param array<string, string> $tetheredDescendantNodeAggregateIds by node path, e.g. main
      */
     public function __construct(
         public NodeTypeName $nodeType,
@@ -30,6 +31,7 @@ final readonly class NodeCreate implements ProvidesSchema
         public NodeAggregateId|null $nodeAggregateId = null,
         public array $properties = [],
         public array $references = [],
+        public array $tetheredDescendantNodeAggregateIds = [],
     ) {
     }
 
@@ -52,6 +54,11 @@ final readonly class NodeCreate implements ProvidesSchema
                     description: 'The references to set, by name as for updateNodeReferences: [{"nodeAggregateId": "…", "properties": {…}}], properties optional. Set right after the node is created (SetNodeReferences): if they can\'t be, the node stays without them',
                     examples: [['relatedPages' => [['nodeAggregateId' => 'a3474e1d-dd60-4a84-82b1-18d2f21891a3']]]],
                     additionalProperties: true,
+                ),
+                tetheredDescendantNodeAggregateIds: ObjectSchema::create(
+                    description: 'The aggregate ids of tethered descendants by node path (e.g. main, or main/teaser below it), the others get new ones. To know them before the node exists, e.g. to create nodes in its main collection right after it',
+                    examples: [['main' => '5a1b8c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d']],
+                    additionalProperties: NodeAggregateId::schema(),
                 ),
             ),
             additionalProperties: false,
