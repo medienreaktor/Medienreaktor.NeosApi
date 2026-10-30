@@ -2686,6 +2686,157 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/media/uploads:
+    post:
+      tags: [Media]
+      operationId: createAssetUpload
+      summary: Create an upload link
+      description: >
+        Creates a link that uploads files to the media library as the
+        signed-in account, for clients that cannot send files themselves
+        (only JSON). The link is valid for 15 minutes and can be used for
+        several files. Two ways to use it: a shell posts each file with
+        `curl -F 'asset[resource]=@<path>' '<url>'` and gets the asset back;
+        a person opens the URL in a browser and drops the files on the page.
+        Afterwards `getAssetUpload` lists the uploaded assets. The URL
+        contains a secret: hand it only to the person or program uploading.
+      security:
+        - oauth2: [neos.media]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  description: Title for uploaded files that bring none of their own.
+                collection:
+                  type: string
+                  description: Collection identifier for every uploaded file. Unknown identifiers are ignored.
+                tags:
+                  type: array
+                  items: { type: string }
+                  description: Tag identifiers added to every uploaded file. Unknown identifiers are ignored.
+      responses:
+        '201':
+          description: The upload link. `url` is only returned here.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [upload]
+                properties:
+                  upload:
+                    allOf:
+                      - $ref: '#/components/schemas/AssetUpload'
+                      - type: object
+                        required: [url]
+                        properties:
+                          url:
+                            type: string
+                            format: uri
+                            description: The upload link (page on GET, upload on POST). Contains the secret.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/media/uploads/{upload}:
+    get:
+      tags: [Media]
+      operationId: getAssetUpload
+      summary: State of an upload link
+      description: >
+        The assets uploaded with an upload link of the signed-in account so
+        far, and when the link expires. An expired link answers 404.
+      security:
+        - oauth2: [neos.media]
+      parameters:
+        - $ref: '#/components/parameters/upload'
+      responses:
+        '200':
+          description: The upload link.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [upload]
+                properties:
+                  upload: { $ref: '#/components/schemas/AssetUpload' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`upload_not_found` - unknown, expired, or created by another account.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/media/uploads/{upload}/{secret}:
+    get:
+      tags: [Media]
+      operationId: showAssetUploadPage
+      summary: Upload page of an upload link
+      description: >
+        An HTML page with a file field that posts each file to the same URL.
+        Public: it only tells whether the link is still valid.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/upload'
+        - $ref: '#/components/parameters/uploadSecret'
+      responses:
+        '200':
+          description: The upload page, or a notice that the link has expired.
+          content:
+            text/html:
+              schema: { type: string }
+    post:
+      tags: [Media]
+      operationId: uploadAssetWithLink
+      summary: Upload a file with an upload link
+      description: >
+        Multipart upload like `uploadAsset`, authenticated by the link
+        instead of a bearer token, as the account that created it. The
+        link's title, collection and tags apply. Deduplicates by file
+        content.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/upload'
+        - $ref: '#/components/parameters/uploadSecret'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [asset]
+              properties:
+                asset:
+                  type: object
+                  required: [resource]
+                  properties:
+                    resource:
+                      type: string
+                      contentEncoding: binary
+                      description: The file (`asset[resource]`).
+                    title:
+                      type: string
+                      description: 'Optional title (`asset[title]`), overrides the link''s title.'
+      responses:
+        '201':
+          description: The created (or deduplicated existing) asset.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset]
+                properties:
+                  asset: { $ref: '#/components/schemas/Asset' }
+        '401':
+          description: '`invalid_upload_link` - unknown, wrong secret or expired.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/media/assets/{assetSource}/{assetIdentifier}:
     get:
       tags: [Media]
@@ -3391,6 +3542,18 @@ components:
       required: true
       schema: { type: string }
       description: 'Asset source identifier; only `neos` is writable.'
+    upload:
+      name: upload
+      in: path
+      required: true
+      description: The id of the upload link (`upload.id`).
+      schema: { type: string }
+    uploadSecret:
+      name: secret
+      in: path
+      required: true
+      description: The secret part of the upload link.
+      schema: { type: string }
     assetIdentifier:
       name: assetIdentifier
       in: path
@@ -4175,6 +4338,17 @@ components:
         `uriPathSegment`.
 
     # --- Media --------------------------------------------------------------
+
+    AssetUpload:
+      type: object
+      description: An upload link and the assets uploaded with it so far.
+      required: [id, expiresAt, assets]
+      properties:
+        id: { type: string }
+        expiresAt: { type: string, format: date-time }
+        assets:
+          type: array
+          items: { $ref: '#/components/schemas/Asset' }
 
     Asset:
       type: object

@@ -40,6 +40,11 @@ privilegeTargets:
     # page. Public like the OAuth discovery documents - they describe the API
     # surface but expose no content, and developers need them before they have
     # a token.
+    # The page behind an upload link only says whether the link is still
+    # valid; the upload it posts to is authenticated by the link itself.
+    'Medienreaktor.NeosApi:Api.Media.UploadPage':
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\AssetUploadsController->formAction())'
+
     'Medienreaktor.NeosApi:Api.Docs':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\DocsController->.*Action())'
 
@@ -102,9 +107,10 @@ privilegeTargets:
     'Medienreaktor.NeosApi:Api.Media.Read':
       matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\(AssetsController|AssetSourcesController|CollectionsController|TagsController)->(index|show|usage)Action())'
 
-    # Create, edit and delete assets, collections and tags.
+    # Create, edit and delete assets, collections and tags - including upload
+    # links and uploading with one (as the account that created the link).
     'Medienreaktor.NeosApi:Api.Media.Write':
-      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\AssetsController->(create|createVariant|update|delete|replaceResource|import|tag|untag|addToCollection|removeFromCollection)Action()) || method(Medienreaktor\NeosApi\Controller\Api\Media\(CollectionsController|TagsController)->(create|update|delete)Action())'
+      matcher: 'method(Medienreaktor\NeosApi\Controller\Api\Media\AssetsController->(create|createVariant|update|delete|replaceResource|import|tag|untag|addToCollection|removeFromCollection)Action()) || method(Medienreaktor\NeosApi\Controller\Api\Media\AssetUploadsController->(create|show|upload)Action()) || method(Medienreaktor\NeosApi\Controller\Api\Media\(CollectionsController|TagsController)->(create|update|delete)Action())'
 
     # --- Workspace features ------------------------------------------------
 
@@ -146,6 +152,9 @@ roles:
         permission: GRANT
       -
         privilegeTarget: 'Medienreaktor.NeosApi:Api.Docs'
+        permission: GRANT
+      -
+        privilegeTarget: 'Medienreaktor.NeosApi:Api.Media.UploadPage'
         permission: GRANT
 
   # Every editor gets the full editing surface: read everything, write content

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Medienreaktor\NeosApi\Controller\Api\Media;
 
 use Medienreaktor\NeosApi\Controller\Api\AbstractApiController;
+use Medienreaktor\NeosApi\Service\LocalAssetUploader;
 use Medienreaktor\NeosApi\Service\MediaSerializer;
 use Medienreaktor\NeosApi\Service\NodeSerializer;
 use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindClosestNodeFilter;
@@ -74,6 +75,9 @@ class AssetsController extends AbstractApiController
 
     #[Flow\Inject]
     protected MediaSerializer $mediaSerializer;
+
+    #[Flow\Inject]
+    protected LocalAssetUploader $localAssetUploader;
 
     #[Flow\Inject]
     protected NodeSerializer $nodeSerializer;
@@ -170,28 +174,7 @@ class AssetsController extends AbstractApiController
     public function createAction(Asset $asset, ?string $collection = null, array $tags = []): string
     {
         $this->requireScope('neos.media');
-
-        // One-per-resource dedupe may return an already-persisted asset.
-        if ($this->persistenceManager->isNewObject($asset)) {
-            $this->assetRepository->add($asset);
-        } else {
-            $this->assetRepository->update($asset);
-        }
-
-        foreach ($tags as $tagIdentifier) {
-            $tag = $this->resolveTag($tagIdentifier);
-            if ($tag !== null) {
-                $asset->addTag($tag);
-            }
-        }
-        $resolvedCollection = $this->resolveCollection($collection);
-        if ($resolvedCollection !== null) {
-            // setAssetCollections syncs both sides, so the serialized response
-            // reflects the assignment without a re-fetch.
-            $asset->setAssetCollections(new ArrayCollection([$resolvedCollection]));
-        }
-        $this->assetRepository->update($asset);
-        $this->persistenceManager->persistAll();
+        $this->localAssetUploader->store($asset, $collection, $tags);
 
         return $this->json([
             'asset' => $this->mediaSerializer->serializeProxy($this->neosProxy($asset)),

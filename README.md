@@ -16,7 +16,9 @@ No GraphQL ceremony, no coupling to the legacy backend, no community-package dep
 - **Write API** for content repository commands (single + batch) plus use-case
   operations (publish / discard / rebase workspaces)
 - **Media API** for full asset management: assets, variants, tags, collections,
-  asset sources, usage tracking
+  asset sources, usage tracking, and upload links for clients that can only
+  send JSON (the link takes the file by curl or on a small upload page, as the
+  account that created it, for 15 minutes)
 - **Administration API** for users (incl. roles, activation, password resets),
   sites + domains, and workspaces (incl. role assignments)
 - **Collaboration primitives** — a per-workspace event feed and presence

@@ -10,3 +10,15 @@ MedienreaktorNeosApi_Presence:
   backend: Neos\Cache\Backend\FileBackend
   backendOptions:
     defaultLifetime: 30
+
+#
+# Upload links (AssetUploadTicketRepository): one entry per link, dropped
+# when the link expires (15 minutes). A lost entry only means asking for a new
+# link. Deployments with several web nodes need a shared backend here too,
+# since the link may be used on another node than the one that issued it.
+#
+MedienreaktorNeosApi_AssetUploadTickets:
+  frontend: Neos\Cache\Frontend\VariableFrontend
+  backend: Neos\Cache\Backend\FileBackend
+  backendOptions:
+    defaultLifetime: 900

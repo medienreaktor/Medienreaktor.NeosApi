@@ -1,0 +1,16 @@
+/* Upload page behind an upload link. Kept out of the Fluid template, which parses {...}. */
+:root { color-scheme: light dark; --ink: #1d1d1f; --muted: #6e6e73; --ground: #f5f5f7; --field: #ffffff; --line: #c7c7cc; --good: #1e7d3c; --bad: #b3261e; }
+@media (prefers-color-scheme: dark) { :root { --ink: #f5f5f7; --muted: #a1a1a6; --ground: #1d1d1f; --field: #2c2c2e; --line: #48484a; --good: #6cd28a; --bad: #ff8a80; } }
+body { margin: 0; padding: 48px 16px; background: var(--ground); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 36rem; margin: 0 auto; display: grid; gap: 20px; }
+h1 { margin: 0; font-size: 28px; line-height: 1.2; }
+p { margin: 0; color: var(--muted); }
+label.drop { display: grid; place-items: center; align-content: center; gap: 8px; min-height: 180px; padding: 24px; border: 2px dashed var(--line); background: var(--field); text-align: center; cursor: pointer; }
+label.drop.is-over { border-color: var(--ink); }
+label.drop:focus-within { outline: 2px solid var(--ink); outline-offset: 2px; }
+input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+li { display: flex; justify-content: space-between; gap: 16px; padding: 12px 16px; background: var(--field); }
+li span:first-child { overflow-wrap: anywhere; }
+[data-state=done] span:last-child { color: var(--good); }
+[data-state=failed] span:last-child { color: var(--bad); }
