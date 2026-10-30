@@ -622,6 +622,48 @@
     '@format': 'json'
   httpMethods: ['POST']
 
+# Upload links: create and inspect with a bearer token; the link itself
+# (upload id + secret) serves the upload page (GET) and takes the files (POST).
+-
+  name: 'API: Media upload link create'
+  uriPattern: 'api/media/uploads'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\AssetUploads'
+    '@action': 'create'
+    '@format': 'json'
+  httpMethods: ['POST']
+
+-
+  name: 'API: Media upload link show'
+  uriPattern: 'api/media/uploads/{upload}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\AssetUploads'
+    '@action': 'show'
+    '@format': 'json'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Media upload link page'
+  uriPattern: 'api/media/uploads/{upload}/{secret}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\AssetUploads'
+    '@action': 'form'
+    '@format': 'html'
+  httpMethods: ['GET']
+
+-
+  name: 'API: Media upload link upload'
+  uriPattern: 'api/media/uploads/{upload}/{secret}'
+  defaults:
+    '@package': 'Medienreaktor.NeosApi'
+    '@controller': 'Api\Media\AssetUploads'
+    '@action': 'upload'
+    '@format': 'json'
+  httpMethods: ['POST']
+
 -
   name: 'API: Media asset import'
   uriPattern: 'api/media/assets/import'

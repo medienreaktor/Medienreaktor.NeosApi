@@ -106,6 +106,18 @@ Neos:
                 patternOptions:
                   controllerObjectNamePattern: 'Medienreaktor\NeosApi\Controller\Api\.*'
 
+          # Upload links: the link (upload id + secret in the path) authenticates
+          # as the account that created it, on the upload endpoint only.
+          'Medienreaktor.NeosApi:AssetUploadTicket':
+            label: 'Neos API upload link'
+            provider: 'Medienreaktor\NeosApi\Security\Authentication\Provider\AssetUploadTicketProvider'
+            token: 'Medienreaktor\NeosApi\Security\Authentication\Token\AssetUploadTicketToken'
+            requestPatterns:
+              'Medienreaktor.NeosApi:AssetUploads':
+                pattern: 'ControllerObjectName'
+                patternOptions:
+                  controllerObjectNamePattern: 'Medienreaktor\NeosApi\Controller\Api\Media\AssetUploadsController'
+
           # Make the Neos backend session visible on the OAuth authorize
           # endpoint (patterns of the same type are OR-combined), so the
           # consent screen can identify the logged-in editor.

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex">
+    <title>Upload files</title>
+    <link rel="stylesheet" href="{styleUri}">
+</head>
+<body>
+<main>
+    <f:if condition="{valid}">
+        <f:then>
+            <h1>Upload files</h1>
+            <p>The files are added to the media library. You can close this page afterwards and tell the assistant that the upload is done. This link is valid until <time datetime="{expiresAt}" data-local-time>{expiresAt}</time>.</p>
+            <label class="drop" data-asset-upload
+                   data-label-uploading="Uploading …"
+                   data-label-done="Uploaded"
+                   data-label-failed="Failed">
+                <strong>Drop files here or choose them</strong>
+                <span>Images, PDFs and other documents</span>
+                <input type="file" id="asset-upload-files" name="asset[resource]" multiple>
+            </label>
+            <ol aria-live="polite" data-asset-upload-results></ol>
+        </f:then>
+        <f:else>
+            <h1>This upload link has expired</h1>
+            <p>Upload links are valid for 15 minutes. Ask the assistant for a new one.</p>
+        </f:else>
+    </f:if>
+</main>
+<f:if condition="{valid}">
+    <script src="{scriptUri}"></script>
+</f:if>
+</body>
+</html>
