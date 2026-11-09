@@ -1,23 +1,24 @@
 {
-    "name": "neos/api",
+    "name": "medienreaktor/neos-api",
     "type": "neos-package",
-    "description": "HTTP API for Neos, defined with neos/openapi and secured by neos/oauth",
+    "description": "HTTP API for Neos, defined with neos/openapi and secured by Neos.OAuth",
     "license": "MIT",
     "require": {
         "php": "^8.4",
         "neos/flow": "^9.2",
         "neos/neos": "^9.2",
         "neos/media": "^9.2",
-        "neos/oauth": "dev-main",
+        "medienreaktor/neos-oauth": "@dev",
         "behat/transliterator": "^1.5",
         "doctrine/dbal": "^3.8",
-        "neos/openapi": "dev-main",
-        "neos/openapi-flowadapter": "dev-main",
-        "neos/schematic": "dev-main",
-        "neos/jsonschema": "dev-main"
+        "neos/openapi": "*",
+        "neos/openapi-flowadapter": "*",
+        "neos/schematic": "*",
+        "neos/jsonschema": "*",
+        "medienreaktor/neos-openapi-bundle": "@dev"
     },
     "suggest": {
-        "neos/api-docs": "Swagger UI for the API on /api/docs"
+        "medienreaktor/neos-api-docs": "Swagger UI for the API on /api/docs"
     },
     "autoload": {
         "psr-4": {
