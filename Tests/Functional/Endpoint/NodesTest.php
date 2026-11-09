@@ -829,9 +829,9 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
         self::assertSame([$parent => true], array_column(self::json($response)['data'], 'hasChildren', 'nodeAggregateId'));
 
-        // the origin of what is shown: en_UK falls back to en_US
-        $node = self::json($this->get(self::path($child, ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"en_UK"}']), $token));
-        self::assertSame(['{"language":"en_UK"}', '{"language":"en_US"}', true], [$node['dimensionSpacePoint'], $node['originDimensionSpacePoint'], $node['isShineThrough']]);
+        // the origin of what is shown: en_GB falls back to en_US
+        $node = self::json($this->get(self::path($child, ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"en_GB"}']), $token));
+        self::assertSame(['{"language":"en_GB"}', '{"language":"en_US"}', true], [$node['dimensionSpacePoint'], $node['originDimensionSpacePoint'], $node['isShineThrough']]);
         self::assertSame('{"language":"en_US"}', self::json($this->get(self::path($child, self::IN_LIVE), $token))['originDimensionSpacePoint']);
 
         // the referenced nodes with include=references.node
@@ -929,14 +929,14 @@ class NodesTest extends ContentRepositoryTestCase
         $page = $this->createPage($token, $siteNodeId, 'Page');
 
         $meta = self::json($this->get(self::path($page . '/variants', ['workspaceName' => 'live']), $token))['meta'];
-        // en_UK falls back to en_US
+        // en_GB falls back to en_US
         self::assertSame(1, $meta['total']);
-        self::assertEqualsCanonicalizing(['{"language":"en_US"}', '{"language":"en_UK"}'], $meta['coveredDimensionSpacePoints']);
+        self::assertEqualsCanonicalizing(['{"language":"en_US"}', '{"language":"en_GB"}'], $meta['coveredDimensionSpacePoints']);
 
         self::assertSame(201, $this->post(self::path($page . '/variants', self::IN_LIVE), $token, ['dimensionSpacePoint' => '{"language":"de"}'])->getStatusCode());
         $meta = self::json($this->get(self::path($page . '/variants', ['workspaceName' => 'live']), $token))['meta'];
         self::assertSame(2, $meta['total']);
-        self::assertEqualsCanonicalizing(['{"language":"en_US"}', '{"language":"en_UK"}', '{"language":"de"}'], $meta['coveredDimensionSpacePoints']);
+        self::assertEqualsCanonicalizing(['{"language":"en_US"}', '{"language":"en_GB"}', '{"language":"de"}'], $meta['coveredDimensionSpacePoints']);
         $all = self::json($this->get('/api/cr/default', $this->token('admin-machine', 'contentrepositories.read')))['dimensionSpacePoints'];
         // in the order of the variation graph
         self::assertSame($all, array_values(array_intersect($all, $meta['coveredDimensionSpacePoints'])));
