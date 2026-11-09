@@ -8,14 +8,14 @@
         "neos/flow": "^9.2",
         "neos/neos": "^9.2",
         "neos/media": "^9.2",
-        "medienreaktor/neos-oauth": "@dev",
+        "medienreaktor/neos-oauth": "^0.1",
         "behat/transliterator": "^1.5",
         "doctrine/dbal": "^3.8",
         "neos/openapi": "*",
         "neos/openapi-flowadapter": "*",
         "neos/schematic": "*",
         "neos/jsonschema": "*",
-        "medienreaktor/neos-openapi-bundle": "@dev"
+        "medienreaktor/neos-openapi-bundle": "^0.1"
     },
     "suggest": {
         "medienreaktor/neos-api-docs": "Swagger UI for the API on /api/docs"
@@ -28,6 +28,9 @@
     "extra": {
         "neos": {
             "package-key": "Neos.Api"
+        },
+        "branch-alias": {
+            "dev-main": "2.0.x-dev"
         }
     }
 }
