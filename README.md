@@ -14,6 +14,13 @@ scope _and_ its account has the privilege. Neos' node, workspace and media privi
 Errors are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem documents. Lists come as `{data, meta, links}`;
 `include`, `sort` and paging work as in [JSON:API](https://jsonapi.org).
 
+## Upgrading from Medienreaktor.NeosApi 1.x
+
+Tokens are issued by [Neos.OAuth](https://github.com/medienreaktor/Neos.OAuth) now, with keys of its own that it
+generates on first use (`./flow oauth:status`, `./flow oauth:generatekeys`). Clients and tokens of 1.x don't carry
+over. `./flow neosapi:generatekeys` is kept, deprecated, for deploy scripts that call it: it succeeds when the keys
+exist and generates them otherwise.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
