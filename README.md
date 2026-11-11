@@ -21,6 +21,17 @@ generates on first use (`./flow oauth:status`, `./flow oauth:generatekeys`). Cli
 over. `./flow neosapi:generatekeys` is kept, deprecated, for deploy scripts that call it: it succeeds when the keys
 exist and generates them otherwise.
 
+## Development
+
+`composer lint` runs `composer validate --strict`, PSR-12 and PHPStan level 8, without a baseline. The functional
+tests extend Flow's `FunctionalTestCase` and need a whole Neos with Neos.Demo and a MariaDB or MySQL database (on
+another database the content repository tests skip themselves). `.github/workflows/functional.yml` shows how CI runs
+them in Neos' base distribution:
+
+```bash
+FLOW_CONTEXT=Testing bin/phpunit -c Build/BuildEssentials/PhpUnit/FunctionalTests.xml Packages/Application/Neos.Api/Tests/Functional
+```
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
