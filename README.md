@@ -1,5 +1,11 @@
 # Neos.Api
 
+[![Packagist Version](https://img.shields.io/packagist/v/medienreaktor/neos-api)](https://packagist.org/packages/medienreaktor/neos-api)
+[![PHP Version Support](https://img.shields.io/packagist/dependency-v/medienreaktor/neos-api/php)](https://www.php.net/)
+[![Test Status](https://github.com/medienreaktor/Medienreaktor.NeosApi/actions/workflows/ci.yml/badge.svg)](https://github.com/medienreaktor/Medienreaktor.NeosApi/actions/workflows/ci.yml)
+[![Functional Tests](https://github.com/medienreaktor/Medienreaktor.NeosApi/actions/workflows/functional.yml/badge.svg)](https://github.com/medienreaktor/Medienreaktor.NeosApi/actions/workflows/functional.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 The HTTP API for Neos 9 and the Content Repository, defined in PHP with [neos/openapi](https://github.com/neos/openapi) and secured with OAuth 2.
 
 ## Usage
