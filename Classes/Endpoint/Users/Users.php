@@ -153,7 +153,7 @@ final readonly class Users
         if (!$this->accountPrivileges->mayManage($caller->account, $user)) {
             return self::mayNotManage();
         }
-        $isCaller = $user->getAccounts()->contains($caller->account);
+        $isCaller = in_array($caller->account, User::accountsOf($user), true);
         $roleIdentifiers = $patch->roleIdentifiers();
         if ($roleIdentifiers !== null) {
             if ($roleIdentifiers === []) {
@@ -237,7 +237,7 @@ final readonly class Users
         if ($user === null) {
             return self::notFound($userId);
         }
-        if ($user->getAccounts()->contains($caller->account)) {
+        if (in_array($caller->account, User::accountsOf($user), true)) {
             return Conflict::because('You can\'t delete your own user');
         }
         if (!$this->accountPrivileges->mayManage($caller->account, $user)) {

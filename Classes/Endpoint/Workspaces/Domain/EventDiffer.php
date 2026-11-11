@@ -133,7 +133,6 @@ final class EventDiffer
      */
     private function diffOf(string $type, string $node, array $payload): EventDiff
     {
-        $this->unknownBefore = false;
         $diff = match ($type) {
             'NodePropertiesWereSet' => $this->propertiesSet($node, $payload),
             'NodeAggregateWithNodeWasCreated' => $this->nodeCreated($payload),
@@ -144,7 +143,10 @@ final class EventDiffer
             'SubtreeWasTagged', 'SubtreeWasUntagged' => self::tagged($type === 'SubtreeWasTagged', $payload),
             default => EventDiff::none(),
         };
-        return $this->unknownBefore ? $diff->incomplete() : $diff;
+        // reset once read: only the diff methods above set it
+        $unknownBefore = $this->unknownBefore;
+        $this->unknownBefore = false;
+        return $unknownBefore ? $diff->incomplete() : $diff;
     }
 
     /**
@@ -425,7 +427,7 @@ final class EventDiffer
 
     private function baseNodeAggregate(string $node): NodeAggregate|null
     {
-        return $this->workspace->contentGraph(base: true)?->findNodeAggregateById(SharedModel\Node\NodeAggregateId::fromString($node));
+        return $this->workspace->baseContentGraph()?->findNodeAggregateById(SharedModel\Node\NodeAggregateId::fromString($node));
     }
 
     /**
@@ -437,7 +439,7 @@ final class EventDiffer
     {
         $dimensionSpacePoint = DimensionSpacePoint::fromArray($coordinates);
         if (!array_key_exists($dimensionSpacePoint->hash, $this->baseSubgraphs)) {
-            $this->baseSubgraphs[$dimensionSpacePoint->hash] = $this->workspace->contentGraph(base: true)?->getSubgraph($dimensionSpacePoint, VisibilityConstraints::createEmpty());
+            $this->baseSubgraphs[$dimensionSpacePoint->hash] = $this->workspace->baseContentGraph()?->getSubgraph($dimensionSpacePoint, VisibilityConstraints::createEmpty());
         }
         return $this->baseSubgraphs[$dimensionSpacePoint->hash];
     }

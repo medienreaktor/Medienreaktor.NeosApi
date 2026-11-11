@@ -466,7 +466,7 @@ final readonly class Workspaces
             return UnprocessableContent::because(sprintf('There is no workspace %s in the content repository %s to base the workspace on', $change->baseWorkspaceName->value, $contentRepositoryId->value));
         }
         // the content repository would skip the command
-        if ($workspace->workspace->baseWorkspaceName?->equals($change->baseWorkspaceName->toWorkspaceName())) {
+        if ($workspace->workspace->baseWorkspaceName->equals($change->baseWorkspaceName->toWorkspaceName())) {
             return $this->workspaceOf($workspace);
         }
         try {
@@ -742,7 +742,7 @@ final readonly class Workspaces
             return Forbidden::because(sprintf('You may not write to the workspace %s', $workspaceName->value));
         } catch (WorkspaceRebaseFailed $exception) {
             // nothing changed, the workspace has its content stream still
-            return WorkspaceConflict::of($exception, $workspace, sprintf('The changes of the workspace %s conflict with its base workspace %s, nothing was rebased. Rebase with strategy force to drop the conflicting changes and keep the others.', $workspaceName->value, $workspace->workspace->baseWorkspaceName?->value));
+            return WorkspaceConflict::of($exception, $workspace, sprintf('The changes of the workspace %s conflict with its base workspace %s, nothing was rebased. Rebase with strategy force to drop the conflicting changes and keep the others.', $workspaceName->value, $workspace->workspace->baseWorkspaceName->value));
         }
         return $this->workspaceOf($workspace);
     }
@@ -851,7 +851,7 @@ final readonly class Workspaces
                     $subjectType->value,
                     $subjectId->value,
                     $workspaceName->value,
-                    $restored === false ? sprintf('. Its role %s was unassigned and couldn\'t be given back', strtolower($existing->role->value)) : '',
+                    $restored === false && $existing !== null ? sprintf('. Its role %s was unassigned and couldn\'t be given back', strtolower($existing->role->value)) : '',
                 ));
             }
             throw $exception;

@@ -235,7 +235,7 @@ final readonly class Assets
             return $proxy;
         }
         $image = $proxy instanceof NeosAssetProxy ? $proxy->getAsset() : null;
-        $variants = $image instanceof Model\Image && !$image instanceof Model\ImageVariant ? $image->getVariants() : [];
+        $variants = $image instanceof Model\Image ? $image->getVariants() : [];
         usort($variants, static fn (Model\ImageVariant $a, Model\ImageVariant $b) => $a->getLastModified() <=> $b->getLastModified());
         return AssetListing::of(new AssetList(...array_map(
             fn (Model\ImageVariant $variant) => $this->asset($this->assetSourceFinder->neosProxy($variant)),
@@ -620,7 +620,11 @@ final readonly class Assets
 
     private function importResource(UploadedFileInterface $file): PersistentResource
     {
-        $resource = $this->resourceManager->importResource($file->getStream()->detach());
+        $stream = $file->getStream()->detach();
+        if ($stream === null) {
+            throw new \RuntimeException('The uploaded file has no stream to read', 1794393600);
+        }
+        $resource = $this->resourceManager->importResource($stream);
         $resource->setFilename($file->getClientFilename() ?? 'upload');
         return $resource;
     }

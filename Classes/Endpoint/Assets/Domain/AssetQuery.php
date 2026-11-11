@@ -101,7 +101,7 @@ final readonly class AssetQuery
         if ($this->assetType !== null) {
             $repository->filterByType($this->assetType->toAssetTypeFilter());
         }
-        if ($collection !== null && $repository instanceof SupportsCollectionsInterface) {
+        if ($collection !== null) {
             $repository->filterByCollection($collection);
         }
         if ($repository instanceof SupportsSortingInterface) {

@@ -51,7 +51,7 @@ final readonly class WorkspaceConflict implements ApiResponse
                 $inaccessible[$nodeAggregateId->value] = true;
                 continue;
             }
-            $changes[$nodeAggregateId?->value ?? '#' . count($changes)] ??= ConflictingChange::from($conflictingEvent, $locator);
+            $changes[$nodeAggregateId->value ?? '#' . count($changes)] ??= ConflictingChange::from($conflictingEvent, $locator);
         }
         return new self(self::problem(
             $exception instanceof PartialWorkspaceRebaseFailed ? 'partial' : 'rebase',

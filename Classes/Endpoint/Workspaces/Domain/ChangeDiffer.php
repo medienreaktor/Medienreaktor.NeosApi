@@ -47,7 +47,7 @@ final readonly class ChangeDiffer
     {
         // both looked up once per request, not per change
         $contentGraph = $workspace->contentGraph();
-        $baseContentGraph = $workspace->contentGraph(base: true);
+        $baseContentGraph = $workspace->baseContentGraph();
         $baseNodeAggregate = $baseContentGraph?->findNodeAggregateById($change->nodeAggregateId);
         // the projection marks a created node and a created variant of an existing one the same way
         $createdVariant = $change->created && $baseNodeAggregate !== null;
@@ -79,7 +79,7 @@ final readonly class ChangeDiffer
             $baseNode !== null && $baseNode->name?->value !== $node->name?->value
                 ? self::nameDiff($baseNode->name?->value, $node->name?->value)
                 : null,
-            $baseNode !== null && $baseSubgraph !== null ? self::parentDiff($subgraph, $baseSubgraph, $node) : null,
+            $baseNode !== null ? self::parentDiff($subgraph, $baseSubgraph, $node) : null,
             $this->propertyDiffs($node, $baseNode),
             self::referenceDiffs($subgraph, $node, $baseSubgraph, $baseNode),
             self::tagDiff($node, $baseNode),
