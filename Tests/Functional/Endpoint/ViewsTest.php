@@ -54,7 +54,7 @@ class ViewsTest extends EndpointTestCase
         $token = $this->token('editor-machine', 'views.read');
         // their schemas reject them
         foreach ([['nodeAggregateId' => 'Not_An_Id'], ['contentRepositoryId' => 'Not-An-Id'], ['workspaceName' => 'Not A Workspace'], ['dimensionSpacePoint' => 'de']] as $query) {
-            self::assertSame(400, $this->get(self::viewPath('navigation', $query + self::NODE), $token)->getStatusCode(), json_encode($query));
+            self::assertSame(400, $this->get(self::viewPath('navigation', $query + self::NODE), $token)->getStatusCode(), (string)json_encode($query));
         }
 
         // a syntax error before the content repository is looked up
@@ -87,7 +87,7 @@ class ViewsTest extends EndpointTestCase
 
         foreach ([self::NODE, ['contentRepositoryId' => 'unknown'], self::NODE + ['workspaceName' => 'user-editor', 'dimensionSpacePoint' => '{"language":"de"}']] as $query) {
             $response = $this->get(self::viewPath('navigation', $query), $token);
-            self::assertSame(404, $response->getStatusCode(), json_encode($query) . ': ' . $response->getBody());
+            self::assertSame(404, $response->getStatusCode(), (string)json_encode($query) . ': ' . $response->getBody());
             self::assertSame('There is no content repository with the ID unknown', self::json($response)['detail']);
         }
     }
@@ -151,6 +151,9 @@ class ViewsTest extends EndpointTestCase
 
     /**
      * @param array<string, string> $query
+     */
+    /**
+     * @param array<string, mixed> $query
      */
     private static function viewPath(string $viewName, array $query): string
     {

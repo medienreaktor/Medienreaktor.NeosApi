@@ -57,11 +57,10 @@ abstract class MediaTestCase extends ContentRepositoryTestCase
     {
         $service = $this->objectManager->get(AssetSourceService::class);
         // the property is private to the class Flow's proxy extends
-        $parent = get_parent_class($service);
-        $scope = $parent !== false && str_ends_with($parent, '_Original') ? $parent : $service::class;
-        \Closure::bind(function () use ($sources): void {
-            $this->assetSources = $sources;
-        }, $service, $scope)();
+        $class = new \ReflectionClass($service);
+        $parent = $class->getParentClass();
+        $owner = $parent !== false && str_ends_with($parent->getName(), '_Original') ? $parent : $class;
+        $owner->getProperty('assetSources')->setValue($service, $sources);
     }
 
     /**

@@ -78,7 +78,7 @@ class UsersTest extends EndpointTestCase
         self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
         self::assertSame(['Chris Chief'], array_column(self::json($response)['data'], 'label'));
         self::assertSame(['total' => 4], self::json($response)['meta']);
-        $links = array_map(static fn (?string $link) => $link !== null ? urldecode(parse_url($link, PHP_URL_QUERY)) : null, self::json($response)['links']);
+        $links = array_map(static fn (?string $link) => $link !== null ? urldecode((string)parse_url($link, PHP_URL_QUERY)) : null, self::json($response)['links']);
         self::assertSame([
             'self' => 'offset=1&limit=1',
             'first' => 'offset=0&limit=1',
@@ -221,7 +221,9 @@ class UsersTest extends EndpointTestCase
         $this->persistenceManager->clearState();
         $response = $this->get('/api/users/' . $user['id'], $this->token('admin-machine', 'users.read'));
         self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
-        self::assertTrue($this->objectManager->get(UserService::class)->getUser('writer')->isActive());
+        $writer = $this->objectManager->get(UserService::class)->getUser('writer');
+        self::assertNotNull($writer);
+        self::assertTrue($writer->isActive());
     }
 
     #[Test]
@@ -510,6 +512,7 @@ class UsersTest extends EndpointTestCase
         self::assertSame(204, $response->getStatusCode(), (string)$response->getBody());
         $this->persistenceManager->clearState();
         $account = $this->objectManager->get(AccountRepository::class)->findActiveByAccountIdentifierAndAuthenticationProviderName('editor', 'Neos.Neos:Backend');
+        self::assertNotNull($account);
         self::assertTrue($this->objectManager->get(HashService::class)->validatePassword('new-password', $account->getCredentialsSource()));
         self::assertSame(401, $this->get('/api/me', $editorToken)->getStatusCode());
         self::assertSame(200, $this->get('/api/me', $adminToken)->getStatusCode());

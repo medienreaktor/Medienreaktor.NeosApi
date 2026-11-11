@@ -119,6 +119,9 @@ final class FakeAssetProxy implements AssetProxyInterface, HasRemoteOriginalInte
         return $this->getIptcProperties()[$propertyName] ?? '';
     }
 
+    /**
+     * @return array<string, string>
+     */
     public function getIptcProperties(): array
     {
         $properties = FakeAssetSource::ASSETS[$this->identifier][2];

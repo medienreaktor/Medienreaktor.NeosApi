@@ -30,6 +30,9 @@ final class FakeAssetSource implements AssetSourceInterface
     ) {
     }
 
+    /**
+     * @param array<mixed> $assetSourceOptions
+     */
     public static function createFromConfiguration(string $assetSourceIdentifier, array $assetSourceOptions): AssetSourceInterface
     {
         return new self($assetSourceIdentifier);

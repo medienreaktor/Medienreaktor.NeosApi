@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Neos\Api\Tests\Functional\Endpoint;
 
+use Neos\Media\Domain\Model\Asset;
 use Neos\Media\Domain\Model\Tag;
 use Neos\Media\Domain\Repository\AssetRepository;
 use Neos\Media\Domain\Repository\TagRepository;
@@ -175,7 +176,7 @@ class AssetTagsTest extends MediaTestCase
         self::assertSame(['total' => 2], $list['meta']);
         self::assertSame([], $list['data'][1]['children']);
         $asset = $this->objectManager->get(AssetRepository::class)->findByIdentifier($this->assetId);
-        self::assertNotNull($asset);
+        self::assertInstanceOf(Asset::class, $asset);
         self::assertCount(0, $asset->getTags());
 
         self::assertSame(404, $this->delete('/api/assettags/' . $this->treesId, $token)->getStatusCode());
