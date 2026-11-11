@@ -36,7 +36,9 @@ jobs:
   # skip themselves, which would pass this job without proving anything.
   functional:
     name: Functional (PHP 8.4, Neos 9.2)
-    runs-on: hetzner
+    # GitHub-hosted: this repository is public, so its minutes are free, and a
+    # self-hosted runner would execute code from pull requests opened on forks.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     services:
