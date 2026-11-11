@@ -10,7 +10,7 @@ on:
 
 # Supersede a run when the same pull request branch is pushed again, but never
 # cancel one on main or a manual re-verification: those exist to leave a verdict
-# on a commit. The org's runners are a capped pool.
+# on a commit.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -39,7 +39,9 @@ jobs:
   # functional suite needs a whole Neos and runs in functional.yml.
   lint:
     name: Lint (PHP 8.4, highest deps)
-    runs-on: hetzner
+    # GitHub-hosted: this repository is public, so its minutes are free, and a
+    # self-hosted runner would execute code from pull requests opened on forks.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
