@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Assets;
@@ -537,7 +538,7 @@ final readonly class Assets
             $importedAsset = $this->assetSourceService->importAsset($assetSourceId->value, $assetId->value);
         } catch (AssetSourceServiceException $exception) {
             return UnprocessableContent::because($exception->getMessage());
-        } catch (ResourceException|AssetSourceConnectionExceptionInterface|ImageFileException) {
+        } catch (ResourceException | AssetSourceConnectionExceptionInterface | ImageFileException) {
             // Neos logs the details
             return AssetImportFailed::because(sprintf('The asset source %s didn\'t deliver the file of the asset %s', $assetSourceId->value, $assetId->value));
         }

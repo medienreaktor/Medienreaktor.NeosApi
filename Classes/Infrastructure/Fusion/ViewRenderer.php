@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Infrastructure\Fusion;
@@ -78,7 +79,7 @@ final readonly class ViewRenderer
         }
         try {
             return JsonValues::decodeObject($json);
-        } catch (\JsonException|\InvalidArgumentException $exception) {
+        } catch (\JsonException | \InvalidArgumentException $exception) {
             throw new \RuntimeException(sprintf('The Fusion prototype %s must render a JSON object, e.g. by inheriting from Neos.Api:View', $prototypeName), 1790838157, $exception);
         }
     }

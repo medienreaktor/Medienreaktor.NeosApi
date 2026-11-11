@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Tests\Functional\Endpoint;
@@ -89,10 +90,12 @@ class OptionsTest extends EndpointTestCase
     #[Test]
     public function requireTheScopeAndPrivilegeOfTheCreate(): void
     {
-        foreach ([
+        foreach (
+            [
             ['/api/options/users', 'users.create', 'Neos.Api:Users.Create'],
             ['/api/options/sites', 'sites.create', 'Neos.Api:Sites.Create'],
-        ] as [$path, $scope, $privilege]) {
+            ] as [$path, $scope, $privilege]
+        ) {
             $response = $this->get($path, $this->token('editor-machine', $scope));
             self::assertSame(403, $response->getStatusCode(), $path . ': ' . $response->getBody());
             self::assertStringContainsString($privilege, self::json($response)['detail']);

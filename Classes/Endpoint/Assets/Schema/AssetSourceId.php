@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Assets\Schema;
@@ -7,7 +8,6 @@ use Neos\JsonSchema\ProvidesSchema;
 use Neos\JsonSchema\Schema;
 use Neos\JsonSchema\StringSchema;
 use Neos\Schematic\Schematic;
-
 
 final readonly class AssetSourceId implements ProvidesSchema
 {

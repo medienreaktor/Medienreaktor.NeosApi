@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Tests\Functional\Endpoint;
@@ -165,7 +166,8 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame('filterByHierarchy and filterByReference can\'t be combined', self::json($response)['detail']);
 
         // valid ones get as far as the content repository lookup, without either it's the default site of the content repository
-        foreach ([
+        foreach (
+            [
             [],
             ['filterByHierarchy' => $hierarchy],
             ['filterByHierarchy' => ['type' => 'descendantOf', 'nodeAggregateId' => 'some-node']],
@@ -173,13 +175,15 @@ class NodesTest extends ContentRepositoryTestCase
             ['filterByReference' => ['nodeAggregateId' => 'some-node', 'name' => 'relatedPages']],
             ['filterByNodeType' => 'Neos.Neos:Document,!Neos.Neos:Shortcut', 'search' => 'neos'],
             ['filterByNodeAggregateId' => 'some-node,other-node', 'filterByNodeType' => 'Neos.Neos:Document'],
-        ] as $query) {
+            ] as $query
+        ) {
             $response = $this->get(self::listPath($query + ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"de"}']), $token);
             self::assertSame(404, $response->getStatusCode(), json_encode($query) . ': ' . $response->getBody());
         }
 
         // their schemas reject them: an unknown type (also the former parent and ancestor), missing or unknown members, not an aggregate id, empty strings
-        foreach ([
+        foreach (
+            [
             ['filterByHierarchy' => ['type' => 'child', 'nodeAggregateId' => 'some-node']],
             ['filterByHierarchy' => ['type' => 'parent', 'nodeAggregateId' => 'some-node']],
             ['filterByHierarchy' => ['type' => 'ancestor', 'nodeAggregateId' => 'some-node']],
@@ -196,7 +200,8 @@ class NodesTest extends ContentRepositoryTestCase
             ['filterByNodeAggregateId' => 'some-node,'],
             ['filterByNodeAggregateId' => 'Not_An_Id'],
             ['filterByNodeAggregateId' => implode(',', array_map(static fn (int $i) => 'node-' . $i, range(1, 101)))],
-        ] as $query) {
+            ] as $query
+        ) {
             self::assertSame(400, $this->get(self::listPath($query), $token)->getStatusCode(), json_encode($query));
         }
 
@@ -389,7 +394,8 @@ class NodesTest extends ContentRepositoryTestCase
         $body = ['nodeType' => 'Neos.Neos:Page', 'parentNodeAggregateId' => 'some-node'];
 
         // the body's schema rejects them: no node type or parent, unknown fields, invalid ids, properties no map
-        foreach ([
+        foreach (
+            [
             ['parentNodeAggregateId' => 'some-node'],
             ['nodeType' => 'Neos.Neos:Page'],
             $body + ['nodeName' => 'about-us'],
@@ -398,7 +404,8 @@ class NodesTest extends ContentRepositoryTestCase
             $body + ['properties' => 'title'],
             $body + ['tetheredDescendantNodeAggregateIds' => ['main' => 'Not_An_Id']],
             $body + ['tetheredDescendantNodeAggregateIds' => ['main']],
-        ] as $invalid) {
+            ] as $invalid
+        ) {
             self::assertSame(400, $this->post($path, $token, $invalid)->getStatusCode(), json_encode($invalid));
         }
     }
@@ -784,11 +791,13 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
 
         // the content repository checks none of these
-        foreach ([
+        foreach (
+            [
             ['sidebar' => 'some-sidebar'],
             ['main/' => 'some-main'],
             ['main' => 'own-id'],
-        ] as $invalid) {
+            ] as $invalid
+        ) {
             $response = $this->post(self::path('', self::IN_LIVE), $token, $page + ['nodeAggregateId' => 'own-id', 'tetheredDescendantNodeAggregateIds' => $invalid]);
             self::assertSame(422, $response->getStatusCode(), json_encode($invalid) . ': ' . $response->getBody());
         }
@@ -972,14 +981,16 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(201, $response->getStatusCode(), (string)$response->getBody());
         self::assertSame(['{"language":"de"}', '{"language":"de"}', 'Child'], [self::json($response)['dimensionSpacePoint'], self::json($response)['originDimensionSpacePoint'], self::json($response)['label']]);
 
-        foreach ([
+        foreach (
+            [
             ['parentNodeAggregateId' => 'unknown-node'],
             ['parentNodeAggregateId' => $siteNodeId, 'succeedingSiblingNodeAggregateId' => $child],
             ['parentNodeAggregateId' => $siteNodeId, 'targetDimensionSpacePoint' => '{"language":"fr"}'],
             ['parentNodeAggregateId' => $siteNodeId, 'targetDimensionSpacePoint' => '{not json}'],
             // a content collection doesn't allow pages
             ['parentNodeAggregateId' => $this->mainCollection($token, $parent)],
-        ] as $body) {
+            ] as $body
+        ) {
             $response = $this->post(self::path($parent . '/copy', self::IN_LIVE), $token, $body);
             self::assertSame(422, $response->getStatusCode(), json_encode($body) . ': ' . $response->getBody());
         }
