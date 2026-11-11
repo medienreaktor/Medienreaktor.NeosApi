@@ -94,7 +94,7 @@ class DataSourcesTest extends EndpointTestCase
 
         foreach ([['contentRepositoryId' => 'default'], ['workspaceName' => 'live'], ['dimensionSpacePoint' => '{}']] as $query) {
             $response = $this->get(self::path(self::ECHO, $query), $token);
-            self::assertSame(400, $response->getStatusCode(), json_encode($query) . ': ' . $response->getBody());
+            self::assertSame(400, $response->getStatusCode(), (string)json_encode($query) . ': ' . $response->getBody());
             self::assertSame('contentRepositoryId, workspaceName and dimensionSpacePoint are where to read the node, give nodeAggregateId as well', self::json($response)['detail']);
         }
     }
@@ -107,7 +107,7 @@ class DataSourcesTest extends EndpointTestCase
 
         // their schemas reject them
         foreach ([['nodeAggregateId' => 'Not_An_Id'], ['contentRepositoryId' => 'Not-An-Id'], ['workspaceName' => 'Not A Workspace'], ['arguments' => 'not-an-object']] as $query) {
-            self::assertSame(400, $this->get(self::path(self::ECHO, $query + $node), $token)->getStatusCode(), json_encode($query));
+            self::assertSame(400, $this->get(self::path(self::ECHO, $query + $node), $token)->getStatusCode(), (string)json_encode($query));
         }
 
         // a syntax error before the content repository is looked up

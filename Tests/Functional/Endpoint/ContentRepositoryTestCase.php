@@ -126,6 +126,11 @@ abstract class ContentRepositoryTestCase extends EndpointTestCase
         $this->withoutAuthorizationChecks(fn () => $this->contentRepository()->handle($command));
     }
 
+    /**
+     * @template T
+     * @param \Closure(): T $callback
+     * @return T
+     */
     protected function withoutAuthorizationChecks(\Closure $callback): mixed
     {
         return $this->objectManager->get(Context::class)->withoutAuthorizationChecks($callback);

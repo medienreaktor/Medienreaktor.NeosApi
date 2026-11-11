@@ -43,7 +43,7 @@ final class FakeAssetProxyQuery implements AssetProxyQueryInterface
         return $this->limit;
     }
 
-    public function setSearchTerm(string $searchTerm)
+    public function setSearchTerm(string $searchTerm): void
     {
         $this->searchTerm = $searchTerm;
     }

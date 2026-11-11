@@ -38,7 +38,7 @@ final class FakeAssetProxyQueryResult implements AssetProxyQueryResultInterface
 
     public function count(): int
     {
-        return $this->query->count();
+        return max(0, $this->query->count());
     }
 
     public function current(): mixed

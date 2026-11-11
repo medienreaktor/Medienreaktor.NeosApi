@@ -137,7 +137,7 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
         self::assertNotNull($this->nodeAggregate('live', 'site-page'));
 
         foreach ([['siteAggregateId' => self::PAGE], ['documentAggregateIds' => ['unknown']], ['documentAggregateIds' => []]] as $invalid) {
-            self::assertSame(422, $this->post('/api/cr/default/workspaces/team/publish', $token, $invalid)->getStatusCode(), json_encode($invalid));
+            self::assertSame(422, $this->post('/api/cr/default/workspaces/team/publish', $token, $invalid)->getStatusCode(), (string)json_encode($invalid));
         }
     }
 
@@ -261,7 +261,7 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
 
         $listing = self::json($this->get('/api/cr/default/workspaces/team/changes', $token));
         // grouped by document: each page with its tethered content collection
-        self::assertSame(['a-page', 'a-page', 'b-page', 'b-page', self::PAGE], array_column($listing['data'], 'documentAggregateId'), json_encode($listing['data']));
+        self::assertSame(['a-page', 'a-page', 'b-page', 'b-page', self::PAGE], array_column($listing['data'], 'documentAggregateId'), (string)json_encode($listing['data']));
         self::assertSame(5, $listing['meta']['total']);
         self::assertSame([self::SITE], array_values(array_unique(array_column($listing['data'], 'siteAggregateId'))));
         self::assertNull($listing['data'][0]['diff']);
@@ -544,7 +544,7 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
     }
 
     /**
-     * @return list<array{string, string, string}> type, ID and role of each assignment
+     * @return array<array{mixed, mixed, mixed}> type, ID and role of each assignment
      */
     private function roles(string $workspaceName): array
     {

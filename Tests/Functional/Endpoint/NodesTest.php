@@ -121,7 +121,7 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(400, $this->post($path, $token, ['parentNodeAggregateId' => 'other-node'])->getStatusCode());
         // their schemas reject them: no parent, not an id, not a point, unknown fields
         foreach ([[], ['parentNodeAggregateId' => 'Not_An_Id'], ['parentNodeAggregateId' => 'other-node', 'targetDimensionSpacePoint' => 'de'], ['parentNodeAggregateId' => 'other-node', 'nodeName' => 'x']] as $body) {
-            self::assertSame(400, $this->post($path . '?workspaceName=user-editor', $token, $body)->getStatusCode(), json_encode($body));
+            self::assertSame(400, $this->post($path . '?workspaceName=user-editor', $token, $body)->getStatusCode(), (string)json_encode($body));
         }
 
         // changing isn't enough, only editors may create nodes
@@ -143,7 +143,7 @@ class NodesTest extends ContentRepositoryTestCase
 
         foreach ([[], ['workspaceName' => 'user-editor', 'dimensionSpacePoint' => '{"language":"de"}', 'text' => 'Über uns'], ['text' => '']] as $query) {
             $response = $this->get(self::uriPathSegmentPath('some-node', $query), $token);
-            self::assertSame(404, $response->getStatusCode(), json_encode($query) . ': ' . $response->getBody());
+            self::assertSame(404, $response->getStatusCode(), (string)json_encode($query) . ': ' . $response->getBody());
             self::assertSame('There is no content repository with the ID unknown', self::json($response)['detail']);
         }
         $response = $this->get(self::uriPathSegmentPath('some-node', []), $this->token('nobody-machine', 'me.read'));
@@ -178,7 +178,7 @@ class NodesTest extends ContentRepositoryTestCase
             ] as $query
         ) {
             $response = $this->get(self::listPath($query + ['workspaceName' => 'live', 'dimensionSpacePoint' => '{"language":"de"}']), $token);
-            self::assertSame(404, $response->getStatusCode(), json_encode($query) . ': ' . $response->getBody());
+            self::assertSame(404, $response->getStatusCode(), (string)json_encode($query) . ': ' . $response->getBody());
         }
 
         // their schemas reject them: an unknown type (also the former parent and ancestor), missing or unknown members, not an aggregate id, empty strings
@@ -202,7 +202,7 @@ class NodesTest extends ContentRepositoryTestCase
             ['filterByNodeAggregateId' => implode(',', array_map(static fn (int $i) => 'node-' . $i, range(1, 101)))],
             ] as $query
         ) {
-            self::assertSame(400, $this->get(self::listPath($query), $token)->getStatusCode(), json_encode($query));
+            self::assertSame(400, $this->get(self::listPath($query), $token)->getStatusCode(), (string)json_encode($query));
         }
 
         // filterByNodeAggregateId is a query of its own
@@ -245,7 +245,7 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(404, $this->get(self::listPath($filter + ['offset' => '50', 'limit' => '100']), $token)->getStatusCode());
         foreach ([['limit' => '101'], ['limit' => '0'], ['offset' => '-1'], ['limit' => 'ten']] as $page) {
             $response = $this->get(self::listPath($filter + $page), $token);
-            self::assertSame(400, $response->getStatusCode(), json_encode($page) . ': ' . $response->getBody());
+            self::assertSame(400, $response->getStatusCode(), (string)json_encode($page) . ': ' . $response->getBody());
         }
     }
 
@@ -406,7 +406,7 @@ class NodesTest extends ContentRepositoryTestCase
             $body + ['tetheredDescendantNodeAggregateIds' => ['main']],
             ] as $invalid
         ) {
-            self::assertSame(400, $this->post($path, $token, $invalid)->getStatusCode(), json_encode($invalid));
+            self::assertSame(400, $this->post($path, $token, $invalid)->getStatusCode(), (string)json_encode($invalid));
         }
     }
 
@@ -551,7 +551,7 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(400, $this->put(self::nodeTypePath('some-node', []), $token, $body)->getStatusCode());
         // their schemas reject them
         foreach ([[], ['nodeType' => ''], $body + ['strategy' => 'delete']] as $invalid) {
-            self::assertSame(400, $this->put(self::nodeTypePath('some-node', ['workspaceName' => 'user-editor']), $token, $invalid)->getStatusCode(), json_encode($invalid));
+            self::assertSame(400, $this->put(self::nodeTypePath('some-node', ['workspaceName' => 'user-editor']), $token, $invalid)->getStatusCode(), (string)json_encode($invalid));
         }
     }
 
@@ -576,7 +576,7 @@ class NodesTest extends ContentRepositoryTestCase
 
         foreach ([['parentNodeAggregateId' => 'other-node'], ['succeedingSiblingNodeAggregateId' => 'other-node'], ['parentNodeAggregateId' => 'other-node', 'succeedingSiblingNodeAggregateId' => 'third-node']] as $body) {
             $response = $this->post($path, $token, $body);
-            self::assertSame(404, $response->getStatusCode(), json_encode($body) . ': ' . $response->getBody());
+            self::assertSame(404, $response->getStatusCode(), (string)json_encode($body) . ': ' . $response->getBody());
             self::assertSame('There is no content repository with the ID unknown', self::json($response)['detail']);
         }
 
@@ -647,7 +647,7 @@ class NodesTest extends ContentRepositoryTestCase
         self::assertSame(400, $this->post(self::variantsPath('some-node', []), $token, ['dimensionSpacePoint' => '{"language":"de"}'])->getStatusCode());
         // their schemas reject them: no target, not a point
         foreach ([[], ['dimensionSpacePoint' => 'de'], ['dimensionSpacePoint' => '{"language":"de"}', 'copyContent' => 'yes']] as $body) {
-            self::assertSame(400, $this->post($path, $token, $body)->getStatusCode(), json_encode($body));
+            self::assertSame(400, $this->post($path, $token, $body)->getStatusCode(), (string)json_encode($body));
         }
     }
 
@@ -799,7 +799,7 @@ class NodesTest extends ContentRepositoryTestCase
             ] as $invalid
         ) {
             $response = $this->post(self::path('', self::IN_LIVE), $token, $page + ['nodeAggregateId' => 'own-id', 'tetheredDescendantNodeAggregateIds' => $invalid]);
-            self::assertSame(422, $response->getStatusCode(), json_encode($invalid) . ': ' . $response->getBody());
+            self::assertSame(422, $response->getStatusCode(), (string)json_encode($invalid) . ': ' . $response->getBody());
         }
         self::assertSame(404, $this->get(self::path('own-id', self::IN_LIVE), $token)->getStatusCode());
 
@@ -992,7 +992,7 @@ class NodesTest extends ContentRepositoryTestCase
             ] as $body
         ) {
             $response = $this->post(self::path($parent . '/copy', self::IN_LIVE), $token, $body);
-            self::assertSame(422, $response->getStatusCode(), json_encode($body) . ': ' . $response->getBody());
+            self::assertSame(422, $response->getStatusCode(), (string)json_encode($body) . ': ' . $response->getBody());
         }
         self::assertSame(404, $this->post(self::path('unknown-node/copy', self::IN_LIVE), $token, ['parentNodeAggregateId' => $siteNodeId])->getStatusCode());
     }

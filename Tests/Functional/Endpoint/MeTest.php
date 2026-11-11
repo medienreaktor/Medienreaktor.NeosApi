@@ -201,7 +201,9 @@ class MeTest extends EndpointTestCase
         self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
         self::assertSame('en', self::json($response)['interfaceLanguage']);
         $this->persistenceManager->clearState();
-        self::assertNull($this->objectManager->get(UserService::class)->getUser('editor')->getPreferences()->getInterfaceLanguage());
+        $user = $this->objectManager->get(UserService::class)->getUser('editor');
+        self::assertNotNull($user);
+        self::assertNull($user->getPreferences()->getInterfaceLanguage());
     }
 
     #[Test]
@@ -238,6 +240,7 @@ class MeTest extends EndpointTestCase
         $this->persistenceManager->persistAll();
         $this->persistenceManager->clearState();
         $account = $this->objectManager->get(AccountRepository::class)->findActiveByAccountIdentifierAndAuthenticationProviderName('editor', 'Neos.Neos:Backend');
+        self::assertNotNull($account);
         $hashService = $this->objectManager->get(HashService::class);
         self::assertTrue($hashService->validatePassword('new-password', $account->getCredentialsSource()));
         self::assertFalse($hashService->validatePassword('password', $account->getCredentialsSource()));
@@ -266,6 +269,7 @@ class MeTest extends EndpointTestCase
         self::assertSame(422, $response->getStatusCode(), (string)$response->getBody());
         $this->persistenceManager->clearState();
         $account = $this->objectManager->get(AccountRepository::class)->findActiveByAccountIdentifierAndAuthenticationProviderName('editor', 'Neos.Neos:Backend');
+        self::assertNotNull($account);
         self::assertTrue($this->objectManager->get(HashService::class)->validatePassword('password', $account->getCredentialsSource()));
     }
 

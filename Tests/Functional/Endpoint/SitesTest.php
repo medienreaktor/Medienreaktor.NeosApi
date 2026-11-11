@@ -286,6 +286,7 @@ class SitesTest extends ContentRepositoryTestCase
 
         $this->persistenceManager->clearState();
         $domain = $this->objectManager->get(DomainRepository::class)->findByIdentifier($this->secondDomainId);
+        self::assertNotNull($domain);
         self::assertSame([null, null], [$domain->getScheme(), $domain->getPort()]);
     }
 
@@ -298,7 +299,9 @@ class SitesTest extends ContentRepositoryTestCase
         self::assertSame([false, false], [self::json($response)['active'], self::json($response)['isPrimary']]);
 
         $this->persistenceManager->clearState();
-        self::assertNull($this->objectManager->get(SiteRepository::class)->findOneByNodeName('demo')->getPrimaryDomain(false));
+        $site = $this->objectManager->get(SiteRepository::class)->findOneByNodeName('demo');
+        self::assertNotNull($site);
+        self::assertNull($site->getPrimaryDomain(false));
         self::assertSame('example.com:8080', self::json($this->get('/api/sites/demo', $this->token('admin-machine', 'sites.read')))['primaryDomain']);
     }
 
@@ -312,7 +315,9 @@ class SitesTest extends ContentRepositoryTestCase
 
         $this->persistenceManager->clearState();
         self::assertNull($this->objectManager->get(DomainRepository::class)->findByIdentifier($this->primaryDomainId));
-        self::assertNull($this->objectManager->get(SiteRepository::class)->findOneByNodeName('demo')->getPrimaryDomain(false));
+        $site = $this->objectManager->get(SiteRepository::class)->findOneByNodeName('demo');
+        self::assertNotNull($site);
+        self::assertNull($site->getPrimaryDomain(false));
         $site = self::json($this->get('/api/sites/demo', $this->token('admin-machine', 'sites.read')));
         self::assertSame(['example.com'], array_column($site['domains'], 'hostname'));
         self::assertSame('example.com:8080', $site['primaryDomain']);
