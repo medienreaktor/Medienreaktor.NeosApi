@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Tests\Functional\Endpoint;
@@ -593,11 +594,13 @@ class WorkspacesTest extends EndpointTestCase
         $readToken = $this->token('editor-machine', 'workspaces.read');
         $rolesToken = $this->token('editor-machine', 'workspaces.roles');
 
-        foreach ([
+        foreach (
+            [
             $this->get('/api/cr/unknown/workspaces/team/roles', $readToken),
             $this->put('/api/cr/unknown/workspaces/team/roles/group/Neos.Neos:AbstractEditor', $rolesToken, ['role' => 'viewer']),
             $this->delete('/api/cr/unknown/workspaces/team/roles/user/0fd65ee4-9e85-4b4a-9f2c-4b7b2f3b9e44', $rolesToken),
-        ] as $response) {
+            ] as $response
+        ) {
             self::assertSame(404, $response->getStatusCode(), (string)$response->getBody());
             self::assertSame('There is no content repository with the ID unknown', self::json($response)['detail']);
         }
@@ -660,10 +663,12 @@ class WorkspacesTest extends EndpointTestCase
     {
         $token = $this->token('editor-machine', 'workspaces.read workspaces.update');
 
-        foreach ([
+        foreach (
+            [
             $this->put('/api/cr/default/workspaces/team/roles/group/Neos.Neos:AbstractEditor', $token, ['role' => 'viewer']),
             $this->delete('/api/cr/default/workspaces/team/roles/group/Neos.Neos:AbstractEditor', $token),
-        ] as $response) {
+            ] as $response
+        ) {
             self::assertSame(403, $response->getStatusCode(), (string)$response->getBody());
             self::assertStringContainsString('workspaces.roles', self::json($response)['detail']);
         }

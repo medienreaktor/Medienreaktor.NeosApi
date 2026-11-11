@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Workspaces\Parameter;
@@ -32,13 +33,15 @@ final readonly class ChangeTypes implements ProvidesSchema
     public function matches(Change $change): bool
     {
         foreach (explode(',', $this->value) as $type) {
-            if (match ($type) {
+            if (
+                match ($type) {
                 'created' => $change->created,
                 'changed' => $change->changed,
                 'moved' => $change->moved,
                 'deleted' => $change->deleted,
                 default => false,
-            }) {
+                }
+            ) {
                 return true;
             }
         }

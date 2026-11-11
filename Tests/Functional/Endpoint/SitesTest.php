@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Tests\Functional\Endpoint;
@@ -118,14 +119,16 @@ class SitesTest extends ContentRepositoryTestCase
     #[Test]
     public function changingIsDeniedToEditors(): void
     {
-        foreach ([
+        foreach (
+            [
             ['sites.create', 'Neos.Api:Sites.Create', fn (string $token) => $this->post('/api/sites', $token, ['packageKey' => 'Neos.Demo', 'name' => 'New Site', 'nodeTypeName' => 'Neos.Demo:Document.Homepage'])],
             ['sites.update', 'Neos.Api:Sites.Update', fn (string $token) => $this->patch('/api/sites/demo', $token, ['name' => 'Evil'])],
             ['sites.update', 'Neos.Api:Sites.Update', fn (string $token) => $this->post('/api/sites/demo/domains', $token, ['hostname' => 'evil.example.com'])],
             ['sites.update', 'Neos.Api:Sites.Update', fn (string $token) => $this->patch('/api/sites/demo/domains/' . $this->primaryDomainId, $token, ['active' => false])],
             ['sites.update', 'Neos.Api:Sites.Update', fn (string $token) => $this->delete('/api/sites/demo/domains/' . $this->primaryDomainId, $token)],
             ['sites.delete', 'Neos.Api:Sites.Delete', fn (string $token) => $this->delete('/api/sites/demo', $token)],
-        ] as [$scope, $privilege, $request]) {
+            ] as [$scope, $privilege, $request]
+        ) {
             $response = $request($this->token('editor-machine', $scope));
 
             self::assertSame(403, $response->getStatusCode(), $privilege . ': ' . $response->getBody());
@@ -137,11 +140,13 @@ class SitesTest extends ContentRepositoryTestCase
     public function requiresTheScopes(): void
     {
         $token = $this->token('admin-machine', 'sites.read');
-        foreach ([
+        foreach (
+            [
             ['sites.update', $this->patch('/api/sites/demo', $token, ['name' => 'Renamed'])],
             ['sites.update', $this->post('/api/sites/demo/domains', $token, ['hostname' => 'new.example.com'])],
             ['sites.delete', $this->delete('/api/sites/demo', $token)],
-        ] as [$scope, $response]) {
+            ] as [$scope, $response]
+        ) {
             self::assertSame(403, $response->getStatusCode(), $scope . ': ' . $response->getBody());
             self::assertStringContainsString($scope, self::json($response)['detail']);
         }

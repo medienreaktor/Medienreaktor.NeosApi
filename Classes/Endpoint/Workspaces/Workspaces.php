@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Workspaces;
@@ -604,7 +605,7 @@ final readonly class Workspaces
             return Forbidden::because($publish
                 ? sprintf('You may not publish the workspace %s to %s', $name->value, $baseName)
                 : sprintf('You may not discard the changes of the workspace %s', $name->value));
-        } catch (WorkspaceRebaseFailed|PartialWorkspaceRebaseFailed $exception) {
+        } catch (WorkspaceRebaseFailed | PartialWorkspaceRebaseFailed $exception) {
             $detail = match (true) {
                 $publish && $exception instanceof PartialWorkspaceRebaseFailed => sprintf('The selected changes of the workspace %s can\'t be published without others they depend on, publish more of them or all', $name->value),
                 $publish => sprintf('The changes of the workspace %s conflict with its base workspace %s, which changed meanwhile', $name->value, $baseName),
@@ -832,7 +833,7 @@ final readonly class Workspaces
             }
             try {
                 $this->workspaceService->assignWorkspaceRole($crId, $name, $newAssignment);
-            } catch (AccessDenied|\RuntimeException $exception) {
+            } catch (AccessDenied | \RuntimeException $exception) {
                 // two calls, not atomic: the subject gets its previous role back
                 if ($existing !== null) {
                     $restored = $this->reassign($crId, $name, $existing);
@@ -914,7 +915,7 @@ final readonly class Workspaces
         try {
             $this->workspaceService->assignWorkspaceRole($contentRepositoryId, $workspaceName, $assignment);
             return true;
-        } catch (AccessDenied|\RuntimeException) {
+        } catch (AccessDenied | \RuntimeException) {
             return false;
         }
     }

@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Tests\Functional\Endpoint;
@@ -179,5 +180,4 @@ class AssetTagsTest extends MediaTestCase
 
         self::assertSame(404, $this->delete('/api/assettags/' . $this->treesId, $token)->getStatusCode());
     }
-
 }

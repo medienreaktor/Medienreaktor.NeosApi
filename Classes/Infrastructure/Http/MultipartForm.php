@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Infrastructure\Http;
@@ -128,8 +129,10 @@ final readonly class MultipartForm
             }
             $part = (string)preg_replace('/^\r?\n|\r?\n$/', '', $part);
             [$headers, $content] = array_pad(preg_split('/\r?\n\r?\n/', $part, 2) ?: [], 2, '');
-            if (preg_match('/^Content-Disposition:\s*form-data\s*;(.*)$/mi', $headers, $disposition) !== 1
-                || preg_match('/\bname="([^"]*)"/i', $disposition[1], $name) !== 1) {
+            if (
+                preg_match('/^Content-Disposition:\s*form-data\s*;(.*)$/mi', $headers, $disposition) !== 1
+                || preg_match('/\bname="([^"]*)"/i', $disposition[1], $name) !== 1
+            ) {
                 continue;
             }
             if (preg_match('/\bfilename="([^"]*)"/i', $disposition[1], $filename) === 1) {

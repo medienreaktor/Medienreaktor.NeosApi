@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Me\Schema;
@@ -6,7 +7,6 @@ namespace Neos\Api\Endpoint\Me\Schema;
 use Neos\JsonSchema\ProvidesSchema;
 use Neos\JsonSchema\Schema;
 use Neos\JsonSchema\StringSchema;
-
 use Neos\Schematic\Schematic;
 
 final readonly class ClientIdentifier implements ProvidesSchema

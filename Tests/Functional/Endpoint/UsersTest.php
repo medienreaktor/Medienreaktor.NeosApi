@@ -1,4 +1,5 @@
 <?php
+
 declare(strict_types=1);
 
 namespace Neos\Api\Tests\Functional\Endpoint;
@@ -431,7 +432,8 @@ class UsersTest extends EndpointTestCase
     #[Test]
     public function userManagersDontManageUsersWithOtherRoles(): void
     {
-        foreach ([
+        foreach (
+            [
             'change' => fn () => $this->patch('/api/users/' . $this->adminId, $this->token('chief-machine', 'users.update'), ['firstName' => 'Evil']),
             'set the password' => fn () => $this->put('/api/users/' . $this->adminId . '/password', $this->token('chief-machine', 'users.update'), ['newPassword' => 'evil-password']),
             'delete' => fn () => $this->delete('/api/users/' . $this->adminId, $this->token('chief-machine', 'users.delete')),
@@ -440,7 +442,8 @@ class UsersTest extends EndpointTestCase
             // the default role, Neos.Neos:Editor, isn't the manager's
             'create with the default role' => fn () => $this->post('/api/users', $this->token('manager-machine', 'users.create'), ['username' => 'writer', 'password' => 'password', 'firstName' => 'Wanda', 'lastName' => 'Writer']),
             'change an editor' => fn () => $this->patch('/api/users/' . $this->editorId, $this->token('manager-machine', 'users.update'), ['firstName' => 'Evil']),
-        ] as $what => $request) {
+            ] as $what => $request
+        ) {
             $response = $request();
 
             self::assertSame(403, $response->getStatusCode(), $what . ': ' . $response->getBody());
@@ -457,12 +460,14 @@ class UsersTest extends EndpointTestCase
     #[Test]
     public function usersDontLockThemselvesOut(): void
     {
-        foreach ([
+        foreach (
+            [
             fn () => $this->patch('/api/users/' . $this->adminId, $this->token('admin-machine', 'users.update'), ['active' => false]),
             fn () => $this->patch('/api/users/' . $this->adminId, $this->token('admin-machine', 'users.update'), ['roles' => ['Neos.Neos:Editor', 'Neos.Neos:UserManager']]),
             // no longer allowed to change users
             fn () => $this->patch('/api/users/' . $this->chiefId, $this->token('chief-machine', 'users.update'), ['roles' => ['Neos.Neos:Editor']]),
-        ] as $i => $request) {
+            ] as $i => $request
+        ) {
             $response = $request();
 
             self::assertSame(422, $response->getStatusCode(), $i . ': ' . $response->getBody());
