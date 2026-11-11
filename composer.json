@@ -11,11 +11,13 @@
         "medienreaktor/neos-oauth": "^0.1",
         "behat/transliterator": "^1.5",
         "doctrine/dbal": "^3.8",
-        "neos/openapi": "*",
-        "neos/openapi-flowadapter": "*",
-        "neos/schematic": "*",
-        "neos/jsonschema": "*",
         "medienreaktor/neos-openapi-bundle": "^0.1"
+    },
+    "require-dev": {
+        "neos/contentgraph-doctrinedbaladapter": "^9.2",
+        "phpstan/phpstan": "^2.2",
+        "phpunit/phpunit": "~11.5",
+        "squizlabs/php_codesniffer": "^4.0"
     },
     "suggest": {
         "medienreaktor/neos-api-docs": "Swagger UI for the API on /api/docs"
@@ -32,5 +34,21 @@
         "branch-alias": {
             "dev-main": "2.0.x-dev"
         }
+    },
+    "config": {
+        "allow-plugins": {
+            "neos/composer-plugin": true
+        }
+    },
+    "scripts": {
+        "lint:composer": "@composer validate --strict --no-check-lock",
+        "lint:phpstan": "@php vendor/bin/phpstan analyse",
+        "lint:phpcs": "./vendor/bin/phpcs --colors",
+        "lint:phpcs:fix": "./vendor/bin/phpcbf --colors",
+        "lint": [
+            "@lint:composer",
+            "@lint:phpcs",
+            "@lint:phpstan"
+        ]
     }
 }

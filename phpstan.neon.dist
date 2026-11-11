@@ -1,0 +1,14 @@
+parameters:
+    level: 8
+    paths:
+        - Classes
+        - Tests
+    # Neos 9.2 requires PHP 8.4, the floor this package inherits, so analyse
+    # against it rather than the interpreter in use - otherwise 8.5-only syntax
+    # passes locally and breaks the oldest supported target.
+    phpVersion: 80400
+    # The functional tests extend Flow's FunctionalTestCase. Flow's class loader
+    # provides it in the Testing context; a standalone install autoloads nothing
+    # below Flow's Tests/, so PHPStan reads the classes from there instead.
+    scanDirectories:
+        - Packages/Framework/Neos.Flow/Tests
