@@ -40,9 +40,20 @@ final readonly class User implements ProvidesSchema
             $user->isActive(),
             new AccountList(...array_map(
                 Account::from(...),
-                array_values($user->getAccounts()->toArray()),
+                self::accountsOf($user),
             )),
         );
+    }
+
+    /**
+     * The user's accounts: Neos.Party declares a collection or an array, Doctrine hands out a collection
+     *
+     * @return list<\Neos\Flow\Security\Account>
+     */
+    public static function accountsOf(Model\User $user): array
+    {
+        $accounts = $user->getAccounts();
+        return array_values(is_array($accounts) ? $accounts : $accounts->toArray());
     }
 
     public static function schema(): Schema

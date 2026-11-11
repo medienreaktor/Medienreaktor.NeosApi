@@ -19,6 +19,7 @@ use Neos\Api\Shared\Response\NotFound;
 use Neos\Flow\Persistence\PersistenceManagerInterface;
 use Neos\Media\Domain\Model;
 use Neos\Media\Domain\Repository\AssetCollectionRepository;
+use Neos\Neos\Domain\Model\Site;
 use Neos\Neos\Domain\Repository\SiteRepository;
 use Neos\OpenApi\Attributes\Operation;
 use Neos\OpenApi\Attributes\RequestBody;
@@ -49,8 +50,10 @@ final readonly class AssetCollections
     )]
     public function list(): AssetCollectionListing
     {
+        /** @var iterable<Model\AssetCollection> $assetCollections */
+        $assetCollections = $this->assetCollectionRepository->findAll();
         return AssetCollectionListing::of(new AssetCollectionList(
-            ...$this->read($this->assetCollectionRepository->findAll()),
+            ...$this->read($assetCollections),
         ));
     }
 
@@ -128,7 +131,10 @@ final readonly class AssetCollections
             return $assetCollection;
         }
         // the site's reference would keep it from being deleted
-        foreach ($this->siteRepository->findByAssetCollection($assetCollection) as $site) {
+        $query = $this->siteRepository->createQuery();
+        /** @var iterable<Site> $sites */
+        $sites = $query->matching($query->equals('assetCollection', $assetCollection))->execute();
+        foreach ($sites as $site) {
             $site->setAssetCollection(null);
             $this->siteRepository->update($site);
         }

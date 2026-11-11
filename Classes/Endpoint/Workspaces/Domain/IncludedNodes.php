@@ -138,8 +138,8 @@ final class IncludedNodes
 
     private function anyCoveredDimensionSpacePoint(NodeAggregateId $nodeAggregateId): DimensionSpacePoint|null
     {
-        foreach ([$this->workspace->contentGraph(), $this->workspace->contentGraph(base: true)] as $contentGraph) {
-            foreach ($contentGraph?->findNodeAggregateById($nodeAggregateId)?->coveredDimensionSpacePoints ?? [] as $dimensionSpacePoint) {
+        foreach ([$this->workspace->contentGraph(), $this->workspace->baseContentGraph()] as $contentGraph) {
+            foreach ($contentGraph?->findNodeAggregateById($nodeAggregateId)->coveredDimensionSpacePoints ?? [] as $dimensionSpacePoint) {
                 return $dimensionSpacePoint;
             }
         }

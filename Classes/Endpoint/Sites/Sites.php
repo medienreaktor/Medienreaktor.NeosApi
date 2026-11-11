@@ -347,7 +347,8 @@ final readonly class Sites
     private function hostnameIsTaken(Hostname $hostname): bool
     {
         // not findOneByHost(), which matches subdomains as well
-        return $this->domainRepository->findOneByHostname($hostname->value) !== null;
+        $query = $this->domainRepository->createQuery();
+        return $query->matching($query->equals('hostname', $hostname->value))->count() > 0;
     }
 
     private static function siteNotFound(SiteNodeName $siteNodeName): NotFound

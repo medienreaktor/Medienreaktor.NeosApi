@@ -793,12 +793,19 @@ final readonly class Nodes
         if ($sibling instanceof NotFound) {
             return $sibling;
         }
-        $parent = $target->parentNodeAggregateId !== null ? $this->subgraphResolver->resolveNodeIn($subgraph, $target->parentNodeAggregateId->toNodeAggregateId()) : $subgraph->findParentNode($sibling->aggregateId);
-        if ($parent instanceof NotFound) {
-            return $parent;
-        }
-        if ($parent === null) {
-            return UnprocessableContent::because(sprintf('The node %s is a root node, nodes can\'t be moved before it', $sibling->aggregateId->value));
+        if ($target->parentNodeAggregateId !== null) {
+            $parent = $this->subgraphResolver->resolveNodeIn($subgraph, $target->parentNodeAggregateId->toNodeAggregateId());
+            if ($parent instanceof NotFound) {
+                return $parent;
+            }
+        } elseif ($sibling !== null) {
+            $parent = $subgraph->findParentNode($sibling->aggregateId);
+            if ($parent === null) {
+                return UnprocessableContent::because(sprintf('The node %s is a root node, nodes can\'t be moved before it', $sibling->aggregateId->value));
+            }
+        } else {
+            // ruled out above, the body names a parent or a sibling
+            return BadRequest::because('Give parentNodeAggregateId or succeedingSiblingNodeAggregateId, or both');
         }
         try {
             $failed = $this->send($node, sprintf('move the node %s', $node->aggregateId->value), $this->nodeMoveCommand->create($node, $parent, $sibling));

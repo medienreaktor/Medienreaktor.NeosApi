@@ -60,7 +60,7 @@ final readonly class NodeMoveCommand
         }
         return is_string($configured) && ($strategy = RelationDistributionStrategy::tryFrom($configured)) !== null
             ? $strategy
-            : throw new \RuntimeException(sprintf('The node type %s has an invalid options.moveNodeStrategy %s', $nodeType?->name->value, json_encode($configured)), 1791462318);
+            : throw new \RuntimeException(sprintf('The node type %s has an invalid options.moveNodeStrategy %s', $nodeType->name->value, json_encode($configured)), 1791462318);
     }
 
     /**

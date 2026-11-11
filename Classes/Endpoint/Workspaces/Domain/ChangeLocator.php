@@ -51,7 +51,7 @@ final class ChangeLocator
      */
     public function locate(NodeAggregateId $nodeAggregateId, OriginDimensionSpacePoint|null $origin): array
     {
-        return $this->locations[$nodeAggregateId->value . '|' . ($origin?->hash ?? '')] ??= (function () use ($nodeAggregateId, $origin): array {
+        return $this->locations[$nodeAggregateId->value . '|' . ($origin->hash ?? '')] ??= (function () use ($nodeAggregateId, $origin): array {
             $dimensionSpacePoint = $origin?->toDimensionSpacePoint() ?? $this->anyCoveredDimensionSpacePoint($nodeAggregateId);
             if ($dimensionSpacePoint === null) {
                 return ['document' => null, 'site' => null];
@@ -73,16 +73,16 @@ final class ChangeLocator
     public function nodeTypeName(NodeAggregateId $nodeAggregateId): NodeTypeName|null
     {
         if (!array_key_exists($nodeAggregateId->value, $this->nodeTypeNames)) {
-            $this->nodeTypeNames[$nodeAggregateId->value] = $this->workspace->contentGraph()->findNodeAggregateById($nodeAggregateId)?->nodeTypeName
-                ?? $this->workspace->contentGraph(base: true)?->findNodeAggregateById($nodeAggregateId)?->nodeTypeName;
+            $this->nodeTypeNames[$nodeAggregateId->value] = $this->workspace->contentGraph()->findNodeAggregateById($nodeAggregateId)->nodeTypeName
+                ?? $this->workspace->baseContentGraph()?->findNodeAggregateById($nodeAggregateId)?->nodeTypeName;
         }
         return $this->nodeTypeNames[$nodeAggregateId->value];
     }
 
     private function anyCoveredDimensionSpacePoint(NodeAggregateId $nodeAggregateId): DimensionSpacePoint|null
     {
-        foreach ([$this->workspace->contentGraph(), $this->workspace->contentGraph(base: true)] as $contentGraph) {
-            foreach ($contentGraph?->findNodeAggregateById($nodeAggregateId)?->coveredDimensionSpacePoints ?? [] as $dimensionSpacePoint) {
+        foreach ([$this->workspace->contentGraph(), $this->workspace->baseContentGraph()] as $contentGraph) {
+            foreach ($contentGraph?->findNodeAggregateById($nodeAggregateId)->coveredDimensionSpacePoints ?? [] as $dimensionSpacePoint) {
                 return $dimensionSpacePoint;
             }
         }
@@ -91,7 +91,7 @@ final class ChangeLocator
 
     private function closest(NodeAggregateId $nodeAggregateId, DimensionSpacePoint $dimensionSpacePoint, string $nodeType, bool $inBase): NodeAggregateId|null
     {
-        $contentGraph = $this->workspace->contentGraph($inBase);
+        $contentGraph = $inBase ? $this->workspace->baseContentGraph() : $this->workspace->contentGraph();
         if ($contentGraph === null) {
             return null;
         }

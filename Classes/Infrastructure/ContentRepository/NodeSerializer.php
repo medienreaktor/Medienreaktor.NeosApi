@@ -201,7 +201,11 @@ final readonly class NodeSerializer
      */
     private function serializedAsset(array $serialized): ?array
     {
-        $asset = $this->persistenceManager->getObjectByIdentifier($serialized['__identifier'], $serialized['__flow_object_type']);
+        $type = $serialized['__flow_object_type'];
+        if (!class_exists($type)) {
+            return null;
+        }
+        $asset = $this->persistenceManager->getObjectByIdentifier($serialized['__identifier'], $type);
         return $asset instanceof AssetInterface ? $this->asset($asset) : null;
     }
 
@@ -210,8 +214,7 @@ final readonly class NodeSerializer
      */
     private function asset(AssetInterface $asset): array
     {
-        $resource = $asset->getResource();
-        $url = $resource !== null ? $this->resourceManager->getPublicPersistentResourceUri($resource) : null;
+        $url = $this->resourceManager->getPublicPersistentResourceUri($asset->getResource());
         return [
             'id' => $this->persistenceManager->getIdentifierByObject($asset),
             'url' => is_string($url) ? $url : null,

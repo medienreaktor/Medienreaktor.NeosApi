@@ -74,7 +74,7 @@ final readonly class DocumentAncestry
         foreach ($documentAggregateIds as $documentAggregateId) {
             $ancestorIds = [];
             $nodeAggregate = $this->contentGraph->findNodeAggregateById($documentAggregateId);
-            foreach ($nodeAggregate?->occupiedDimensionSpacePoints ?? [] as $originDimensionSpacePoint) {
+            foreach ($nodeAggregate->occupiedDimensionSpacePoints ?? [] as $originDimensionSpacePoint) {
                 $ancestors = $this->contentGraph
                     ->getSubgraph($originDimensionSpacePoint->toDimensionSpacePoint(), VisibilityConstraints::createEmpty())
                     ->findAncestorNodes($documentAggregateId, FindAncestorNodesFilter::create());

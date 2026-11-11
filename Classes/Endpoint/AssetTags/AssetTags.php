@@ -165,7 +165,9 @@ final readonly class AssetTags
         }
         // deepest first: the children remove orphans (orphanRemoval) anyway, but not from the assets
         foreach (array_reverse(self::subtree($tag)) as $removed) {
-            foreach ($this->assetRepository->findByTag($removed) as $asset) {
+            /** @var iterable<Model\Asset> $assets */
+            $assets = $this->assetRepository->findByTag($removed);
+            foreach ($assets as $asset) {
                 $asset->removeTag($removed);
                 $this->assetRepository->update($asset);
             }

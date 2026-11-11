@@ -48,15 +48,20 @@ final class ReadableWorkspace
     }
 
     /**
-     * The workspace's content graph, or with $base its base workspace's: null for a root workspace, which has no
-     * base, or a base the content repository won't let read (the changes are compared to nothing then). Looked up
-     * once per request, all changes of a page share them
+     * The workspace's content graph
      */
-    public function contentGraph(bool $base = false): ContentGraphInterface|null
+    public function contentGraph(): ContentGraphInterface
     {
-        if (!$base) {
-            return $this->contentGraph;
-        }
+        return $this->contentGraph;
+    }
+
+    /**
+     * The base workspace's content graph: null for a root workspace, which has no base, or a base the content
+     * repository won't let read (the changes are compared to nothing then). Looked up once per request, all changes
+     * of a page share it
+     */
+    public function baseContentGraph(): ContentGraphInterface|null
+    {
         if ($this->baseContentGraph === false) {
             $baseWorkspaceName = $this->workspace->baseWorkspaceName;
             try {

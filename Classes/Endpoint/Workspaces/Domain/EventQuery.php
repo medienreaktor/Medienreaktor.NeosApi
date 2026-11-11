@@ -101,7 +101,7 @@ final readonly class EventQuery
             default => null,
         };
         if ($newestFirst === null) {
-            return BadRequest::because(sprintf('Can\'t sort by %s, only by sequenceNumber or -sequenceNumber', $sort?->value));
+            return BadRequest::because(sprintf('Can\'t sort by %s, only by sequenceNumber or -sequenceNumber', $sort->value));
         }
         return new self($newestFirst, $after, $limit, $include, $filterByEventType, $filterByNodeAggregateId, $filterByDocument, $filterByTag, max(1, $maxRead));
     }

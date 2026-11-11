@@ -35,6 +35,8 @@ final readonly class EmailAddress implements ProvidesSchema
      */
     public static function primaryOf(Person $person): ?self
     {
+        // Neos.Party declares it non-nullable, but a person without one, or whose primary address was removed, has none
+        /** @var ElectronicAddress|null $address */
         $address = $person->getPrimaryElectronicAddress();
         return $address?->getType() === self::ELECTRONIC_ADDRESS_TYPE ? self::fromString($address->getIdentifier()) : null;
     }
@@ -44,6 +46,8 @@ final readonly class EmailAddress implements ProvidesSchema
      */
     public function makePrimaryOf(Person $person): void
     {
+        // Neos.Party declares it non-nullable, but a person without one, or whose primary address was removed, has none
+        /** @var ElectronicAddress|null $address */
         $address = $person->getPrimaryElectronicAddress();
         if ($address?->getType() !== self::ELECTRONIC_ADDRESS_TYPE) {
             $address = new ElectronicAddress();
