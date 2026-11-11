@@ -1,0 +1,5 @@
+# A node type without a package prefix: the content repository accepts any name that isn't empty, and packages
+# written for Neos 8 still configure one (unstructured)
+unprefixed:
+  ui:
+    label: 'Unprefixed'

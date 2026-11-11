@@ -393,7 +393,8 @@ class SitesTest extends ContentRepositoryTestCase
     {
         $this->requireContentRepository();
         $token = $this->token('admin-machine', 'sites.create');
-        foreach (['Neos.Demo:Nonexistent', 'Neos.Neos:Site', 'Neos.Demo:Document.Page'] as $nodeTypeName) {
+        // a name without a package prefix is a name all the same, just of no node type here
+        foreach (['Neos.Demo:Nonexistent', 'Homepage', 'Neos.Neos:Site', 'Neos.Demo:Document.Page'] as $nodeTypeName) {
             $response = $this->post('/api/sites', $token, ['packageKey' => 'Neos.Demo', 'name' => 'New Site', 'nodeTypeName' => $nodeTypeName]);
 
             self::assertSame(422, $response->getStatusCode(), $nodeTypeName . ': ' . $response->getBody());
@@ -407,7 +408,7 @@ class SitesTest extends ContentRepositoryTestCase
     {
         $token = $this->token('admin-machine', 'sites.create');
         $valid = ['packageKey' => 'Neos.Demo', 'name' => 'New Site', 'nodeTypeName' => 'Neos.Demo:Document.Homepage'];
-        foreach ([['packageKey' => 'Demo'], ['name' => ''], ['nodeTypeName' => 'Homepage'], ['nodeName' => 'New Site'], ['online' => 'offline'], ['domains' => []]] as $change) {
+        foreach ([['packageKey' => 'Demo'], ['name' => ''], ['nodeTypeName' => ''], ['nodeName' => 'New Site'], ['online' => 'offline'], ['domains' => []]] as $change) {
             $response = $this->post('/api/sites', $token, array_merge($valid, $change));
 
             self::assertSame(400, $response->getStatusCode(), json_encode($change) . ': ' . $response->getBody());

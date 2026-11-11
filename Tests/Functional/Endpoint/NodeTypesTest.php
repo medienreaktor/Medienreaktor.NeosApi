@@ -148,7 +148,7 @@ class NodeTypesTest extends EndpointTestCase
         self::assertArrayNotHasKey('filter', $parameters);
 
         // not a node type name, its schema rejects it before any content repository is asked
-        self::assertSame(400, $this->get('/api/cr/default/nodetypes?filterBySuperType=NoColon', $this->token('editor-machine', 'nodetypes.read'))->getStatusCode());
+        self::assertSame(400, $this->get('/api/cr/default/nodetypes?filterBySuperType=', $this->token('editor-machine', 'nodetypes.read'))->getStatusCode());
     }
 
     #[Test]
@@ -175,6 +175,31 @@ class NodeTypesTest extends EndpointTestCase
 
         self::assertSame(404, $response->getStatusCode(), (string)$response->getBody());
         self::assertSame('application/problem+json', $response->getHeaderLine('Content-Type'));
+        // a name without a package prefix is a name all the same
+        self::assertSame(404, $this->get('/api/cr/default/nodetypes/NoColon', $this->token('editor-machine', 'nodetypes.read'))->getStatusCode());
+    }
+
+    /**
+     * The content repository accepts any node type name that isn't empty; one without a package prefix (see the
+     * Testing NodeTypes.yaml) must not break the listing every client starts with
+     */
+    #[Test]
+    public function servesNodeTypesNamedWithoutAPackagePrefix(): void
+    {
+        $this->requireContentRepository();
+        $token = $this->token('editor-machine', 'nodetypes.read');
+
+        $response = $this->get('/api/cr/default/nodetypes', $token);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        self::assertContains('unprefixed', array_column(self::json($response)['data'], 'name'));
+
+        $response = $this->get('/api/cr/default/nodetypes/unprefixed', $token);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        self::assertSame('unprefixed', self::json($response)['name']);
+
+        $response = $this->get('/api/cr/default/nodetypes?filterBySuperType=unprefixed', $token);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        self::assertSame(['unprefixed'], array_column(self::json($response)['data'], 'name'));
     }
 
     #[Test]
@@ -187,7 +212,6 @@ class NodeTypesTest extends EndpointTestCase
     #[Test]
     public function rejectsInvalidNames(): void
     {
-        self::assertSame(400, $this->get('/api/cr/default/nodetypes/NoColon', $this->token('editor-machine', 'nodetypes.read'))->getStatusCode());
         self::assertSame(400, $this->get('/api/cr/Not-An-Id/nodetypes', $this->token('editor-machine', 'nodetypes.read'))->getStatusCode());
     }
 
