@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  # Lets a release be re-verified without an empty commit.
+  workflow_dispatch:
+
+# Supersede a run when the same pull request branch is pushed again, but never
+# cancel one on main or a manual re-verification: those exist to leave a verdict
+# on a commit. The org's runners are a capped pool.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Nothing here writes to the repository; the token only lifts Composer's
+# unauthenticated GitHub API rate limit when fetching dist archives.
+permissions:
+  contents: read
+
+# Third-party actions are pinned by commit SHA rather than tag, because a tag can
+# be moved onto different code after review. GitHub's own actions/* are pinned to
+# the major, which GitHub controls.
+env:
+  # Installing Neos pulls well over a hundred packages as GitHub dist archives,
+  # which exhausts the 60-per-hour unauthenticated API limit. Everything else,
+  # Neos.OAuth and the OpenAPI bundle included, comes from Packagist.
+  COMPOSER_AUTH: '{"github-oauth":{"github.com":"${{ secrets.GITHUB_TOKEN }}"}}'
+
+  # Everything neos/flow and neos/media declare, plus what PHP_CodeSniffer needs.
+  PHP_EXTENSIONS: mbstring, xml, xmlreader, xmlwriter, simplexml, dom, tokenizer, zlib, gd, zip, fileinfo, iconv
+
+jobs:
+  # There is no PHPStan baseline: every reported error is a real one to be fixed,
+  # not recorded. Neither the coding standard nor the analysis varies by
+  # interpreter, so one run against the newest dependencies is enough. The
+  # functional suite needs a whole Neos and runs in functional.yml.
+  lint:
+    name: Lint (PHP 8.4, highest deps)
+    runs-on: hetzner
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          ini-values: memory_limit=-1
+          tools: composer:v2
+          coverage: none
+
+      # Resolves from the constraints every time: no composer.lock is committed.
+      - name: Install dependencies
+        uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
+        with:
+          dependency-versions: highest
+          composer-options: "--prefer-dist"
+
+      - name: Show resolved dependency versions
+        run: composer show --direct
+
+      # composer validate --strict runs as part of this, as lint:composer: the
+      # manifest is this package's contract with every distribution that installs it.
+      - name: Run Linting (composer validate, PHP CodeSniffer & PHPStan)
+        run: composer lint
