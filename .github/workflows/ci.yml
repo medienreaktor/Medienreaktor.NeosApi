@@ -67,7 +67,159 @@ jobs:
       - name: Show resolved dependency versions
         run: composer show --direct
 
-      # composer validate --strict runs as part of this, as lint:composer: the
-      # manifest is this package's contract with every distribution that installs it.
-      - name: Run Linting (composer validate, PHP CodeSniffer & PHPStan)
-        run: composer lint
+      # The parts of `composer lint`, called one by one so that each reports on its
+      # own line and the two below can wait for code to exist.
+      #
+      # The manifest is this package's contract with every consuming distribution,
+      # and a wrong constraint there is exactly the class of bug that reaches
+      # projects silently. It is checked whether or not the package ships PHP.
+      - name: Validate composer.json
+        run: composer lint:composer
+
+      # PHPStan and PHP_CodeSniffer refuse to run on zero files, so in a package
+      # without PHP they are skipped and start with the first class - no edit here.
+      - name: Run PHP CodeSniffer
+        if: hashFiles('Classes/**/*.php') != ''
+        run: composer lint:phpcs
+
+      - name: Run PHPStan
+        if: hashFiles('Classes/**/*.php') != ''
+        run: composer lint:phpstan
+
+  test:
+    name: Test (PHP ${{ matrix.php }}, ${{ matrix.deps }} deps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      # Let every version report rather than killing the rest when the first one
+      # fails.
+      fail-fast: false
+      matrix:
+        # composer.json declares php ^8.4 with neos/* ^9.2, and both ends of that
+        # are exercised rather than asserted:
+        #
+        #   - `lowest` pins the oldest set Composer will install: neos/neos and
+        #     neos/media 9.2.0 with neos/flow 9.2.3 (not 9.2.0; something in the
+        #     tree raises Flow's floor), PHPUnit 11.5.50, PHPStan 2.2.0.
+        #   - `highest` walks up to the newest releases.
+        #
+        # The unit suite is empty until the first test lands in Tests/Unit and
+        # passes as such; the functional suite needs a whole Neos and runs in
+        # functional.yml. 8.5 pairs with `highest` only: the oldest set is proven on
+        # the floor interpreter, the newest interpreters on the newest set.
+        include:
+          - { php: '8.4', deps: 'lowest' }
+          - { php: '8.4', deps: 'highest' }
+          - { php: '8.5', deps: 'highest' }
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          ini-values: memory_limit=-1
+          tools: composer:v2
+          coverage: none
+
+      # Resolves from the constraints every time: no composer.lock is committed,
+      # which is what makes the lowest/highest split meaningful.
+      - name: Install dependencies
+        uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
+        with:
+          dependency-versions: ${{ matrix.deps }}
+          composer-options: "--prefer-dist"
+
+      # Makes the floor claim auditable: the log states which Neos the job actually
+      # ran against, rather than leaving it to be inferred from the matrix name.
+      - name: Show resolved dependency versions
+        run: composer show --direct
+
+      - name: Run Tests (PHPUnit)
+        run: composer test
+
+  # Lists every frontend: a tracked package.json at the root or one level under
+  # Resources/Private/. Deeper ones (a types package published inside
+  # Resources/Public, a workspace member) belong to the frontend above them.
+  # The frontend job below needs the list as a matrix before any of its own
+  # steps run, which only a job output can provide; without a frontend the list
+  # is empty and the frontend job is skipped.
+  detect:
+    name: Detect frontends
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      frontends: ${{ steps.list.outputs.frontends }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: List frontends
+        id: list
+        run: |
+          frontends=$(git ls-files -- ':(glob)package.json' ':(glob)Resources/Private/*/package.json' \
+            | xargs -r -n1 dirname | jq -Rnc '[inputs]')
+          echo "frontends=$frontends" >> "$GITHUB_OUTPUT"
+          echo "Frontends: $frontends"
+
+  # A frontend this package ships is committed prebuilt, so what installations run
+  # is what was committed, not what the sources say. This job lints and builds
+  # each frontend and fails when the build differs from what is committed, which
+  # also covers the type check a build runs.
+  frontend:
+    # No matrix expression in the name: GitHub appends the matrix value itself
+    # ("Frontend (Resources/Private/Plugin)"), and a skipped job would otherwise
+    # show the unexpanded expression.
+    name: Frontend
+    needs: detect
+    if: needs.detect.outputs.frontends != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.detect.outputs.frontends) }}
+
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # .nvmrc is the one place the Node version is pinned; the build output
+      # depends on it, so CI reads the same file a developer's toolchain does.
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: ${{ matrix.dir }}/.nvmrc
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Linting
+        run: npm run lint
+
+      # A sidecar that runs its sources as they are has nothing to build; that
+      # is what the frontend is, not a missing script.
+      - name: Build
+        run: npm run build --if-present
+
+      # Covers every frontend layout without naming an output directory: a build
+      # that is committed must come out identical, and one that is gitignored
+      # leaves nothing to compare. Untracked files count too - a new hashed asset
+      # that was never committed is exactly the drift this guards against.
+      - name: Compare with the committed build
+        working-directory: .
+        run: |
+          git add --intent-to-add --all
+          git diff --exit-code --stat
