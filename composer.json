@@ -41,6 +41,7 @@
         }
     },
     "scripts": {
+        "test": "./vendor/bin/phpunit",
         "lint:composer": "@composer validate --strict --no-check-lock",
         "lint:phpstan": "@php vendor/bin/phpstan analyse",
         "lint:phpcs": "./vendor/bin/phpcs --colors",
