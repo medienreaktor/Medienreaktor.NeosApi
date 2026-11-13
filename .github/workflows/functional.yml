@@ -63,8 +63,17 @@ jobs:
         with:
           path: package
 
+      # This workflow switches itself on with the first functional test. Until
+      # then every step below is skipped, rather than booting a whole Neos to
+      # run nothing. hashFiles() only works inside steps, after the checkout, so
+      # the decision is made here and not on the job.
+      - name: Look for functional tests
+        id: tests
+        run: echo "found=${{ hashFiles('package/Tests/Functional/**/*.php') != '' }}" >> "$GITHUB_OUTPUT"
+
       # Flow's compile step needs more than PHP's default 128M.
       - name: Set up PHP
+        if: steps.tests.outputs.found == 'true'
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
         with:
           php-version: '8.4'
@@ -76,6 +85,7 @@ jobs:
       # The package goes in as a copy, not a symlink, so Flow resolves it under
       # Packages/Application like any installed package.
       - name: Prepare Neos distribution
+        if: steps.tests.outputs.found == 'true'
         run: |
           git clone --depth 1 --branch 9.2 https://github.com/neos/neos-base-distribution.git dist
           cd dist
@@ -84,6 +94,7 @@ jobs:
           composer require --no-update --no-interaction medienreaktor/neos-api:@dev
 
       - name: Configure the database
+        if: steps.tests.outputs.found == 'true'
         run: |
           mkdir -p dist/Configuration/Testing
           cat > dist/Configuration/Testing/Settings.yaml <<'YAML'
@@ -100,16 +111,19 @@ jobs:
           YAML
 
       - name: Install dependencies
+        if: steps.tests.outputs.found == 'true'
         working-directory: dist
         run: composer install --no-interaction --no-progress --prefer-dist
 
       - name: Show resolved dependency versions
+        if: steps.tests.outputs.found == 'true'
         working-directory: dist
         run: composer show --direct
 
       # A skipped test fails the job: a content repository test that skips has
       # lost its database, and the run would otherwise pass without it.
       - name: Run Tests (PHPUnit, functional)
+        if: steps.tests.outputs.found == 'true'
         working-directory: dist
         env:
           FLOW_CONTEXT: Testing
