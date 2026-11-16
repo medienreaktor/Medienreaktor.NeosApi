@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-11-16
+
+### Fixed
+
+- **Publishing or discarding several documents no longer fails when their changes depend
+  on each other.** `documentAggregateIds` were published one document after the other,
+  ordered only parents before children. A page moved before another page that was moved
+  as well, e.g. pages moved into a new folder, failed with a 409 (`partial`, "Node
+  aggregate … is no child of node aggregate …"), even though everything was selected,
+  and the documents before it stayed published. The changes of the selected documents
+  are now published or discarded together in one command, in the order they were made:
+  all of them or none.
+- **Documents without changes no longer make publishing or discarding fail with a 500.**
+  A selected document whose changes were published already, e.g. by a partial publish
+  before, made Neos reject the empty command. It now counts 0.
+
+### Changed
+
+- `completedDocumentAggregateIds` and `numberOfCompletedChanges` of a 409 from
+  `publishWorkspace` and `discardWorkspace` are always empty and 0, as nothing is
+  published or discarded before a conflict anymore. They stay in the schema for 2.0
+  clients.
+
 ## [2.0.2] - 2026-11-11
 
 ### Fixed
@@ -296,7 +319,8 @@ Same code as [1.0].
   users, the user's own profile and password, and data sources. Every endpoint has a
   privilege of its own. Licensed under GPL-3.0.
 
-[Unreleased]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.2...HEAD
+[Unreleased]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.3...HEAD
+[2.0.3]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.2...2.0.3
 [2.0.2]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.1...2.0.2
 [2.0.1]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.0...2.0.1
 [2.0.0]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/1.18.0...2.0.0
