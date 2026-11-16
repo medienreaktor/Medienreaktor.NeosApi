@@ -21,8 +21,8 @@ final readonly class WorkspaceConflictProblem implements ProvidesSchema
      * @param string $detail a human-readable explanation
      * @param ConflictingChangeList $conflicts the conflicting changes of nodes the account may read
      * @param int $inaccessibleConflicts how many conflicting changes are about nodes the account may not read, left out of conflicts
-     * @param DocumentAggregateIdList $completedDocumentAggregateIds the selected documents whose changes were published or discarded before the conflict, they stay so. Empty unless documentAggregateIds were selected
-     * @param int $numberOfCompletedChanges how many changes of those documents were published or discarded, as Neos counts them
+     * @param DocumentAggregateIdList $completedDocumentAggregateIds always empty: the selected changes are published or discarded together, none of them before a conflict (kept for clients of 2.0, where documents went one by one)
+     * @param int $numberOfCompletedChanges always 0, as completedDocumentAggregateIds is empty
      */
     public function __construct(
         public string $type,
