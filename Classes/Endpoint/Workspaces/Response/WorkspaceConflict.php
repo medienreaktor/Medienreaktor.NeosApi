@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Workspaces\Response;
 
-use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
 use Neos\Api\Endpoint\Workspaces\Domain\ChangeLocator;
 use Neos\Api\Endpoint\Workspaces\Domain\ReadableWorkspace;
 use Neos\Api\Endpoint\Workspaces\Schema\ConflictingChange;
@@ -13,7 +12,6 @@ use Neos\Api\Endpoint\Workspaces\Schema\DocumentAggregateIdList;
 use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceConflictProblem;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\PartialWorkspaceRebaseFailed;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\WorkspaceRebaseFailed;
-use Neos\ContentRepository\Core\SharedModel;
 use Neos\OpenApi\Binding\TypeReference;
 use Neos\OpenApi\Problem\ProblemDocument;
 use Neos\OpenApi\Response\ApiResponse;
@@ -37,10 +35,8 @@ final readonly class WorkspaceConflict implements ApiResponse
      * one node are one conflict, the ones about nodes the account may not read are only counted, as the changes and
      * events leave them out
      *
-     * @param ReadableWorkspace $workspace as it is now (refreshed() after documents were published or discarded)
-     * @param list<SharedModel\Node\NodeAggregateId> $completedDocuments
      */
-    public static function of(WorkspaceRebaseFailed|PartialWorkspaceRebaseFailed $exception, ReadableWorkspace $workspace, string $detail, array $completedDocuments = [], int $numberOfCompletedChanges = 0): self
+    public static function of(WorkspaceRebaseFailed|PartialWorkspaceRebaseFailed $exception, ReadableWorkspace $workspace, string $detail): self
     {
         $locator = new ChangeLocator($workspace);
         $changes = [];
@@ -58,26 +54,22 @@ final readonly class WorkspaceConflict implements ApiResponse
             $detail,
             new ConflictingChangeList(...array_values($changes)),
             count($inaccessible),
-            $completedDocuments,
-            $numberOfCompletedChanges,
         ));
     }
 
     /**
-     * A selected site or document was removed from the workspace after it was checked, maybe after other documents
-     * were published or discarded already
-     *
-     * @param list<SharedModel\Node\NodeAggregateId> $completedDocuments
+     * A selected site was removed from the workspace after it was checked
      */
-    public static function removedMeanwhile(string $detail, array $completedDocuments, int $numberOfCompletedChanges): self
+    public static function removedMeanwhile(string $detail): self
     {
-        return new self(self::problem('removed', $detail, new ConflictingChangeList(), 0, $completedDocuments, $numberOfCompletedChanges));
+        return new self(self::problem('removed', $detail, new ConflictingChangeList(), 0));
     }
 
     /**
-     * @param list<SharedModel\Node\NodeAggregateId> $completedDocuments
+     * Nothing is completed before a conflict: a publish or discard is one command (completedDocumentAggregateIds and
+     * numberOfCompletedChanges stay in the schema for clients of 2.0, always empty and 0)
      */
-    private static function problem(string $title, string $detail, ConflictingChangeList $conflicts, int $inaccessibleConflicts, array $completedDocuments, int $numberOfCompletedChanges): WorkspaceConflictProblem
+    private static function problem(string $title, string $detail, ConflictingChangeList $conflicts, int $inaccessibleConflicts): WorkspaceConflictProblem
     {
         return new WorkspaceConflictProblem(
             sprintf('https://www.rfc-editor.org/rfc/rfc9110#status.%d', self::statusCode()->value),
@@ -86,8 +78,8 @@ final readonly class WorkspaceConflict implements ApiResponse
             $detail,
             $conflicts,
             $inaccessibleConflicts,
-            new DocumentAggregateIdList(...array_map(static fn (SharedModel\Node\NodeAggregateId $id) => NodeAggregateId::fromString($id->value), $completedDocuments)),
-            $numberOfCompletedChanges,
+            new DocumentAggregateIdList(),
+            0,
         );
     }
 

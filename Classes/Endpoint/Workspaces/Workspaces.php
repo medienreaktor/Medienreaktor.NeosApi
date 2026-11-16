@@ -10,7 +10,7 @@ use Neos\Api\Endpoint\Nodes\Parameter\NodeTypeCriteria;
 use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
 use Neos\Api\Endpoint\Workspaces\Domain\ChangeDiffer;
 use Neos\Api\Endpoint\Workspaces\Domain\ChangeQuery;
-use Neos\Api\Endpoint\Workspaces\Domain\DocumentAncestry;
+use Neos\Api\Endpoint\Workspaces\Domain\ChangeLocator;
 use Neos\Api\Endpoint\Workspaces\Domain\EventDiffer;
 use Neos\Api\Endpoint\Workspaces\Domain\EventQuery;
 use Neos\Api\Endpoint\Workspaces\Domain\IncludedNodes;
@@ -67,6 +67,8 @@ use Neos\Api\Shared\Response\NotFound;
 use Neos\Api\Shared\Response\UnprocessableContent;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\Feature\WorkspaceCommandSkipped;
+use Neos\ContentRepository\Core\Feature\WorkspacePublication\Command\DiscardIndividualNodesFromWorkspace;
+use Neos\ContentRepository\Core\Feature\WorkspacePublication\Command\PublishIndividualNodesFromWorkspace;
 use Neos\ContentRepository\Core\Feature\WorkspaceCreation\Exception\BaseWorkspaceDoesNotExist;
 use Neos\ContentRepository\Core\Feature\WorkspaceCreation\Exception\WorkspaceAlreadyExists;
 use Neos\ContentRepository\Core\ContentRepository;
@@ -84,6 +86,7 @@ use Neos\Neos\Domain\Model;
 use Neos\Neos\Domain\Service\NodeTypeNameFactory;
 use Neos\Neos\Domain\Service\WorkspacePublishingService;
 use Neos\Neos\Domain\Service\WorkspaceService;
+use Neos\Neos\Domain\SubtreeTagging\SoftRemoval\SoftRemovalGarbageCollector;
 use Neos\Neos\Fusion\Cache\CacheFlushingStrategy;
 use Neos\Neos\Fusion\Cache\ContentCacheFlusher;
 use Neos\Neos\Fusion\Cache\FlushWorkspaceRequest;
@@ -111,6 +114,12 @@ final readonly class Workspaces
      */
     private int $eventDiffLookback;
 
+    /**
+     * How long Neos keeps soft removed nodes (Neos.Neos.softRemoval.garbageCollectionGracePeriod), as its
+     * WorkspacePublishingService does after publishing or discarding
+     */
+    private \DateInterval|null $garbageCollectionGracePeriod;
+
     public function __construct(
         private ContentRepositoryFinder $contentRepositoryFinder,
         private ContentRepositoryRegistry $contentRepositoryRegistry,
@@ -122,11 +131,15 @@ final readonly class Workspaces
         private WorkspaceRoleSubjects $workspaceRoleSubjects,
         private ContentSubgraphs $contentSubgraphs,
         private NodeSerializer $nodeSerializer,
+        private SoftRemovalGarbageCollector $softRemovalGarbageCollector,
         #[Flow\InjectConfiguration(path: 'workspaceEvents.maxRead')]
         int|null $maxEventsRead = null,
         #[Flow\InjectConfiguration(path: 'workspaceEvents.diffLookback')]
         int|null $eventDiffLookback = null,
+        #[Flow\InjectConfiguration(path: 'softRemoval.garbageCollectionGracePeriod', package: 'Neos.Neos')]
+        string|null $garbageCollectionGracePeriod = null,
     ) {
+        $this->garbageCollectionGracePeriod = $garbageCollectionGracePeriod ? new \DateInterval($garbageCollectionGracePeriod) : null;
         $this->maxEventsRead = $maxEventsRead ?? EventQuery::DEFAULT_MAX_READ;
         $this->eventDiffLookback = max(0, $eventDiffLookback ?? EventDiffer::DEFAULT_LOOKBACK);
     }
@@ -495,7 +508,7 @@ final readonly class Workspaces
         path: '/cr/{contentRepositoryId}/workspaces/{workspaceName}/publish',
         method: 'POST',
         summary: 'Publish the changes of a workspace',
-        description: 'Publishes the workspace\'s changes to its base workspace with Neos\' WorkspacePublishingService, as the Neos UI and workspace module do: all of them if the body is left out or empty, the ones in a site with siteAggregateId, or the ones in some documents with documentAggregateIds (each document with its content, not its child documents). Documents are published one after the other, the content repository has no command for several: ancestors first, as a new page needs its new parent in the base workspace. If one of them conflicts, the ones before it stay published, as in Neos\' workspace module: the 409 lists them in completedDocumentAggregateIds and counts their changes in numberOfCompletedChanges. An outdated workspace is rebased on its base workspace first: if its changes conflict with the base\'s, or the selected changes can\'t be published without others they depend on, it is a 409 that lists the conflicting changes of nodes the account may read and counts the others (inaccessibleConflicts). A selected site or document removed meanwhile by another request is a 409 as well (title removed). The workspace must be one the account may read (else a 404 as an unknown one) and write to, as must be its base workspace (else a 403). A root workspace like live has no base to publish to: a 422, whoever asks. Both siteAggregateId and documentAggregateIds, an empty documentAggregateIds, and a site or document that is no such node in the workspace the account may read are 422s. The response counts the published changes as Neos does, 0 if there were none, and is the workspace afterwards.',
+        description: 'Publishes the workspace\'s changes to its base workspace with Neos\' WorkspacePublishingService, as the Neos UI and workspace module do: all of them if the body is left out or empty, the ones in a site with siteAggregateId, or the ones in some documents with documentAggregateIds (each document with its content, not its child documents). The changes of the selected documents are published together, in the order they were made (PublishIndividualNodesFromWorkspace), so they may depend on each other, e.g. a new page and the pages moved into it, or pages moved before one another: all of them or none, completedDocumentAggregateIds of a 409 is always empty. Selected documents without changes (left) are fine, if none has any it is a 200 with 0. An outdated workspace is rebased on its base workspace first: if its changes conflict with the base\'s, or the selected changes can\'t be published without others they depend on, it is a 409 that lists the conflicting changes of nodes the account may read and counts the others (inaccessibleConflicts). A selected site or document removed meanwhile by another request is a 409 as well (title removed). The workspace must be one the account may read (else a 404 as an unknown one) and write to, as must be its base workspace (else a 403). A root workspace like live has no base to publish to: a 422, whoever asks. Both siteAggregateId and documentAggregateIds, an empty documentAggregateIds, and a site or document that is no such node in the workspace the account may read are 422s. The response counts the published changes as Neos does, 0 if there were none, and is the workspace afterwards.',
         operationId: 'publishWorkspace',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::WORKSPACES_PUBLISH],
@@ -535,7 +548,7 @@ final readonly class Workspaces
         path: '/cr/{contentRepositoryId}/workspaces/{workspaceName}/discard',
         method: 'POST',
         summary: 'Discard the changes of a workspace',
-        description: 'Discards the workspace\'s unpublished changes with Neos\' WorkspacePublishingService, as the Neos UI and workspace module do, they are lost then: all of them if the body is left out or empty, the ones in a site with siteAggregateId, or the ones in some documents with documentAggregateIds (each document with its content, not its child documents). Documents are discarded one after the other, the content repository has no command for several: descendants first, as discarding a new page first would leave its new child pages without a parent. If one of them conflicts, the ones before it stay discarded, as in Neos\' workspace module: the 409 lists them in completedDocumentAggregateIds and counts their changes in numberOfCompletedChanges. Discarding some changes replays the others on the base workspace: if they conflict with it (an outdated workspace) or depend on the discarded ones, it is a 409 that lists the conflicting changes of nodes the account may read and counts the others (inaccessibleConflicts). A selected site or document removed meanwhile by another request is a 409 as well (title removed). The workspace must be one the account may read (else a 404 as an unknown one) and write to (else a 403). A root workspace like live has no changes to discard: a 422, whoever asks. Both siteAggregateId and documentAggregateIds, an empty documentAggregateIds, and a site or document that is no such node in the workspace the account may read are 422s. The response counts the discarded changes as Neos does, 0 if there were none, and is the workspace afterwards.',
+        description: 'Discards the workspace\'s unpublished changes with Neos\' WorkspacePublishingService, as the Neos UI and workspace module do, they are lost then: all of them if the body is left out or empty, the ones in a site with siteAggregateId, or the ones in some documents with documentAggregateIds (each document with its content, not its child documents). The changes of the selected documents are discarded together (DiscardIndividualNodesFromWorkspace): all of them or none, completedDocumentAggregateIds of a 409 is always empty. Selected documents without changes (left) are fine, if none has any it is a 200 with 0. Discarding some changes replays the others on the base workspace: if they conflict with it (an outdated workspace) or depend on the discarded ones, it is a 409 that lists the conflicting changes of nodes the account may read and counts the others (inaccessibleConflicts). A selected site or document removed meanwhile by another request is a 409 as well (title removed). The workspace must be one the account may read (else a 404 as an unknown one) and write to (else a 403). A root workspace like live has no changes to discard: a 422, whoever asks. Both siteAggregateId and documentAggregateIds, an empty documentAggregateIds, and a site or document that is no such node in the workspace the account may read are 422s. The response counts the discarded changes as Neos does, 0 if there were none, and is the workspace afterwards.',
         operationId: 'discardWorkspace',
         security: [
             ApiAuthContextProvider::SCOPES => [ApiScopes::WORKSPACES_PUBLISH],
@@ -567,10 +580,10 @@ final readonly class Workspaces
     }
 
     /**
-     * Publishes or discards the changes of the scope (changeScopeOf()) and counts them as Neos does. Documents go one
-     * by one: ancestors first for publishing (a new page needs its new parent in the base workspace), descendants
-     * first for discarding (a new page must not lose its new parent while it is kept). The documents done before a
-     * conflict stay so, the 409 names them
+     * Publishes or discards the changes of the scope (changeScopeOf()) and counts them as Neos does. The changes of
+     * selected documents go in one command, as Neos' WorkspacePublishingService has one per document only: published
+     * one by one, a document whose changes depend on another selected one's (moved before a page moved as well, into
+     * a new page published later, out of a page removed earlier) failed, and left the documents before it published
      *
      * @param SharedModel\Node\NodeAggregateId|list<SharedModel\Node\NodeAggregateId>|null $scope
      */
@@ -580,8 +593,6 @@ final readonly class Workspaces
         $name = $workspace->workspace->workspaceName;
         $baseName = $workspace->workspace->baseWorkspaceName?->value;
         $service = $this->workspacePublishingService;
-        $count = 0;
-        $completedDocuments = [];
         try {
             if ($scope === null) {
                 $count = self::countUnlessSkipped(fn () => $publish
@@ -592,13 +603,7 @@ final readonly class Workspaces
                     ? $service->publishChangesInSite($crId, $name, $scope)->numberOfPublishedChanges
                     : $service->discardChangesInSite($crId, $name, $scope)->numberOfDiscardedChanges);
             } else {
-                $ancestry = DocumentAncestry::in($workspace->contentGraph());
-                foreach ($publish ? $ancestry->ancestorsFirst($scope) : $ancestry->descendantsFirst($scope) as $documentId) {
-                    $count += self::countUnlessSkipped(fn () => $publish
-                        ? $service->publishChangesInDocument($crId, $name, $documentId)->numberOfPublishedChanges
-                        : $service->discardChangesInDocument($crId, $name, $documentId)->numberOfDiscardedChanges);
-                    $completedDocuments[] = $documentId;
-                }
+                $count = $this->publishOrDiscardDocuments($workspace, $scope, $publish);
             }
         } catch (AccessDenied) {
             // Neos checks with Flow's security context, which may know other roles than the token's account
@@ -612,33 +617,47 @@ final readonly class Workspaces
                 $exception instanceof PartialWorkspaceRebaseFailed => sprintf('The other changes of the workspace %s depend on the ones to discard, discard more of them or all', $name->value),
                 default => sprintf('The changes of the workspace %s to keep conflict with its base workspace %s, which changed meanwhile', $name->value, $baseName),
             };
-            // the documents done before have given the workspace a new content stream
-            return WorkspaceConflict::of($exception, $completedDocuments !== [] ? $workspace->refreshed() : $workspace, $detail . self::completedDocumentsDetail($completedDocuments, $count, $publish), $completedDocuments, $count);
+            return WorkspaceConflict::of($exception, $workspace, $detail);
         } catch (NodeAggregateCurrentlyDoesNotExist) {
             // checked before, removed meanwhile
-            return WorkspaceConflict::removedMeanwhile(
-                sprintf('A selected site or document was removed from the workspace %s meanwhile', $name->value) . self::completedDocumentsDetail($completedDocuments, $count, $publish),
-                $completedDocuments,
-                $count,
-            );
+            return WorkspaceConflict::removedMeanwhile(sprintf('A selected site or document was removed from the workspace %s meanwhile', $name->value));
         }
         return $count;
     }
 
     /**
-     * @param list<SharedModel\Node\NodeAggregateId> $completedDocuments
+     * Publishes or discards the changes of the documents (each with its content, not its child documents, the
+     * changes listChanges gives these documentAggregateIds) in one command, in the order they were made, and counts
+     * their nodes as Neos does. 0 without any: Neos' command needs at least one node
+     *
+     * @param list<SharedModel\Node\NodeAggregateId> $documentIds
      */
-    private static function completedDocumentsDetail(array $completedDocuments, int $count, bool $published): string
+    private function publishOrDiscardDocuments(ReadableWorkspace $workspace, array $documentIds, bool $publish): int
     {
-        if ($completedDocuments === []) {
-            return '';
+        $name = $workspace->workspace->workspaceName;
+        $selected = [];
+        foreach ($documentIds as $documentId) {
+            $selected[$documentId->value] = true;
         }
-        return sprintf(
-            '. The changes of the documents %s were %s before (%d changes, see completedDocumentAggregateIds)',
-            implode(', ', array_map(static fn (SharedModel\Node\NodeAggregateId $id) => $id->value, $completedDocuments)),
-            $published ? 'published' : 'discarded',
-            $count,
-        );
+        $locator = new ChangeLocator($workspace);
+        $nodeIds = [];
+        foreach ($this->workspacePublishingService->pendingWorkspaceChanges($workspace->contentRepository->id, $name) as $change) {
+            $documentId = $locator->locate($change->nodeAggregateId, $change->originDimensionSpacePoint)['document'];
+            if ($documentId !== null && isset($selected[$documentId->value])) {
+                $nodeIds[] = $change->nodeAggregateId;
+            }
+        }
+        $nodeIds = SharedModel\Node\NodeAggregateIds::create(...$nodeIds);
+        if ($nodeIds->count() === 0) {
+            return 0;
+        }
+        return self::countUnlessSkipped(function () use ($workspace, $name, $nodeIds, $publish): int {
+            $workspace->contentRepository->handle($publish
+                ? PublishIndividualNodesFromWorkspace::create($name, $nodeIds)
+                : DiscardIndividualNodesFromWorkspace::create($name, $nodeIds));
+            $this->softRemovalGarbageCollector->run($workspace->contentRepository->id, $this->garbageCollectionGracePeriod);
+            return $nodeIds->count();
+        });
     }
 
     /**

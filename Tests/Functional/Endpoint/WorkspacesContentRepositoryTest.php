@@ -9,11 +9,14 @@ use Neos\ContentRepository\Core\DimensionSpace\OriginDimensionSpacePoint;
 use Neos\ContentRepository\Core\Feature\NodeCreation\Command\CreateNodeAggregateWithNode;
 use Neos\ContentRepository\Core\Feature\NodeModification\Command\SetNodeProperties;
 use Neos\ContentRepository\Core\Feature\NodeModification\Dto\PropertyValuesToWrite;
+use Neos\ContentRepository\Core\Feature\NodeMove\Command\MoveNodeAggregate;
+use Neos\ContentRepository\Core\Feature\NodeMove\Dto\RelationDistributionStrategy;
 use Neos\ContentRepository\Core\Feature\NodeRemoval\Command\RemoveNodeAggregate;
 use Neos\ContentRepository\Core\Feature\RootNodeCreation\Command\CreateRootNodeAggregateWithNode;
 use Neos\ContentRepository\Core\Feature\SubtreeTagging\Command\TagSubtree;
 use Neos\ContentRepository\Core\Feature\SubtreeTagging\Dto\SubtreeTag;
 use Neos\ContentRepository\Core\NodeType\NodeTypeName;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Filter\FindChildNodesFilter;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeAggregateId;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeVariantSelectionStrategy;
 use Neos\ContentRepository\Core\SharedModel\Workspace\WorkspaceName;
@@ -142,7 +145,7 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
     }
 
     #[Test]
-    public function aConflictTellsWhichDocumentsWerePublishedBefore(): void
+    public function aConflictPublishesNoneOfTheSelectedDocuments(): void
     {
         $this->createTeamWorkspace();
         $token = $this->token('editor-machine', 'workspaces.publish');
@@ -150,17 +153,54 @@ class WorkspacesContentRepositoryTest extends ContentRepositoryTestCase
         $this->createPage('team', 'new-parent', self::SITE);
         $this->createPage('team', 'new-child', 'new-parent');
 
-        // the child can't be published without its new parent, the unrelated page before it can
+        // the child can't be published without its new parent: neither is the unrelated page selected with it
         $response = $this->post('/api/cr/default/workspaces/team/publish', $token, ['documentAggregateIds' => ['unrelated-page', 'new-child']]);
         self::assertSame(409, $response->getStatusCode(), (string)$response->getBody());
         $problem = self::json($response);
         self::assertSame('partial', $problem['title']);
-        self::assertSame(['unrelated-page'], $problem['completedDocumentAggregateIds']);
-        self::assertGreaterThan(0, $problem['numberOfCompletedChanges']);
+        self::assertSame([], $problem['completedDocumentAggregateIds']);
+        self::assertSame(0, $problem['numberOfCompletedChanges']);
         self::assertSame(0, $problem['inaccessibleConflicts']);
         self::assertContains('new-child', array_column($problem['conflicts'], 'nodeAggregateId'));
         self::assertContains('node_has_been_created', array_column($problem['conflicts'], 'typeOfChange'));
-        self::assertNotNull($this->nodeAggregate('live', 'unrelated-page'));
+        self::assertNull($this->nodeAggregate('live', 'unrelated-page'));
+    }
+
+    #[Test]
+    public function publishesAndDiscardsDocumentsThatDependOnEachOther(): void
+    {
+        foreach (['e', 't', 'a', 'd'] as $id) {
+            $this->createPage('live', $id, self::PAGE);
+        }
+        $this->createTeamWorkspace();
+        $token = $this->token('editor-machine', 'workspaces.publish');
+        // a new folder, the pages moved into it, a before d, which was moved before: a depends on d (and the folder)
+        $moveIntoFolder = function (): void {
+            $this->createPage('team', 'folder', self::PAGE);
+            foreach (['e' => null, 't' => null, 'd' => null, 'a' => 'd'] as $id => $succeedingSibling) {
+                $this->handle(MoveNodeAggregate::create(WorkspaceName::fromString('team'), self::origin()->toDimensionSpacePoint(), NodeAggregateId::fromString($id), RelationDistributionStrategy::STRATEGY_GATHER_ALL, NodeAggregateId::fromString('folder'), null, $succeedingSibling !== null ? NodeAggregateId::fromString($succeedingSibling) : null));
+            }
+        };
+        $selection = ['documentAggregateIds' => ['folder', 'e', 'a', 'd', 't']];
+
+        $moveIntoFolder();
+        $response = $this->post('/api/cr/default/workspaces/team/discard', $token, $selection);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        self::assertNull($this->nodeAggregate('team', 'folder'));
+
+        $moveIntoFolder();
+        $response = $this->post('/api/cr/default/workspaces/team/publish', $token, $selection);
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        // the folder (with its tethered content collection) and the four pages moved
+        self::assertGreaterThanOrEqual(5, self::json($response)['numberOfPublishedChanges']);
+        $children = $this->withoutAuthorizationChecks(fn () => $this->contentRepository()->getContentSubgraph(WorkspaceName::forLive(), self::origin()->toDimensionSpacePoint())->findChildNodes(NodeAggregateId::fromString('folder'), FindChildNodesFilter::create(nodeTypes: self::PAGE_TYPE)));
+        self::assertSame(['e', 't', 'a', 'd'], array_map(static fn ($node) => $node->aggregateId->value, iterator_to_array($children)));
+
+        // documents without changes (left) are no error, for publishing and discarding
+        foreach (['publish', 'discard'] as $action) {
+            $response = $this->post('/api/cr/default/workspaces/team/' . $action, $token, $selection);
+            self::assertSame(200, $response->getStatusCode(), $action . ': ' . $response->getBody());
+        }
     }
 
     #[Test]

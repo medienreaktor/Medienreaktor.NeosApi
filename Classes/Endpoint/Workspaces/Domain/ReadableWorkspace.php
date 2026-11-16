@@ -16,8 +16,8 @@ use Neos\Neos\Security\Authorization\ContentRepositoryAuthorizationService;
 /**
  * A workspace the account may read, what else it may do in it, and which of its node aggregates it may read
  *
- * Its content graphs are the ones of the workspace's content stream when it was resolved: after a publish, discard
- * or rebase in the same request, refreshed() reads the new one
+ * Its content graphs are the ones of the workspace's content stream when it was resolved, not the new one of a
+ * publish, discard or rebase in the same request
  */
 #[Flow\Proxy(false)]
 final class ReadableWorkspace
@@ -71,19 +71,6 @@ final class ReadableWorkspace
             }
         }
         return $this->baseContentGraph;
-    }
-
-    /**
-     * The workspace as it is now, with the same permissions: a publish, discard or rebase gives it a new content
-     * stream, which the content graphs of this one don't see. Itself if the workspace is gone
-     */
-    public function refreshed(): self
-    {
-        $workspace = $this->contentRepository->findWorkspaceByName($this->workspace->workspaceName);
-        if ($workspace === null) {
-            return $this;
-        }
-        return new self($this->contentRepository, $workspace, $this->permissions, $this->contentRepository->getContentGraph($workspace->workspaceName), $this->roles, $this->contentRepositoryAuthorizationService);
     }
 
     /**

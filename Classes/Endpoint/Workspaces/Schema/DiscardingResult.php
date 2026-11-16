@@ -14,7 +14,7 @@ use Neos\Schematic\Discovery\AutoDiscoveringSchema;
 final readonly class DiscardingResult implements ProvidesSchema
 {
     /**
-     * @param int $numberOfDiscardedChanges as Neos counts them (Neos' DiscardingResult, summed over the documents), 0 if there was nothing to discard
+     * @param int $numberOfDiscardedChanges as Neos counts them (Neos' DiscardingResult, for documents the nodes with changes in them), 0 if there was nothing to discard
      * @param Workspace $workspace the workspace as it is now, as getWorkspace returns it
      */
     public function __construct(

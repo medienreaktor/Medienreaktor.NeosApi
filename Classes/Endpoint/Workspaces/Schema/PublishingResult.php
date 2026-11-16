@@ -14,7 +14,7 @@ use Neos\Schematic\Discovery\AutoDiscoveringSchema;
 final readonly class PublishingResult implements ProvidesSchema
 {
     /**
-     * @param int $numberOfPublishedChanges as Neos counts them (Neos' PublishingResult, summed over the documents), 0 if there was nothing to publish
+     * @param int $numberOfPublishedChanges as Neos counts them (Neos' PublishingResult, for documents the nodes with changes in them), 0 if there was nothing to publish
      * @param Workspace $workspace the published workspace as it is now, as getWorkspace returns it
      */
     public function __construct(
