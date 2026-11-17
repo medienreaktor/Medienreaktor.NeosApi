@@ -17,7 +17,6 @@ use Neos\Api\Security\AccountPrivileges;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiCaller;
 use Neos\Api\Security\ApiScopes;
-use Neos\Api\Security\OAuthTokens;
 use Neos\Api\Security\PrivilegeScopes;
 use Neos\Api\Infrastructure\Http\JsonBody;
 use Neos\Api\Shared\Response\NotFound;
@@ -55,7 +54,6 @@ final readonly class Me
         private PartyService $partyService,
         private UserService $userService,
         private HashService $hashService,
-        private OAuthTokens $oauthTokens,
         private PrivilegeScopes $privilegeScopes,
         private AccountPrivileges $accountPrivileges,
         #[Flow\InjectConfiguration(path: 'userInterface.availableLanguages', package: 'Neos.Neos')]
@@ -178,10 +176,8 @@ final readonly class Me
         if (!$this->isPasswordOf($user, $change->currentPassword)) {
             return UnprocessableContent::because('The current password is wrong');
         }
+        // Neos.OAuth revokes the tokens of the user's accounts, but the one of this request
         $this->userService->setUserPassword($user, $change->newPassword->value);
-        foreach ($user->getAccounts() as $account) {
-            $this->oauthTokens->revokeAllOf($account, $caller->accessTokenIdentifier);
-        }
         return null;
     }
 
