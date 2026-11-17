@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.4] - 2026-11-17
+
+### Security
+
+- **Deleting a user revokes its OAuth tokens.** A deleted user's refresh token kept
+  working and authenticated as a new user that was later given the same username.
+- **Changing a password revokes the OAuth tokens in every case.** Only `changePassword`
+  and `setUserPassword` of this API did, changes in the Neos backend or with
+  `./flow user:setpassword` left them valid. The access token of the request that changes
+  the password still stays valid.
+
+### Changed
+
+- **Deactivating a user revokes its OAuth tokens for good.** They used to work again once
+  the user was activated; now its clients have to authorize again.
+- Requires medienreaktor/neos-oauth 0.1.2, which revokes the tokens (run its migration).
+
 ## [2.0.3] - 2026-11-16
 
 ### Fixed
@@ -319,7 +336,8 @@ Same code as [1.0].
   users, the user's own profile and password, and data sources. Every endpoint has a
   privilege of its own. Licensed under GPL-3.0.
 
-[Unreleased]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.3...HEAD
+[Unreleased]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.4...HEAD
+[2.0.4]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.3...2.0.4
 [2.0.3]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.2...2.0.3
 [2.0.2]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.1...2.0.2
 [2.0.1]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.0...2.0.1
