@@ -8,7 +8,7 @@
         "neos/flow": "^9.2",
         "neos/neos": "^9.2",
         "neos/media": "^9.2",
-        "medienreaktor/neos-oauth": "^0.1",
+        "medienreaktor/neos-oauth": "^0.1.2",
         "behat/transliterator": "^1.5",
         "doctrine/dbal": "^3.8",
         "medienreaktor/neos-openapi-bundle": "^0.1"

@@ -16,7 +16,6 @@ use Neos\Api\Security\AccountPrivileges;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiCaller;
 use Neos\Api\Security\ApiScopes;
-use Neos\Api\Security\OAuthTokens;
 use Neos\Api\Security\PrivilegeScopes;
 use Neos\Api\Shared\Parameter\Limit;
 use Neos\Api\Shared\Parameter\Offset;
@@ -50,7 +49,6 @@ final readonly class Users
         private PolicyService $policyService,
         private AccountPrivileges $accountPrivileges,
         private PrivilegeScopes $privilegeScopes,
-        private OAuthTokens $oauthTokens,
     ) {
     }
 
@@ -214,10 +212,8 @@ final readonly class Users
         if (!$this->accountPrivileges->mayManage($caller->account, $user)) {
             return self::mayNotManage();
         }
+        // Neos.OAuth revokes the tokens of the user's accounts, but the one of this request
         $this->userService->setUserPassword($user, $password->newPassword->value);
-        foreach ($user->getAccounts() as $account) {
-            $this->oauthTokens->revokeAllOf($account, $caller->accessTokenIdentifier);
-        }
         return null;
     }
 

@@ -9,6 +9,7 @@ use Neos\Api\Endpoint\Users\Schema\EmailAddress;
 use Neos\Flow\Security\AccountRepository;
 use Neos\Flow\Security\Cryptography\HashService;
 use Neos\Neos\Domain\Service\UserService;
+use Neos\OAuth\Domain\Repository\TokenRecordRepository;
 use Neos\Party\Domain\Model\ElectronicAddress;
 use PHPUnit\Framework\Attributes\Test;
 
@@ -302,6 +303,20 @@ class UsersTest extends EndpointTestCase
     }
 
     #[Test]
+    public function deletingAUserRevokesItsTokens(): void
+    {
+        $this->createWorkspaceMetadataTable();
+        $this->token('editor-machine', 'me.read');
+
+        $response = $this->delete('/api/users/' . $this->editorId, $this->token('admin-machine', 'users.delete'));
+
+        self::assertSame(204, $response->getStatusCode(), (string)$response->getBody());
+        $this->persistenceManager->clearState();
+        // or they would act as a new account that takes over the identifier
+        self::assertSame([], $this->objectManager->get(TokenRecordRepository::class)->findActive(null, 'editor', new \DateTimeImmutable()));
+    }
+
+    #[Test]
     public function usersCantDeleteThemselves(): void
     {
         $response = $this->delete('/api/users/' . $this->adminId, $this->token('admin-machine', 'users.delete'));
@@ -498,7 +513,9 @@ class UsersTest extends EndpointTestCase
         self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
         self::assertTrue(self::json($response)['active']);
         $this->persistenceManager->persistAll();
-        self::assertSame(200, $this->get('/api/me', $editorToken)->getStatusCode());
+        // Neos.OAuth revoked them on deactivation: they don't come back, new ones work
+        self::assertSame(401, $this->get('/api/me', $editorToken)->getStatusCode());
+        self::assertSame(200, $this->get('/api/me', $this->token('editor-machine', 'me.read'))->getStatusCode());
     }
 
     #[Test]

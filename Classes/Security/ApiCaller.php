@@ -19,7 +19,7 @@ final readonly class ApiCaller
 {
     /**
      * @param list<string> $scopes
-     * @param string|null $accessTokenIdentifier the identifier of the token's record in Neos.OAuth, see OAuthTokens
+     * @param string|null $accessTokenIdentifier the identifier of the token's record in Neos.OAuth
      */
     private function __construct(
         public Account $account,
