@@ -4,15 +4,10 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\NodeTypes;
 
-use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
-use Neos\Api\Endpoint\NodeTypes\Schema\NodeType;
-use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeGroup;
-use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeGroupList;
-use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeName;
-use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeList;
-use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeListing;
+use Neos\Api\Endpoint\ContentRepositories;
 use Neos\Api\Infrastructure\ContentRepository\ContentRepositoryFinder;
 use Neos\Api\Infrastructure\ContentRepository\NodeTypeUi;
+use Neos\Api\Infrastructure\I18n\Labels;
 use Neos\Api\Infrastructure\I18n\LabelTranslator;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiScopes;
@@ -20,7 +15,6 @@ use Neos\Api\Shared\Parameter\IncludePaths;
 use Neos\Api\Shared\Response\BadRequest;
 use Neos\Api\Shared\Response\NotFound;
 use Neos\Api\Shared\Schema\AcceptLanguage;
-use Neos\Api\Infrastructure\I18n\Labels;
 use Neos\ContentRepository\Core;
 use Neos\Flow\Annotations as Flow;
 use Neos\OpenApi\Attributes\Operation;
@@ -63,13 +57,13 @@ final readonly class NodeTypes
         ],
     )]
     public function list(
-        ContentRepositoryId $contentRepositoryId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
         #[Parameter(in: 'query', description: 'Only the node types of this type: it and the ones inheriting from it, directly or not. An unknown node type is a 400')]
-        NodeTypeName|null $filterBySuperType = null,
+        Schema\NodeTypeName|null $filterBySuperType = null,
         #[Parameter(in: 'query', description: 'What to include beyond the node types\' own fields, comma-separated: properties, references, configuration, allowedChildNodeTypes, tetheredChildNodes')]
         IncludePaths|null $include = null,
         #[Parameter(in: 'header', name: 'Accept-Language')] AcceptLanguage|null $acceptLanguage = null,
-    ): NodeTypeListing|NotFound|BadRequest {
+    ): Schema\NodeTypeListing|NotFound|BadRequest {
         $include ??= IncludePaths::none();
         $unsupported = $include->unsupported(self::INCLUDE_PATHS);
         if ($unsupported !== null) {
@@ -90,9 +84,9 @@ final readonly class NodeTypes
         }
         ksort($nodeTypes);
         // the same for every node type, computed once
-        $candidates = $include->includes('allowedChildNodeTypes') || $include->includes('tetheredChildNodes') ? NodeType::childNodeTypeCandidates($nodeTypeManager) : [];
-        return NodeTypeListing::of(new NodeTypeList(...array_map(
-            fn (Core\NodeType\NodeType $nodeType) => NodeType::from(
+        $candidates = $include->includes('allowedChildNodeTypes') || $include->includes('tetheredChildNodes') ? Schema\NodeType::childNodeTypeCandidates($nodeTypeManager) : [];
+        return Schema\NodeTypeListing::of(new Schema\NodeTypeList(...array_map(
+            fn (Core\NodeType\NodeType $nodeType) => Schema\NodeType::from(
                 $nodeType,
                 $labels,
                 $this->nodeTypeUi,
@@ -111,13 +105,13 @@ final readonly class NodeTypes
     /**
      * The groups of the settings in the order of their positions, ones set to null left out
      */
-    private function groups(Labels $labels): NodeTypeGroupList
+    private function groups(Labels $labels): Schema\NodeTypeGroupList
     {
         $groups = [];
         foreach ((new PositionalArraySorter(array_filter($this->groups, is_array(...))))->toArray() as $name => $configuration) {
-            $groups[] = NodeTypeGroup::from((string)$name, $configuration, $labels);
+            $groups[] = Schema\NodeTypeGroup::from((string)$name, $configuration, $labels);
         }
-        return new NodeTypeGroupList(...$groups);
+        return new Schema\NodeTypeGroupList(...$groups);
     }
 
     #[Operation(
@@ -131,10 +125,10 @@ final readonly class NodeTypes
         ],
     )]
     public function get(
-        ContentRepositoryId $contentRepositoryId,
-        NodeTypeName $nodeTypeName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeTypeName $nodeTypeName,
         #[Parameter(in: 'header', name: 'Accept-Language')] AcceptLanguage|null $acceptLanguage = null,
-    ): NodeType|NotFound {
+    ): Schema\NodeType|NotFound {
         $nodeTypeManager = $this->nodeTypeManager($contentRepositoryId);
         if ($nodeTypeManager === null) {
             return NotFound::contentRepository($contentRepositoryId->value);
@@ -143,12 +137,12 @@ final readonly class NodeTypes
         if ($nodeType === null) {
             return NotFound::because(sprintf('There is no node type %s', $nodeTypeName->value));
         }
-        return NodeType::from(
+        return Schema\NodeType::from(
             $nodeType,
             $this->labelTranslator->forAcceptLanguage($acceptLanguage),
             $this->nodeTypeUi,
             $nodeTypeManager,
-            NodeType::childNodeTypeCandidates($nodeTypeManager),
+            Schema\NodeType::childNodeTypeCandidates($nodeTypeManager),
             withProperties: true,
             withReferences: true,
             withConfiguration: true,
@@ -157,7 +151,7 @@ final readonly class NodeTypes
         );
     }
 
-    private function nodeTypeManager(ContentRepositoryId $contentRepositoryId): Core\NodeType\NodeTypeManager|null
+    private function nodeTypeManager(ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId): Core\NodeType\NodeTypeManager|null
     {
         return $this->contentRepositoryFinder->find($contentRepositoryId->toContentRepositoryId())?->getNodeTypeManager();
     }

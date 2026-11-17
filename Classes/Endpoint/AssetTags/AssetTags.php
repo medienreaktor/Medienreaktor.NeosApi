@@ -9,9 +9,6 @@ use Neos\Api\Endpoint\AssetTags\Domain\AssetTagTree;
 use Neos\Api\Endpoint\AssetTags\RequestBody\AssetTagCreate;
 use Neos\Api\Endpoint\AssetTags\RequestBody\AssetTagUpdate;
 use Neos\Api\Endpoint\AssetTags\Response\AssetTagCreated;
-use Neos\Api\Endpoint\AssetTags\Schema\AssetTag;
-use Neos\Api\Endpoint\AssetTags\Schema\AssetTagId;
-use Neos\Api\Endpoint\AssetTags\Schema\AssetTagListing;
 use Neos\Api\Infrastructure\Http\JsonBody;
 use Neos\Api\Infrastructure\Media\AssetTagFinder;
 use Neos\Api\Security\ApiAuthContextProvider;
@@ -52,10 +49,10 @@ final readonly class AssetTags
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETTAGS_READ],
         ],
     )]
-    public function list(): AssetTagListing
+    public function list(): Schema\AssetTagListing
     {
         $tree = $this->tree();
-        return new AssetTagListing($tree->roots(), new ListingMeta($tree->count()));
+        return new Schema\AssetTagListing($tree->roots(), new ListingMeta($tree->count()));
     }
 
     #[Operation(
@@ -95,7 +92,7 @@ final readonly class AssetTags
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETTAGS_READ],
         ],
     )]
-    public function get(AssetTagId $assetTagId): AssetTag|NotFound
+    public function get(Schema\AssetTagId $assetTagId): Schema\AssetTag|NotFound
     {
         $tag = $this->assetTagResolver->resolve($assetTagId);
         return $tag instanceof Model\Tag ? $this->assetTag($tag) : $tag;
@@ -112,10 +109,10 @@ final readonly class AssetTags
         ],
     )]
     public function update(
-        AssetTagId $assetTagId,
+        Schema\AssetTagId $assetTagId,
         #[RequestBody(description: 'The changes')] AssetTagUpdate $patch,
         ServerRequestInterface $request,
-    ): AssetTag|NotFound|UnprocessableContent {
+    ): Schema\AssetTag|NotFound|UnprocessableContent {
         $tag = $this->assetTagResolver->resolve($assetTagId);
         if ($tag instanceof NotFound) {
             return $tag;
@@ -157,7 +154,7 @@ final readonly class AssetTags
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETTAGS_DELETE],
         ],
     )]
-    public function delete(AssetTagId $assetTagId): NotFound|null
+    public function delete(Schema\AssetTagId $assetTagId): NotFound|null
     {
         $tag = $this->assetTagResolver->resolve($assetTagId);
         if ($tag instanceof NotFound) {
@@ -177,7 +174,7 @@ final readonly class AssetTags
         return null;
     }
 
-    private function assetTag(Model\Tag $tag): AssetTag
+    private function assetTag(Model\Tag $tag): Schema\AssetTag
     {
         return $this->tree()->assetTag($tag);
     }

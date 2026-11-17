@@ -4,10 +4,6 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\ContentRepositories;
 
-use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryList;
-use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryListing;
-use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepository;
-use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
 use Neos\Api\Infrastructure\ContentRepository\NodeTypeUi;
 use Neos\Api\Infrastructure\I18n\LabelTranslator;
 use Neos\Api\Security\ApiAuthContextProvider;
@@ -50,16 +46,16 @@ final readonly class ContentRepositories
     )]
     public function list(
         #[Parameter(in: 'header', name: 'Accept-Language')] AcceptLanguage|null $acceptLanguage = null,
-    ): ContentRepositoryListing {
+    ): Schema\ContentRepositoryListing {
         $labels = $this->labelTranslator->forAcceptLanguage($acceptLanguage);
         $contentRepositories = [];
         foreach ($this->contentRepositoryRegistry->getContentRepositoryIds() as $id) {
             $contentRepository = $this->build($id);
             if ($contentRepository !== null) {
-                $contentRepositories[] = ContentRepository::from($contentRepository, $labels, $this->nodeTypeUi);
+                $contentRepositories[] = Schema\ContentRepository::from($contentRepository, $labels, $this->nodeTypeUi);
             }
         }
-        return ContentRepositoryListing::of(new ContentRepositoryList(...$contentRepositories));
+        return Schema\ContentRepositoryListing::of(new Schema\ContentRepositoryList(...$contentRepositories));
     }
 
     #[Operation(
@@ -73,9 +69,9 @@ final readonly class ContentRepositories
         ],
     )]
     public function get(
-        ContentRepositoryId $contentRepositoryId,
+        Schema\ContentRepositoryId $contentRepositoryId,
         #[Parameter(in: 'header', name: 'Accept-Language')] AcceptLanguage|null $acceptLanguage = null,
-    ): ContentRepository|NotFound {
+    ): Schema\ContentRepository|NotFound {
         $id = $contentRepositoryId->toContentRepositoryId();
         $contentRepository = null;
         foreach ($this->contentRepositoryRegistry->getContentRepositoryIds() as $configuredId) {
@@ -86,7 +82,7 @@ final readonly class ContentRepositories
         if ($contentRepository === null) {
             return NotFound::contentRepository($contentRepositoryId->value);
         }
-        return ContentRepository::from($contentRepository, $this->labelTranslator->forAcceptLanguage($acceptLanguage), $this->nodeTypeUi);
+        return Schema\ContentRepository::from($contentRepository, $this->labelTranslator->forAcceptLanguage($acceptLanguage), $this->nodeTypeUi);
     }
 
     /**

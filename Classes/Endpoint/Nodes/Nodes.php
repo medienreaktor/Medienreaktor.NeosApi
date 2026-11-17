@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Nodes;
 
-use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
+use Neos\Api\Endpoint\ContentRepositories;
 use Neos\Api\Endpoint\Nodes\Domain\NodeMoveCommand;
 use Neos\Api\Endpoint\Nodes\Domain\NodeQuery;
 use Neos\Api\Endpoint\Nodes\Domain\NodeRestoration;
@@ -25,25 +25,15 @@ use Neos\Api\Endpoint\Nodes\RequestBody\NodeTypeChange;
 use Neos\Api\Endpoint\Nodes\RequestBody\NodeUriPathSegmentGenerate;
 use Neos\Api\Endpoint\Nodes\RequestBody\NodeVariantCreate;
 use Neos\Api\Endpoint\Nodes\Response\NodeCreated;
-use Neos\Api\Endpoint\Nodes\Schema\DimensionSpacePoint;
-use Neos\Api\Endpoint\Nodes\Schema\DimensionSpacePointList;
-use Neos\Api\Endpoint\Nodes\Schema\Node;
-use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
-use Neos\Api\Endpoint\Nodes\Schema\NodeList;
-use Neos\Api\Endpoint\Nodes\Schema\NodeVariantListing;
-use Neos\Api\Endpoint\Nodes\Schema\NodeVariantListingMeta;
-use Neos\Api\Endpoint\Nodes\Schema\PaginatedNodeListing;
-use Neos\Api\Endpoint\Nodes\Schema\SubtreeTag;
-use Neos\Api\Endpoint\Nodes\Schema\UriPathSegment;
+use Neos\Api\Endpoint\Workspaces;
 use Neos\Api\Endpoint\Workspaces\Domain\ReadableWorkspace;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceName;
 use Neos\Api\Endpoint\Workspaces\Domain\WorkspaceResolver;
 use Neos\Api\Infrastructure\ContentRepository\ContentSubgraphs;
 use Neos\Api\Infrastructure\ContentRepository\InvalidPropertyValue;
 use Neos\Api\Infrastructure\ContentRepository\NodeSerializer;
 use Neos\Api\Infrastructure\ContentRepository\PropertyValues;
-use Neos\Api\Infrastructure\ContentRepository\UriPathSegments;
 use Neos\Api\Infrastructure\ContentRepository\SiteFinder;
+use Neos\Api\Infrastructure\ContentRepository\UriPathSegments;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiCaller;
 use Neos\Api\Security\ApiScopes;
@@ -65,8 +55,8 @@ use Neos\ContentRepository\Core\Feature\NodeCreation\Dto\NodeAggregateIdsByNodeP
 use Neos\ContentRepository\Core\Feature\NodeModification\Command\SetNodeProperties;
 use Neos\ContentRepository\Core\Feature\NodeReferencing\Command\SetNodeReferences;
 use Neos\ContentRepository\Core\Feature\NodeTypeChange\Command\ChangeNodeAggregateType;
-use Neos\ContentRepository\Core\Feature\NodeVariation\Exception\DimensionSpacePointIsAlreadyOccupied;
 use Neos\ContentRepository\Core\Feature\NodeTypeChange\Dto\NodeAggregateTypeChangeChildConstraintConflictResolutionMarkWithTagStrategy;
+use Neos\ContentRepository\Core\Feature\NodeVariation\Exception\DimensionSpacePointIsAlreadyOccupied;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\Feature\SubtreeTagging\Command\TagSubtree;
 use Neos\ContentRepository\Core\Feature\SubtreeTagging\Command\UntagSubtree;
@@ -150,12 +140,12 @@ final readonly class Nodes
         ],
     )]
     public function list(
-        ContentRepositoryId $contentRepositoryId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
         ServerRequestInterface $request,
         #[Parameter(in: 'query', description: 'The workspace to read the nodes in, live if omitted')]
-        WorkspaceName|null $workspaceName = null,
+        Workspaces\Schema\WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'The dimension space point to read the nodes in, as JSON. If omitted, the default one of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name), the only one of a content repository without a site')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
         #[Parameter(in: 'query', description: 'The nodes below a node: filterByHierarchy[type] childOf (its direct child nodes) or descendantOf (all nodes below it) and filterByHierarchy[nodeAggregateId]. Not with filterByReference')]
         HierarchyFilter|null $filterByHierarchy = null,
         #[Parameter(in: 'query', description: 'The nodes that reference a node: filterByReference[nodeAggregateId], optionally filterByReference[name] for the references of that name only. Not with filterByHierarchy')]
@@ -180,7 +170,7 @@ final readonly class Nodes
         NodeTypeCriteria|null $hasChildrenOfNodeType = null,
         #[Parameter(in: 'query', description: 'Find deleted nodes as well (soft removed, tagged removed), as getNode, false if omitted')]
         bool $includeRemoved = false,
-    ): PaginatedNodeListing|NotFound|BadRequest {
+    ): Schema\PaginatedNodeListing|NotFound|BadRequest {
         $offset ??= Offset::none();
         // all the nodes asked for by their ids on one page, unless a limit says otherwise
         $limit ??= $filterByNodeAggregateId !== null ? Limit::fromInteger(count($filterByNodeAggregateId->toNodeAggregateIds())) : Limit::default();
@@ -220,8 +210,8 @@ final readonly class Nodes
             return $unknownNodeTypes;
         }
         [$nodes, $total] = $found;
-        return new PaginatedNodeListing(
-            new NodeList(...array_map(fn (ContentGraph\Node $node) => $this->node($node, $include, $hasChildrenOf), $nodes)),
+        return new Schema\PaginatedNodeListing(
+            new Schema\NodeList(...array_map(fn (ContentGraph\Node $node) => $this->node($node, $include, $hasChildrenOf), $nodes)),
             new ListingMeta($total),
             ListingLinks::for($request, $offset, $limit, $total),
         );
@@ -238,12 +228,12 @@ final readonly class Nodes
         ],
     )]
     public function create(
-        ContentRepositoryId $contentRepositoryId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
         #[Parameter(in: 'query', description: 'The workspace to create the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[RequestBody(description: 'The node')] NodeCreate $newNode,
         #[Parameter(in: 'query', description: 'The dimension space point to create the node in, its origin, as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
     ): NodeCreated|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
         $subgraph = $this->subgraph($contentRepositoryId, $workspaceName, $dimensionSpacePoint);
         if (!$subgraph instanceof ContentSubgraphInterface) {
@@ -314,7 +304,7 @@ final readonly class Nodes
             }
         }
         $created = $this->reread($parent, $nodeAggregateId);
-        return $created instanceof Node ? NodeCreated::node($created) : $created;
+        return $created instanceof Schema\Node ? NodeCreated::node($created) : $created;
     }
 
     #[Operation(
@@ -328,19 +318,19 @@ final readonly class Nodes
         ],
     )]
     public function get(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to read the node in, live if omitted')]
-        WorkspaceName|null $workspaceName = null,
+        Workspaces\Schema\WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'The dimension space point to read the node in, as JSON. If omitted, the default one of the content repository\'s default site (Neos.Neos.defaultSiteNodeName if it is in the content repository, else its first online site by name), the only one of a content repository without a site')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
         #[Parameter(in: 'query', description: 'What to include beyond the node\'s own fields, comma-separated: references, references.node, children, children.references, children.hasChildren, variants, variants.references, ancestors, hasChildren')]
         IncludePaths|null $include = null,
         #[Parameter(in: 'query', description: 'With include=hasChildren or children.hasChildren, only child nodes of these node types count, comma-separated, a ! in front excludes a type, as filterByNodeType of listNodes. All if omitted. Unknown node types are a 400')]
         NodeTypeCriteria|null $hasChildrenOfNodeType = null,
         #[Parameter(in: 'query', description: 'Find deleted nodes as well (soft removed, tagged removed), e.g. for a trash, false if omitted')]
         bool $includeRemoved = false,
-    ): Node|NotFound|BadRequest {
+    ): Schema\Node|NotFound|BadRequest {
         $include ??= IncludePaths::none();
         $unsupported = $include->unsupported(self::INCLUDE_PATHS);
         if ($unsupported !== null) {
@@ -368,15 +358,15 @@ final readonly class Nodes
         ],
     )]
     public function updateProperties(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to change the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[RequestBody(description: 'The properties to change by name')] NodePropertiesUpdate $properties,
         ServerRequestInterface $request,
         #[Parameter(in: 'query', description: 'The dimension space point to change the node in, as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
-    ): Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
+    ): Schema\Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
         $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
         if (!$node instanceof ContentGraph\Node) {
             return $node;
@@ -402,14 +392,14 @@ final readonly class Nodes
         ],
     )]
     public function generateUriPathSegment(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to change the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[RequestBody(description: 'What to generate it from, {} for the title')] NodeUriPathSegmentGenerate $source,
         #[Parameter(in: 'query', description: 'The dimension space point to change the node in, its language the one to transliterate in, as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
-    ): Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
+    ): Schema\Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
         $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
         if (!$node instanceof ContentGraph\Node) {
             return $node;
@@ -439,15 +429,15 @@ final readonly class Nodes
         ],
     )]
     public function getUriPathSegment(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to read the node in, live if omitted')]
-        WorkspaceName|null $workspaceName = null,
+        Workspaces\Schema\WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'The dimension space point to read the node in, its language the one to transliterate in, as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
         #[Parameter(in: 'query', description: 'The text to generate it from, e.g. a title not saved yet. If omitted or empty, the node\'s title')]
         string|null $text = null,
-    ): UriPathSegment|NotFound|BadRequest|UnprocessableContent {
+    ): Schema\UriPathSegment|NotFound|BadRequest|UnprocessableContent {
         $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
         if (!$node instanceof ContentGraph\Node) {
             return $node;
@@ -461,7 +451,7 @@ final readonly class Nodes
         }
         $uriPathSegment = $this->uriPathSegmentOf($node, $text);
         return $uriPathSegment !== ''
-            ? new UriPathSegment($uriPathSegment)
+            ? new Schema\UriPathSegment($uriPathSegment)
             : UnprocessableContent::because(sprintf('There is nothing to generate the uriPathSegment of the node %s from', $node->aggregateId->value));
     }
 
@@ -518,15 +508,15 @@ final readonly class Nodes
         ],
     )]
     public function updateReferences(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to change the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[RequestBody(description: 'The references to change by name')] NodeReferencesUpdate $references,
         ServerRequestInterface $request,
         #[Parameter(in: 'query', description: 'The dimension space point to change the node in, as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
-    ): Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
+    ): Schema\Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
         $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
         if (!$node instanceof ContentGraph\Node) {
             return $node;
@@ -571,12 +561,12 @@ final readonly class Nodes
         ],
     )]
     public function delete(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to delete the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[Parameter(in: 'query', description: 'The dimension space point to delete the node in (and the points that fall back to it), as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
     ): NotFound|BadRequest|Forbidden|UnprocessableContent|null {
         $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
         if (!$node instanceof ContentGraph\Node) {
@@ -609,14 +599,14 @@ final readonly class Nodes
         ],
     )]
     public function tag(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
-        SubtreeTag $tag,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
+        Schema\SubtreeTag $tag,
         #[Parameter(in: 'query', description: 'The workspace to tag the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[Parameter(in: 'query', description: 'The dimension space point to tag the node in (and the points that fall back to it), as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
-    ): Node|NotFound|BadRequest|Forbidden|UnprocessableContent {
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
+    ): Schema\Node|NotFound|BadRequest|Forbidden|UnprocessableContent {
         if ($tag->toSubtreeTag()->equals(NeosSubtreeTag::removed())) {
             return UnprocessableContent::because('Nodes can\'t be tagged removed, deleteNode removes them');
         }
@@ -646,14 +636,14 @@ final readonly class Nodes
         ],
     )]
     public function untag(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
-        SubtreeTag $tag,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
+        Schema\SubtreeTag $tag,
         #[Parameter(in: 'query', description: 'The workspace to untag the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[Parameter(in: 'query', description: 'The dimension space point to untag the node in (and the points that fall back to it), as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
-    ): Node|NotFound|BadRequest|Forbidden|UnprocessableContent {
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
+    ): Schema\Node|NotFound|BadRequest|Forbidden|UnprocessableContent {
         // removed nodes aren't found, restoring them is up to restore()
         if ($tag->toSubtreeTag()->equals(NeosSubtreeTag::removed())) {
             return UnprocessableContent::because('removed can\'t be untagged, restoreNode restores removed nodes');
@@ -681,10 +671,10 @@ final readonly class Nodes
         ],
     )]
     public function restore(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to restore the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
     ): NotFound|Forbidden|Conflict|null {
         // removed nodes aren't in any subgraph, they are found in the content graph, as in Neos' RestoreController
@@ -724,14 +714,14 @@ final readonly class Nodes
         ],
     )]
     public function changeNodeType(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to change the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[RequestBody(description: 'The new node type')] NodeTypeChange $change,
         #[Parameter(in: 'query', description: 'The dimension space point to read the node in, the change is to all of them, as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
-    ): Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
+    ): Schema\Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
         $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
         if (!$node instanceof ContentGraph\Node) {
             return $node;
@@ -770,14 +760,14 @@ final readonly class Nodes
         ],
     )]
     public function move(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to move the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[RequestBody(description: 'Where to move the node')] NodeMove $target,
         #[Parameter(in: 'query', description: 'The dimension space point to move the node in, the others as its moveNodeStrategy says, as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
-    ): Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
+    ): Schema\Node|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
         if ($target->parentNodeAggregateId === null && $target->succeedingSiblingNodeAggregateId === null) {
             return BadRequest::because('Give parentNodeAggregateId or succeedingSiblingNodeAggregateId, or both');
         }
@@ -828,20 +818,20 @@ final readonly class Nodes
         ],
     )]
     public function listVariants(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[AuthContext] ApiCaller $caller,
         #[Parameter(in: 'query', description: 'The workspace to read the variants in, live if omitted')]
-        WorkspaceName|null $workspaceName = null,
+        Workspaces\Schema\WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'What to include beyond each variant\'s own fields, comma-separated: references, children, children.references')]
         IncludePaths|null $include = null,
-    ): NodeVariantListing|NotFound|BadRequest {
+    ): Schema\NodeVariantListing|NotFound|BadRequest {
         $include ??= IncludePaths::none();
         $unsupported = $include->unsupported(self::VARIANT_INCLUDE_PATHS);
         if ($unsupported !== null) {
             return $unsupported;
         }
-        $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName ?? WorkspaceName::fromString(SharedModel\Workspace\WorkspaceName::WORKSPACE_NAME_LIVE), $caller->account);
+        $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName ?? Workspaces\Schema\WorkspaceName::fromString(SharedModel\Workspace\WorkspaceName::WORKSPACE_NAME_LIVE), $caller->account);
         if (!$workspace instanceof ReadableWorkspace) {
             return $workspace;
         }
@@ -850,9 +840,9 @@ final readonly class Nodes
             return NotFound::because(sprintf('There is no node %s in the workspace %s', $nodeAggregateId->value, $workspace->workspace->workspaceName->value));
         }
         $covered = $this->contentSubgraphs->findCoveredDimensionSpacePoints($workspace->contentRepository, $workspace->workspace->workspaceName, $nodeAggregateId->toNodeAggregateId(), excludeDisabled: false) ?? [];
-        return new NodeVariantListing(
-            new NodeList(...array_map(fn (ContentGraph\Node $variant) => $this->node($variant, $include), $variants)),
-            new NodeVariantListingMeta(count($variants), DimensionSpacePointList::from($covered)),
+        return new Schema\NodeVariantListing(
+            new Schema\NodeList(...array_map(fn (ContentGraph\Node $variant) => $this->node($variant, $include), $variants)),
+            new Schema\NodeVariantListingMeta(count($variants), Schema\DimensionSpacePointList::from($covered)),
         );
     }
 
@@ -867,13 +857,13 @@ final readonly class Nodes
         ],
     )]
     public function createVariant(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to create the variant in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[RequestBody(description: 'Where to create the variant')] NodeVariantCreate $variant,
         #[Parameter(in: 'query', description: 'The dimension space point to read the node in, whose content is copied, as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
     ): NodeCreated|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
         $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
         if (!$node instanceof ContentGraph\Node) {
@@ -906,7 +896,7 @@ final readonly class Nodes
             return $failed;
         }
         $created = $this->read($target, $node->aggregateId);
-        return $created instanceof Node ? NodeCreated::variant($created) : $created;
+        return $created instanceof Schema\Node ? NodeCreated::variant($created) : $created;
     }
 
     #[Operation(
@@ -920,13 +910,13 @@ final readonly class Nodes
         ],
     )]
     public function copy(
-        ContentRepositoryId $contentRepositoryId,
-        NodeAggregateId $nodeAggregateId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\NodeAggregateId $nodeAggregateId,
         #[Parameter(in: 'query', description: 'The workspace to copy the node in, required: changing live directly is rarely what is meant')]
-        WorkspaceName $workspaceName,
+        Workspaces\Schema\WorkspaceName $workspaceName,
         #[RequestBody(description: 'Where to put the copy')] NodeCopy $target,
         #[Parameter(in: 'query', description: 'The dimension space point to read the node in, whose content is copied, as JSON. If omitted, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
     ): NodeCreated|NotFound|BadRequest|Forbidden|Conflict|UnprocessableContent {
         $node = $this->nodeIn($contentRepositoryId, $nodeAggregateId, $workspaceName, $dimensionSpacePoint);
         if (!$node instanceof ContentGraph\Node) {
@@ -975,7 +965,7 @@ final readonly class Nodes
             return $failed;
         }
         $copy = $this->read($targetSubgraph, $copyId);
-        return $copy instanceof Node ? NodeCreated::copy($copy) : $copy;
+        return $copy instanceof Schema\Node ? NodeCreated::copy($copy) : $copy;
     }
 
     /**
@@ -1020,7 +1010,7 @@ final readonly class Nodes
     /**
      * The node in the subgraph of the request, see SubgraphResolver::resolveNode()
      */
-    private function nodeIn(ContentRepositoryId $contentRepositoryId, NodeAggregateId $nodeAggregateId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint, bool $includeRemoved = false): ContentGraph\Node|NotFound|BadRequest
+    private function nodeIn(ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId, Schema\NodeAggregateId $nodeAggregateId, ?Workspaces\Schema\WorkspaceName $workspaceName, ?Schema\DimensionSpacePoint $dimensionSpacePoint, bool $includeRemoved = false): ContentGraph\Node|NotFound|BadRequest
     {
         return $this->subgraphResolver->resolveNode($contentRepositoryId, $nodeAggregateId->toNodeAggregateId(), $workspaceName, $dimensionSpacePoint, excludeDisabled: false, includeRemoved: $includeRemoved);
     }
@@ -1029,7 +1019,7 @@ final readonly class Nodes
      * The node read again after a write, nodes are read-only: the node itself, or another one in its subgraph (one it
      * created)
      */
-    private function reread(ContentGraph\Node $node, ?SharedModel\Node\NodeAggregateId $nodeAggregateId = null, ?IncludePaths $include = null): Node|NotFound
+    private function reread(ContentGraph\Node $node, ?SharedModel\Node\NodeAggregateId $nodeAggregateId = null, ?IncludePaths $include = null): Schema\Node|NotFound
     {
         return $this->read($this->contentRepositoryRegistry->subgraphForNode($node), $nodeAggregateId ?? $node->aggregateId, $include);
     }
@@ -1037,7 +1027,7 @@ final readonly class Nodes
     /**
      * The node in the subgraph as Node, a 404 if there is none the account may read
      */
-    private function read(ContentSubgraphInterface $subgraph, SharedModel\Node\NodeAggregateId $nodeAggregateId, ?IncludePaths $include = null): Node|NotFound
+    private function read(ContentSubgraphInterface $subgraph, SharedModel\Node\NodeAggregateId $nodeAggregateId, ?IncludePaths $include = null): Schema\Node|NotFound
     {
         $node = $this->subgraphResolver->resolveNodeIn($subgraph, $nodeAggregateId);
         return $node instanceof ContentGraph\Node ? $this->node($node, $include ?? IncludePaths::none()) : $node;
@@ -1046,7 +1036,7 @@ final readonly class Nodes
     /**
      * The subgraph with the visibility of the Neos backend, see SubgraphResolver::resolve()
      */
-    private function subgraph(ContentRepositoryId $contentRepositoryId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint, bool $includeRemoved = false): ContentSubgraphInterface|BadRequest|NotFound
+    private function subgraph(ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId, ?Workspaces\Schema\WorkspaceName $workspaceName, ?Schema\DimensionSpacePoint $dimensionSpacePoint, bool $includeRemoved = false): ContentSubgraphInterface|BadRequest|NotFound
     {
         return $this->subgraphResolver->resolve($contentRepositoryId, $workspaceName, $dimensionSpacePoint, excludeDisabled: false, includeRemoved: $includeRemoved);
     }
@@ -1119,9 +1109,9 @@ final readonly class Nodes
     /**
      * @param ContentGraph\Filter\NodeType\NodeTypeCriteria|null $hasChildrenOf the child nodes hasChildren counts, all if null
      */
-    private function node(ContentGraph\Node $node, IncludePaths $include, ?ContentGraph\Filter\NodeType\NodeTypeCriteria $hasChildrenOf = null): Node
+    private function node(ContentGraph\Node $node, IncludePaths $include, ?ContentGraph\Filter\NodeType\NodeTypeCriteria $hasChildrenOf = null): Schema\Node
     {
-        return Node::from(
+        return Schema\Node::from(
             $node,
             $this->nodeSerializer,
             $include->includes('references'),
@@ -1130,7 +1120,7 @@ final readonly class Nodes
             $include->includes('ancestors') ? $this->nodeList($this->ancestors($node), false) : null,
             $include->includes('hasChildren') ? $this->nodeSerializer->hasChildren($node, $hasChildrenOf) : null,
             // the referenced nodes as getNode returns them without include
-            $include->includes('references.node') ? fn (ContentGraph\Node $referenced) => Serializer::serialize(Node::from($referenced, $this->nodeSerializer, false), Node::schema()) : null,
+            $include->includes('references.node') ? fn (ContentGraph\Node $referenced) => Serializer::serialize(Schema\Node::from($referenced, $this->nodeSerializer, false), Schema\Node::schema()) : null,
         );
     }
 
@@ -1158,9 +1148,9 @@ final readonly class Nodes
      * @param ContentGraph\Filter\NodeType\NodeTypeCriteria|bool $hasChildren whether to tell if they have child nodes,
      *     of these node types (true: of all)
      */
-    private function nodeList(array $nodes, bool $includeReferences, ContentGraph\Filter\NodeType\NodeTypeCriteria|bool $hasChildren = false): NodeList
+    private function nodeList(array $nodes, bool $includeReferences, ContentGraph\Filter\NodeType\NodeTypeCriteria|bool $hasChildren = false): Schema\NodeList
     {
-        return new NodeList(...array_map(fn (ContentGraph\Node $node) => Node::from(
+        return new Schema\NodeList(...array_map(fn (ContentGraph\Node $node) => Schema\Node::from(
             $node,
             $this->nodeSerializer,
             $includeReferences,

@@ -8,10 +8,6 @@ use Neos\Api\Endpoint\AssetCollections\Domain\AssetCollectionResolver;
 use Neos\Api\Endpoint\AssetCollections\RequestBody\AssetCollectionCreate;
 use Neos\Api\Endpoint\AssetCollections\RequestBody\AssetCollectionUpdate;
 use Neos\Api\Endpoint\AssetCollections\Response\AssetCollectionCreated;
-use Neos\Api\Endpoint\AssetCollections\Schema\AssetCollection;
-use Neos\Api\Endpoint\AssetCollections\Schema\AssetCollectionId;
-use Neos\Api\Endpoint\AssetCollections\Schema\AssetCollectionList;
-use Neos\Api\Endpoint\AssetCollections\Schema\AssetCollectionListing;
 use Neos\Api\Infrastructure\Media\AssetCollectionFinder;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiScopes;
@@ -48,11 +44,11 @@ final readonly class AssetCollections
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETCOLLECTIONS_READ],
         ],
     )]
-    public function list(): AssetCollectionListing
+    public function list(): Schema\AssetCollectionListing
     {
         /** @var iterable<Model\AssetCollection> $assetCollections */
         $assetCollections = $this->assetCollectionRepository->findAll();
-        return AssetCollectionListing::of(new AssetCollectionList(
+        return Schema\AssetCollectionListing::of(new Schema\AssetCollectionList(
             ...$this->read($assetCollections),
         ));
     }
@@ -84,7 +80,7 @@ final readonly class AssetCollections
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETCOLLECTIONS_READ],
         ],
     )]
-    public function get(AssetCollectionId $assetCollectionId): AssetCollection|NotFound
+    public function get(Schema\AssetCollectionId $assetCollectionId): Schema\AssetCollection|NotFound
     {
         $assetCollection = $this->assetCollectionResolver->resolve($assetCollectionId);
         return $assetCollection instanceof Model\AssetCollection ? $this->assetCollection($assetCollection) : $assetCollection;
@@ -101,9 +97,9 @@ final readonly class AssetCollections
         ],
     )]
     public function update(
-        AssetCollectionId $assetCollectionId,
+        Schema\AssetCollectionId $assetCollectionId,
         #[RequestBody(description: 'The properties to change')] AssetCollectionUpdate $patch,
-    ): AssetCollection|NotFound {
+    ): Schema\AssetCollection|NotFound {
         $assetCollection = $this->assetCollectionResolver->resolve($assetCollectionId);
         if ($assetCollection instanceof NotFound) {
             return $assetCollection;
@@ -124,7 +120,7 @@ final readonly class AssetCollections
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETCOLLECTIONS_DELETE],
         ],
     )]
-    public function delete(AssetCollectionId $assetCollectionId): NotFound|null
+    public function delete(Schema\AssetCollectionId $assetCollectionId): NotFound|null
     {
         $assetCollection = $this->assetCollectionResolver->resolve($assetCollectionId);
         if ($assetCollection instanceof NotFound) {
@@ -143,7 +139,7 @@ final readonly class AssetCollections
         return null;
     }
 
-    private function assetCollection(Model\AssetCollection $assetCollection): AssetCollection
+    private function assetCollection(Model\AssetCollection $assetCollection): Schema\AssetCollection
     {
         return $this->read([$assetCollection])[0];
     }
@@ -152,14 +148,14 @@ final readonly class AssetCollections
      * The collections as AssetCollection, with one query for all their asset counts
      *
      * @param iterable<Model\AssetCollection> $assetCollections
-     * @return list<AssetCollection>
+     * @return list<Schema\AssetCollection>
      */
     private function read(iterable $assetCollections): array
     {
         $assetCounts = $this->assetCollectionFinder->assetCounts();
         $read = [];
         foreach ($assetCollections as $assetCollection) {
-            $read[] = AssetCollection::from($assetCollection, $this->persistenceManager, $assetCounts[$this->persistenceManager->getIdentifierByObject($assetCollection)] ?? 0);
+            $read[] = Schema\AssetCollection::from($assetCollection, $this->persistenceManager, $assetCounts[$this->persistenceManager->getIdentifierByObject($assetCollection)] ?? 0);
         }
         return $read;
     }

@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Neos\Api\Endpoint\Assets;
 
 use Doctrine\Common\Collections\ArrayCollection;
+use Neos\Api\Endpoint\AssetCollections;
 use Neos\Api\Endpoint\AssetCollections\Domain\AssetCollectionResolver;
-use Neos\Api\Endpoint\AssetCollections\Schema\AssetCollectionId;
 use Neos\Api\Endpoint\Assets\Domain\AssetQuery;
 use Neos\Api\Endpoint\Assets\Domain\AssetResolver;
 use Neos\Api\Endpoint\Assets\Domain\AssetUpload;
@@ -14,25 +14,9 @@ use Neos\Api\Endpoint\Assets\RequestBody\AssetUpdate;
 use Neos\Api\Endpoint\Assets\RequestBody\AssetVariantCreate;
 use Neos\Api\Endpoint\Assets\Response\AssetCreated;
 use Neos\Api\Endpoint\Assets\Response\AssetImportFailed;
-use Neos\Api\Endpoint\Assets\Schema\Asset;
-use Neos\Api\Endpoint\Assets\Schema\AssetId;
-use Neos\Api\Endpoint\Assets\Schema\AssetList;
-use Neos\Api\Endpoint\Assets\Schema\AssetListing;
-use Neos\Api\Endpoint\Assets\Schema\AssetSource;
-use Neos\Api\Endpoint\Assets\Schema\AssetSourceId;
-use Neos\Api\Endpoint\Assets\Schema\AssetSourceList;
-use Neos\Api\Endpoint\Assets\Schema\AssetSourceListing;
-use Neos\Api\Endpoint\Assets\Schema\AssetTitle;
-use Neos\Api\Endpoint\Assets\Schema\AssetType;
-use Neos\Api\Endpoint\Assets\Schema\AssetUsage;
-use Neos\Api\Endpoint\Assets\Schema\AssetUsageList;
-use Neos\Api\Endpoint\Assets\Schema\AssetUsageListing;
-use Neos\Api\Endpoint\Assets\Schema\AssetUsageListingMeta;
-use Neos\Api\Endpoint\Assets\Schema\CropRectangle;
-use Neos\Api\Endpoint\Assets\Schema\PaginatedAssetListing;
+use Neos\Api\Endpoint\AssetTags;
 use Neos\Api\Endpoint\AssetTags\Domain\AssetTagResolver;
-use Neos\Api\Endpoint\AssetTags\Schema\AssetTagId;
-use Neos\Api\Endpoint\Nodes\Schema\Node;
+use Neos\Api\Endpoint\Nodes;
 use Neos\Api\Infrastructure\ContentRepository\ContentSubgraphs;
 use Neos\Api\Infrastructure\ContentRepository\NodeSerializer;
 use Neos\Api\Infrastructure\Http\MultipartForm;
@@ -107,10 +91,10 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_READ],
         ],
     )]
-    public function listSources(): AssetSourceListing
+    public function listSources(): Schema\AssetSourceListing
     {
-        return AssetSourceListing::of(new AssetSourceList(...array_map(
-            AssetSource::from(...),
+        return Schema\AssetSourceListing::of(new Schema\AssetSourceList(...array_map(
+            Schema\AssetSource::from(...),
             array_values($this->assetSourceService->getAssetSources()),
         )));
     }
@@ -126,14 +110,14 @@ final readonly class Assets
         ],
     )]
     public function list(
-        AssetSourceId $assetSourceId,
+        Schema\AssetSourceId $assetSourceId,
         ServerRequestInterface $request,
         #[Parameter(in: 'query', description: 'Only the assets of this type')]
-        AssetType|null $filterByAssetType = null,
+        Schema\AssetType|null $filterByAssetType = null,
         #[Parameter(in: 'query', description: 'Only the assets in this collection')]
-        AssetCollectionId|null $filterByCollection = null,
+        AssetCollections\Schema\AssetCollectionId|null $filterByCollection = null,
         #[Parameter(in: 'query', description: 'Only the assets with this tag')]
-        AssetTagId|null $filterByTag = null,
+        AssetTags\Schema\AssetTagId|null $filterByTag = null,
         #[Parameter(in: 'query', description: 'Only the assets without tags, if true')]
         bool $filterByUntagged = false,
         #[Parameter(in: 'query', description: 'Only the assets that match the term')]
@@ -144,7 +128,7 @@ final readonly class Assets
         Offset|null $offset = null,
         #[Parameter(in: 'query', description: 'How many items at most, 25 if omitted, 100 at most')]
         Limit|null $limit = null,
-    ): PaginatedAssetListing|BadRequest|NotFound {
+    ): Schema\PaginatedAssetListing|BadRequest|NotFound {
         $offset ??= Offset::none();
         $limit ??= Limit::default();
         $assetSource = $this->assetResolver->resolveAssetSource($assetSourceId);
@@ -164,8 +148,8 @@ final readonly class Assets
         $page = $result->getQuery();
         $page->setOffset($offset->value);
         $page->setLimit($limit->value);
-        return new PaginatedAssetListing(
-            new AssetList(...array_map($this->asset(...), $page->execute()->toArray())),
+        return new Schema\PaginatedAssetListing(
+            new Schema\AssetList(...array_map($this->asset(...), $page->execute()->toArray())),
             new ListingMeta($total),
             ListingLinks::for($request, $offset, $limit, $total),
         );
@@ -181,7 +165,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_READ],
         ],
     )]
-    public function get(AssetSourceId $assetSourceId, AssetId $assetId): Asset|NotFound
+    public function get(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId): Schema\Asset|NotFound
     {
         $proxy = $this->assetResolver->resolveAsset($assetSourceId, $assetId);
         return $proxy instanceof AssetProxyInterface ? $this->asset($proxy) : $proxy;
@@ -197,7 +181,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_READ, ApiScopes::NODES_READ],
         ],
     )]
-    public function listUsages(AssetSourceId $assetSourceId, AssetId $assetId): AssetUsageListing|NotFound
+    public function listUsages(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId): Schema\AssetUsageListing|NotFound
     {
         $proxy = $this->assetResolver->resolveAsset($assetSourceId, $assetId);
         if (!$proxy instanceof AssetProxyInterface) {
@@ -215,7 +199,7 @@ final readonly class Assets
             }
             $usages[] = $usage;
         }
-        return new AssetUsageListing(new AssetUsageList(...$usages), new AssetUsageListingMeta(count($usages), $inaccessible));
+        return new Schema\AssetUsageListing(new Schema\AssetUsageList(...$usages), new Schema\AssetUsageListingMeta(count($usages), $inaccessible));
     }
 
     #[Operation(
@@ -228,7 +212,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_READ],
         ],
     )]
-    public function listVariants(AssetSourceId $assetSourceId, AssetId $assetId): AssetListing|NotFound
+    public function listVariants(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId): Schema\AssetListing|NotFound
     {
         $proxy = $this->assetResolver->resolveAsset($assetSourceId, $assetId);
         if (!$proxy instanceof AssetProxyInterface) {
@@ -237,7 +221,7 @@ final readonly class Assets
         $image = $proxy instanceof NeosAssetProxy ? $proxy->getAsset() : null;
         $variants = $image instanceof Model\Image ? $image->getVariants() : [];
         usort($variants, static fn (Model\ImageVariant $a, Model\ImageVariant $b) => $a->getLastModified() <=> $b->getLastModified());
-        return AssetListing::of(new AssetList(...array_map(
+        return Schema\AssetListing::of(new Schema\AssetList(...array_map(
             fn (Model\ImageVariant $variant) => $this->asset($this->assetSourceFinder->neosProxy($variant)),
             $variants,
         )));
@@ -254,10 +238,10 @@ final readonly class Assets
         ],
     )]
     public function update(
-        AssetSourceId $assetSourceId,
-        AssetId $assetId,
+        Schema\AssetSourceId $assetSourceId,
+        Schema\AssetId $assetId,
         #[RequestBody(description: 'The metadata to change')] AssetUpdate $patch,
-    ): Asset|NotFound|UnprocessableContent {
+    ): Schema\Asset|NotFound|UnprocessableContent {
         $asset = $this->assetResolver->resolveAssetToChange($assetSourceId, $assetId);
         if (!$asset instanceof Model\Asset) {
             return $asset;
@@ -301,7 +285,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_DELETE],
         ],
     )]
-    public function delete(AssetSourceId $assetSourceId, AssetId $assetId): NotFound|Conflict|UnprocessableContent|null
+    public function delete(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId): NotFound|Conflict|UnprocessableContent|null
     {
         $asset = $this->assetResolver->resolveAssetToChange($assetSourceId, $assetId);
         if (!$asset instanceof Model\Asset) {
@@ -330,7 +314,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_UPDATE],
         ],
     )]
-    public function tag(AssetSourceId $assetSourceId, AssetId $assetId, AssetTagId $assetTagId): Asset|NotFound|UnprocessableContent
+    public function tag(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId, AssetTags\Schema\AssetTagId $assetTagId): Schema\Asset|NotFound|UnprocessableContent
     {
         $asset = $this->assetResolver->resolveAssetToChange($assetSourceId, $assetId);
         if (!$asset instanceof Model\Asset) {
@@ -353,7 +337,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_UPDATE],
         ],
     )]
-    public function untag(AssetSourceId $assetSourceId, AssetId $assetId, AssetTagId $assetTagId): Asset|NotFound|UnprocessableContent
+    public function untag(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId, AssetTags\Schema\AssetTagId $assetTagId): Schema\Asset|NotFound|UnprocessableContent
     {
         $asset = $this->assetResolver->resolveAssetToChange($assetSourceId, $assetId);
         if (!$asset instanceof Model\Asset) {
@@ -376,7 +360,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_UPDATE],
         ],
     )]
-    public function addToCollection(AssetSourceId $assetSourceId, AssetId $assetId, AssetCollectionId $assetCollectionId): Asset|NotFound|UnprocessableContent
+    public function addToCollection(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId, AssetCollections\Schema\AssetCollectionId $assetCollectionId): Schema\Asset|NotFound|UnprocessableContent
     {
         $asset = $this->assetResolver->resolveAssetToChange($assetSourceId, $assetId);
         if (!$asset instanceof Model\Asset) {
@@ -404,7 +388,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_UPDATE],
         ],
     )]
-    public function removeFromCollection(AssetSourceId $assetSourceId, AssetId $assetId, AssetCollectionId $assetCollectionId): Asset|NotFound|UnprocessableContent
+    public function removeFromCollection(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId, AssetCollections\Schema\AssetCollectionId $assetCollectionId): Schema\Asset|NotFound|UnprocessableContent
     {
         $asset = $this->assetResolver->resolveAssetToChange($assetSourceId, $assetId);
         if (!$asset instanceof Model\Asset) {
@@ -429,7 +413,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_CREATE],
         ],
     )]
-    public function create(AssetSourceId $assetSourceId, ServerRequestInterface $request): AssetCreated|Asset|BadRequest|NotFound|UnprocessableContent
+    public function create(Schema\AssetSourceId $assetSourceId, ServerRequestInterface $request): AssetCreated|Schema\Asset|BadRequest|NotFound|UnprocessableContent
     {
         $assetSource = $this->assetResolver->resolveAssetSource($assetSourceId);
         if ($assetSource instanceof NotFound) {
@@ -475,7 +459,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_UPDATE],
         ],
     )]
-    public function replaceFile(AssetSourceId $assetSourceId, AssetId $assetId, ServerRequestInterface $request): Asset|NotFound|BadRequest|UnprocessableContent
+    public function replaceFile(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId, ServerRequestInterface $request): Schema\Asset|NotFound|BadRequest|UnprocessableContent
     {
         $asset = $this->assetResolver->resolveAssetToChange($assetSourceId, $assetId);
         if (!$asset instanceof Model\Asset) {
@@ -524,7 +508,7 @@ final readonly class Assets
             ApiAuthContextProvider::SCOPES => [ApiScopes::ASSETS_CREATE],
         ],
     )]
-    public function import(AssetSourceId $assetSourceId, AssetId $assetId): AssetCreated|Asset|NotFound|UnprocessableContent|AssetImportFailed
+    public function import(Schema\AssetSourceId $assetSourceId, Schema\AssetId $assetId): AssetCreated|Schema\Asset|NotFound|UnprocessableContent|AssetImportFailed
     {
         $proxy = $this->assetResolver->resolveAsset($assetSourceId, $assetId);
         if ($proxy instanceof NotFound) {
@@ -547,8 +531,8 @@ final readonly class Assets
             throw new \RuntimeException(sprintf('The imported asset %s wasn\'t found', $importedAsset->getLocalAssetIdentifier()), 1791800002);
         }
         // the IPTC title may be longer than an asset's title can be
-        if (mb_strlen($localAsset->getTitle()) > AssetTitle::MAX_LENGTH) {
-            $localAsset->setTitle(mb_substr($localAsset->getTitle(), 0, AssetTitle::MAX_LENGTH));
+        if (mb_strlen($localAsset->getTitle()) > Schema\AssetTitle::MAX_LENGTH) {
+            $localAsset->setTitle(mb_substr($localAsset->getTitle(), 0, Schema\AssetTitle::MAX_LENGTH));
         }
         $this->persistenceManager->persistAll();
         $asset = $this->neosAsset($localAsset);
@@ -566,10 +550,10 @@ final readonly class Assets
         ],
     )]
     public function createVariant(
-        AssetSourceId $assetSourceId,
-        AssetId $assetId,
+        Schema\AssetSourceId $assetSourceId,
+        Schema\AssetId $assetId,
         #[RequestBody(description: 'The crop')] AssetVariantCreate $newVariant,
-    ): AssetCreated|Asset|NotFound|UnprocessableContent {
+    ): AssetCreated|Schema\Asset|NotFound|UnprocessableContent {
         $image = $this->assetResolver->resolveAssetToChange($assetSourceId, $assetId);
         if (!$image instanceof Model\Asset) {
             return $image;
@@ -585,7 +569,7 @@ final readonly class Assets
             return UnprocessableContent::because(sprintf('The crop isn\'t inside the image of %d×%d pixels', $image->getWidth(), $image->getHeight()));
         }
         foreach ($image->getVariants() as $variant) {
-            if ($variant->getPresetIdentifier() === null && count($variant->getAdjustments()) === 1 && CropRectangle::of($variant) == $crop) {
+            if ($variant->getPresetIdentifier() === null && count($variant->getAdjustments()) === 1 && Schema\CropRectangle::of($variant) == $crop) {
                 return $this->neosAsset($variant);
             }
         }
@@ -599,7 +583,7 @@ final readonly class Assets
     /**
      * The node of the usage in its workspace and dimension space point, null if the account may not read it
      */
-    private function usage(AssetUsageReference $reference): ?AssetUsage
+    private function usage(AssetUsageReference $reference): ?Schema\AssetUsage
     {
         $subgraph = $this->contentSubgraphs->find(
             $reference->getContentRepositoryId(),
@@ -612,9 +596,9 @@ final readonly class Assets
             return null;
         }
         $documentNode = $subgraph->findClosestNode($node->aggregateId, FindClosestNodeFilter::create(nodeTypes: NodeTypeNameFactory::NAME_DOCUMENT));
-        return new AssetUsage(
-            Node::from($node, $this->nodeSerializer, false),
-            $documentNode !== null ? Node::from($documentNode, $this->nodeSerializer, false) : null,
+        return new Schema\AssetUsage(
+            Nodes\Schema\Node::from($node, $this->nodeSerializer, false),
+            $documentNode !== null ? Nodes\Schema\Node::from($documentNode, $this->nodeSerializer, false) : null,
         );
     }
 
@@ -667,20 +651,20 @@ final readonly class Assets
     /**
      * Saves the changed asset of neos (Neos flushes the content caches of its usages) and returns it
      */
-    private function changed(Model\Asset $asset): Asset
+    private function changed(Model\Asset $asset): Schema\Asset
     {
         $this->assetRepository->update($asset);
         $this->persistenceManager->persistAll();
         return $this->neosAsset($asset);
     }
 
-    private function neosAsset(Model\AssetInterface $asset): Asset
+    private function neosAsset(Model\AssetInterface $asset): Schema\Asset
     {
         return $this->asset($this->assetSourceFinder->neosProxy($asset));
     }
 
-    private function asset(AssetProxyInterface $proxy): Asset
+    private function asset(AssetProxyInterface $proxy): Schema\Asset
     {
-        return Asset::from($proxy, $this->persistenceManager);
+        return Schema\Asset::from($proxy, $this->persistenceManager);
     }
 }

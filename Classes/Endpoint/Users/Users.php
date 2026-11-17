@@ -7,10 +7,6 @@ namespace Neos\Api\Endpoint\Users;
 use Neos\Api\Endpoint\Users\RequestBody\UserCreate;
 use Neos\Api\Endpoint\Users\RequestBody\UserPasswordSet;
 use Neos\Api\Endpoint\Users\RequestBody\UserUpdate;
-use Neos\Api\Endpoint\Users\Schema\PaginatedUserListing;
-use Neos\Api\Endpoint\Users\Schema\User;
-use Neos\Api\Endpoint\Users\Schema\UserId;
-use Neos\Api\Endpoint\Users\Schema\UserList;
 use Neos\Api\Endpoint\Users\Response\UserCreated;
 use Neos\Api\Security\AccountPrivileges;
 use Neos\Api\Security\ApiAuthContextProvider;
@@ -68,15 +64,15 @@ final readonly class Users
         Offset|null $offset = null,
         #[Parameter(in: 'query', description: 'How many items at most, 25 if omitted, 100 at most')]
         Limit|null $limit = null,
-    ): PaginatedUserListing {
+    ): Schema\PaginatedUserListing {
         $offset ??= Offset::none();
         $limit ??= Limit::default();
         $users = $this->userService->getUsers();
         $total = $users->count();
         // a copy of the query, paged in the database
         $query = $users->getQuery()->setOffset($offset->value)->setLimit($limit->value);
-        return new PaginatedUserListing(
-            new UserList(...array_map(User::from(...), $query->execute()->toArray())),
+        return new Schema\PaginatedUserListing(
+            new Schema\UserList(...array_map(Schema\User::from(...), $query->execute()->toArray())),
             new ListingMeta($total),
             ListingLinks::for($request, $offset, $limit, $total),
         );
@@ -111,7 +107,7 @@ final readonly class Users
             $user,
             $newUser->roleIdentifiers(),
         );
-        return new UserCreated(User::from($user));
+        return new UserCreated(Schema\User::from($user));
     }
 
     #[Operation(
@@ -123,10 +119,10 @@ final readonly class Users
             ApiAuthContextProvider::SCOPES => [ApiScopes::USERS_READ],
         ],
     )]
-    public function get(UserId $userId): User|NotFound
+    public function get(Schema\UserId $userId): Schema\User|NotFound
     {
         $user = $this->findUser($userId);
-        return $user !== null ? User::from($user) : self::notFound($userId);
+        return $user !== null ? Schema\User::from($user) : self::notFound($userId);
     }
 
     #[Operation(
@@ -141,9 +137,9 @@ final readonly class Users
     )]
     public function update(
         #[AuthContext] ApiCaller $caller,
-        UserId $userId,
+        Schema\UserId $userId,
         #[RequestBody(description: 'The properties to change')] UserUpdate $patch,
-    ): User|NotFound|Forbidden|UnprocessableContent {
+    ): Schema\User|NotFound|Forbidden|UnprocessableContent {
         $user = $this->findUser($userId);
         if ($user === null) {
             return self::notFound($userId);
@@ -151,7 +147,7 @@ final readonly class Users
         if (!$this->accountPrivileges->mayManage($caller->account, $user)) {
             return self::mayNotManage();
         }
-        $isCaller = in_array($caller->account, User::accountsOf($user), true);
+        $isCaller = in_array($caller->account, Schema\User::accountsOf($user), true);
         $roleIdentifiers = $patch->roleIdentifiers();
         if ($roleIdentifiers !== null) {
             if ($roleIdentifiers === []) {
@@ -187,7 +183,7 @@ final readonly class Users
         } elseif ($patch->active === false) {
             $this->userService->deactivateUser($user);
         }
-        return User::from($user);
+        return Schema\User::from($user);
     }
 
     #[Operation(
@@ -202,7 +198,7 @@ final readonly class Users
     )]
     public function setPassword(
         #[AuthContext] ApiCaller $caller,
-        UserId $userId,
+        Schema\UserId $userId,
         #[RequestBody(description: 'The new password')] UserPasswordSet $password,
     ): NotFound|Forbidden|null {
         $user = $this->findUser($userId);
@@ -227,13 +223,13 @@ final readonly class Users
             ApiAuthContextProvider::SCOPES => [ApiScopes::USERS_DELETE],
         ],
     )]
-    public function delete(#[AuthContext] ApiCaller $caller, UserId $userId): NotFound|Forbidden|Conflict|null
+    public function delete(#[AuthContext] ApiCaller $caller, Schema\UserId $userId): NotFound|Forbidden|Conflict|null
     {
         $user = $this->findUser($userId);
         if ($user === null) {
             return self::notFound($userId);
         }
-        if (in_array($caller->account, User::accountsOf($user), true)) {
+        if (in_array($caller->account, Schema\User::accountsOf($user), true)) {
             return Conflict::because('You can\'t delete your own user');
         }
         if (!$this->accountPrivileges->mayManage($caller->account, $user)) {
@@ -263,7 +259,7 @@ final readonly class Users
         return null;
     }
 
-    private function findUser(UserId $userId): ?Model\User
+    private function findUser(Schema\UserId $userId): ?Model\User
     {
         // the format check of a UUID ignores the case, Neos' user IDs are lowercase
         // the party repository finds any party, not only Neos users
@@ -271,7 +267,7 @@ final readonly class Users
         return $user instanceof Model\User ? $user : null;
     }
 
-    private static function notFound(UserId $userId): NotFound
+    private static function notFound(Schema\UserId $userId): NotFound
     {
         return NotFound::because(sprintf('There is no user with the ID %s', $userId->value));
     }

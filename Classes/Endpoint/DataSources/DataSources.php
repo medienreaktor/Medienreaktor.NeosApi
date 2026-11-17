@@ -4,17 +4,12 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\DataSources;
 
-use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
+use Neos\Api\Endpoint\ContentRepositories;
 use Neos\Api\Endpoint\DataSources\Response\DataSourceFailed;
 use Neos\Api\Endpoint\DataSources\Response\DataSourceResult;
-use Neos\Api\Endpoint\DataSources\Schema\DataSource;
-use Neos\Api\Endpoint\DataSources\Schema\DataSourceId;
-use Neos\Api\Endpoint\DataSources\Schema\DataSourceList;
-use Neos\Api\Endpoint\DataSources\Schema\DataSourceListing;
-use Neos\Api\Endpoint\Nodes\Schema\DimensionSpacePoint;
-use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
+use Neos\Api\Endpoint\Nodes;
 use Neos\Api\Endpoint\Nodes\Domain\SubgraphResolver;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceName;
+use Neos\Api\Endpoint\Workspaces;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiScopes;
 use Neos\Api\Shared\Parameter\Arguments;
@@ -54,12 +49,12 @@ final readonly class DataSources
             ApiAuthContextProvider::SCOPES => [ApiScopes::DATASOURCES_READ],
         ],
     )]
-    public function list(): DataSourceListing
+    public function list(): Schema\DataSourceListing
     {
         $ids = array_map('strval', array_keys(DataSourceController::getDataSources($this->objectManager)));
         sort($ids);
-        return DataSourceListing::of(new DataSourceList(...array_map(
-            static fn (string $id) => new DataSource(DataSourceId::fromString($id)),
+        return Schema\DataSourceListing::of(new Schema\DataSourceList(...array_map(
+            static fn (string $id) => new Schema\DataSource(Schema\DataSourceId::fromString($id)),
             $ids,
         )));
     }
@@ -75,18 +70,18 @@ final readonly class DataSources
         ],
     )]
     public function get(
-        DataSourceId $dataSourceId,
+        Schema\DataSourceId $dataSourceId,
         ServerRequestInterface $request,
         #[Parameter(in: 'query', description: 'The arguments to call the data source with: arguments[name]=value, arrays as arguments[name][]=value. What the Neos UI sends from editorOptions.dataSourceAdditionalData')]
         Arguments|null $arguments = null,
         #[Parameter(in: 'query', description: 'The content repository of the node, the one of the default site if omitted. Only with nodeAggregateId')]
-        ContentRepositoryId|null $contentRepositoryId = null,
+        ContentRepositories\Schema\ContentRepositoryId|null $contentRepositoryId = null,
         #[Parameter(in: 'query', description: 'The aggregate id of the node to call the data source for, e.g. the one edited in the inspector. No node if omitted')]
-        NodeAggregateId|null $nodeAggregateId = null,
+        Nodes\Schema\NodeAggregateId|null $nodeAggregateId = null,
         #[Parameter(in: 'query', description: 'The workspace to read the node in, live if omitted. Only with nodeAggregateId')]
-        WorkspaceName|null $workspaceName = null,
+        Workspaces\Schema\WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'The dimension space point to read the node in, as JSON. If omitted, the default one of the content repository\'s default site, as for getNode. Only with nodeAggregateId')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        Nodes\Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
     ): DataSourceResult|NotFound|BadRequest|DataSourceFailed {
         $className = DataSourceController::getDataSources($this->objectManager)[$dataSourceId->value] ?? null;
         if ($className === null) {
@@ -114,7 +109,7 @@ final readonly class DataSources
         }
     }
 
-    private function node(NodeAggregateId $nodeAggregateId, ?ContentRepositoryId $contentRepositoryId, ?WorkspaceName $workspaceName, ?DimensionSpacePoint $dimensionSpacePoint): Node|NotFound|BadRequest
+    private function node(Nodes\Schema\NodeAggregateId $nodeAggregateId, ?ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId, ?Workspaces\Schema\WorkspaceName $workspaceName, ?Nodes\Schema\DimensionSpacePoint $dimensionSpacePoint): Node|NotFound|BadRequest
     {
         return $this->subgraphResolver->resolveNode(
             $contentRepositoryId,

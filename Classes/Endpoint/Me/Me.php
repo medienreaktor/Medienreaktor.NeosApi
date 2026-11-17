@@ -6,19 +6,13 @@ namespace Neos\Api\Endpoint\Me;
 
 use Neos\Api\Endpoint\Me\RequestBody\PasswordChange;
 use Neos\Api\Endpoint\Me\RequestBody\ProfileUpdate;
-use Neos\Api\Endpoint\Me\Schema\AccessTokenGrant;
-use Neos\Api\Endpoint\Me\Schema\ClientIdentifier;
-use Neos\Api\Endpoint\Me\Schema\CurrentAccount;
-use Neos\Api\Endpoint\Me\Schema\Profile;
-use Neos\Api\Endpoint\Me\Schema\ScopeList;
-use Neos\Api\Endpoint\Users\Schema\Account;
-use Neos\Api\Endpoint\Users\Schema\User;
+use Neos\Api\Endpoint\Users;
+use Neos\Api\Infrastructure\Http\JsonBody;
 use Neos\Api\Security\AccountPrivileges;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiCaller;
 use Neos\Api\Security\ApiScopes;
 use Neos\Api\Security\PrivilegeScopes;
-use Neos\Api\Infrastructure\Http\JsonBody;
 use Neos\Api\Shared\Response\NotFound;
 use Neos\Api\Shared\Response\UnprocessableContent;
 use Neos\Flow\Annotations as Flow;
@@ -75,14 +69,14 @@ final readonly class Me
             ApiAuthContextProvider::SCOPES => [ApiScopes::ME_READ],
         ],
     )]
-    public function get(#[AuthContext] ApiCaller $caller): CurrentAccount
+    public function get(#[AuthContext] ApiCaller $caller): Schema\CurrentAccount
     {
         $user = $this->findUser($caller);
-        return new CurrentAccount(
-            Account::from($caller->account),
-            $user !== null ? User::from($user) : null,
-            new AccessTokenGrant(ClientIdentifier::fromString($caller->clientIdentifier), ScopeList::fromStrings(...$caller->scopes)),
-            ScopeList::fromStrings(...$this->privilegesOf($caller)),
+        return new Schema\CurrentAccount(
+            Users\Schema\Account::from($caller->account),
+            $user !== null ? Users\Schema\User::from($user) : null,
+            new Schema\AccessTokenGrant(Schema\ClientIdentifier::fromString($caller->clientIdentifier), Schema\ScopeList::fromStrings(...$caller->scopes)),
+            Schema\ScopeList::fromStrings(...$this->privilegesOf($caller)),
         );
     }
 
@@ -112,10 +106,10 @@ final readonly class Me
             ApiAuthContextProvider::SCOPES => [ApiScopes::ME_READ],
         ],
     )]
-    public function getProfile(#[AuthContext] ApiCaller $caller): Profile|NotFound
+    public function getProfile(#[AuthContext] ApiCaller $caller): Schema\Profile|NotFound
     {
         $user = $this->findUser($caller);
-        return $user !== null ? Profile::from($user, $this->defaultLanguage) : self::noUser($caller);
+        return $user !== null ? Schema\Profile::from($user, $this->defaultLanguage) : self::noUser($caller);
     }
 
     #[Operation(
@@ -132,7 +126,7 @@ final readonly class Me
         #[AuthContext] ApiCaller $caller,
         #[RequestBody(description: 'The fields and preferences to change')] ProfileUpdate $patch,
         ServerRequestInterface $request,
-    ): Profile|NotFound|UnprocessableContent {
+    ): Schema\Profile|NotFound|UnprocessableContent {
         $user = $this->findUser($caller);
         if ($user === null) {
             return self::noUser($caller);
@@ -140,19 +134,19 @@ final readonly class Me
         if ($patch->interfaceLanguage !== null && !in_array($patch->interfaceLanguage, $this->interfaceLanguages, true)) {
             return UnprocessableContent::because(sprintf('There is no interface language %s, available are %s', $patch->interfaceLanguage, implode(', ', $this->interfaceLanguages)));
         }
-        if ($patch->preferences !== null && array_key_exists(Profile::INTERFACE_LANGUAGE_PREFERENCE, $patch->preferences)) {
-            return UnprocessableContent::because(sprintf('%s is no preference, set interfaceLanguage instead', Profile::INTERFACE_LANGUAGE_PREFERENCE));
+        if ($patch->preferences !== null && array_key_exists(Schema\Profile::INTERFACE_LANGUAGE_PREFERENCE, $patch->preferences)) {
+            return UnprocessableContent::because(sprintf('%s is no preference, set interfaceLanguage instead', Schema\Profile::INTERFACE_LANGUAGE_PREFERENCE));
         }
         $patch->applyTo($user);
         // ProfileUpdate can't tell an interfaceLanguage null from one left out
         if ($patch->interfaceLanguage === null && JsonBody::has($request, 'interfaceLanguage')) {
             // no preference: Neos uses its default language
             $preferences = $user->getPreferences()->getPreferences();
-            unset($preferences[Profile::INTERFACE_LANGUAGE_PREFERENCE]);
+            unset($preferences[Schema\Profile::INTERFACE_LANGUAGE_PREFERENCE]);
             $user->getPreferences()->setPreferences($preferences);
         }
         $this->userService->updateUser($user);
-        return Profile::from($user, $this->defaultLanguage);
+        return Schema\Profile::from($user, $this->defaultLanguage);
     }
 
     #[Operation(

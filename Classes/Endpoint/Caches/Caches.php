@@ -4,10 +4,6 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Caches;
 
-use Neos\Api\Endpoint\Caches\Schema\Cache;
-use Neos\Api\Endpoint\Caches\Schema\CacheId;
-use Neos\Api\Endpoint\Caches\Schema\CacheList;
-use Neos\Api\Endpoint\Caches\Schema\CacheListing;
 use Neos\Api\Security\ApiAuthContextProvider;
 use Neos\Api\Security\ApiScopes;
 use Neos\Api\Shared\Response\NotFound;
@@ -35,13 +31,13 @@ final readonly class Caches
             ApiAuthContextProvider::SCOPES => [ApiScopes::CACHES_READ],
         ],
     )]
-    public function list(): CacheListing
+    public function list(): Schema\CacheListing
     {
         $caches = [];
         foreach ($this->configurations() as $identifier => $configuration) {
-            $caches[] = Cache::from($identifier, $configuration);
+            $caches[] = Schema\Cache::from($identifier, $configuration);
         }
-        return CacheListing::of(new CacheList(...$caches));
+        return Schema\CacheListing::of(new Schema\CacheList(...$caches));
     }
 
     #[Operation(
@@ -70,7 +66,7 @@ final readonly class Caches
             ApiAuthContextProvider::SCOPES => [ApiScopes::CACHES_FLUSH],
         ],
     )]
-    public function flush(CacheId $cacheId): NotFound|UnprocessableContent|null
+    public function flush(Schema\CacheId $cacheId): NotFound|UnprocessableContent|null
     {
         $configuration = $this->configurations()[$cacheId->value] ?? null;
         if ($configuration === null) {

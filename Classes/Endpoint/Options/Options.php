@@ -4,13 +4,8 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Options;
 
-use Neos\Api\Endpoint\Sites\Schema\PackageKeyList;
-use Neos\Api\Endpoint\Sites\Schema\SiteCreationOptions;
-use Neos\Api\Endpoint\Sites\Schema\SiteNodeType;
-use Neos\Api\Endpoint\Sites\Schema\SiteNodeTypeList;
-use Neos\Api\Endpoint\Users\Schema\AccountRole;
-use Neos\Api\Endpoint\Users\Schema\AccountRoleList;
-use Neos\Api\Endpoint\Users\Schema\UserOptions;
+use Neos\Api\Endpoint\Sites;
+use Neos\Api\Endpoint\Users;
 use Neos\Api\Infrastructure\I18n\LabelTranslator;
 use Neos\Api\Security\AccountPrivileges;
 use Neos\Api\Security\ApiAuthContextProvider;
@@ -63,16 +58,16 @@ final readonly class Options
     )]
     public function sites(
         #[Parameter(in: 'header', name: 'Accept-Language')] AcceptLanguage|null $acceptLanguage = null,
-    ): SiteCreationOptions {
+    ): Sites\Schema\SiteCreationOptions {
         $nodeTypeManager = $this->contentRepositoryRegistry->get($this->contentRepositoryForNewSites)->getNodeTypeManager();
         $labels = $this->labelTranslator->forAcceptLanguage($acceptLanguage);
-        return new SiteCreationOptions(
-            new PackageKeyList(...array_map(
+        return new Sites\Schema\SiteCreationOptions(
+            new Sites\Schema\PackageKeyList(...array_map(
                 PackageKey::fromString(...),
                 array_keys($this->packageManager->getFilteredPackages('available', 'neos-site')),
             )),
-            new SiteNodeTypeList(...array_map(
-                static fn (NodeType $nodeType) => SiteNodeType::from($nodeType, $labels),
+            new Sites\Schema\SiteNodeTypeList(...array_map(
+                static fn (NodeType $nodeType) => Sites\Schema\SiteNodeType::from($nodeType, $labels),
                 array_values($nodeTypeManager->getSubNodeTypes(NodeTypeNameFactory::forSite(), false)),
             )),
         );
@@ -88,10 +83,10 @@ final readonly class Options
             ApiAuthContextProvider::SCOPES => [ApiScopes::USERS_CREATE],
         ],
     )]
-    public function users(#[AuthContext] ApiCaller $caller): UserOptions
+    public function users(#[AuthContext] ApiCaller $caller): Users\Schema\UserOptions
     {
         $roles = array_values($this->accountPrivileges->assignableRoles($caller->account));
         usort($roles, static fn (Role $a, Role $b) => strcasecmp($a->getLabel(), $b->getLabel()) ?: strcmp($a->getIdentifier(), $b->getIdentifier()));
-        return new UserOptions(new AccountRoleList(...array_map(AccountRole::from(...), $roles)));
+        return new Users\Schema\UserOptions(new Users\Schema\AccountRoleList(...array_map(Users\Schema\AccountRole::from(...), $roles)));
     }
 }

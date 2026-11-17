@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Workspaces;
 
-use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
+use Neos\Api\Endpoint\ContentRepositories;
+use Neos\Api\Endpoint\Nodes;
 use Neos\Api\Endpoint\Nodes\Parameter\NodeAggregateIds;
 use Neos\Api\Endpoint\Nodes\Parameter\NodeTypeCriteria;
-use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
 use Neos\Api\Endpoint\Workspaces\Domain\ChangeDiffer;
-use Neos\Api\Endpoint\Workspaces\Domain\ChangeQuery;
 use Neos\Api\Endpoint\Workspaces\Domain\ChangeLocator;
+use Neos\Api\Endpoint\Workspaces\Domain\ChangeQuery;
 use Neos\Api\Endpoint\Workspaces\Domain\EventDiffer;
 use Neos\Api\Endpoint\Workspaces\Domain\EventQuery;
 use Neos\Api\Endpoint\Workspaces\Domain\IncludedNodes;
@@ -25,29 +25,10 @@ use Neos\Api\Endpoint\Workspaces\RequestBody\WorkspaceCreate;
 use Neos\Api\Endpoint\Workspaces\RequestBody\WorkspaceDiscard;
 use Neos\Api\Endpoint\Workspaces\RequestBody\WorkspacePublish;
 use Neos\Api\Endpoint\Workspaces\RequestBody\WorkspaceRebase;
+use Neos\Api\Endpoint\Workspaces\RequestBody\WorkspaceRoleAssign;
 use Neos\Api\Endpoint\Workspaces\RequestBody\WorkspaceUpdate;
 use Neos\Api\Endpoint\Workspaces\Response\WorkspaceConflict;
 use Neos\Api\Endpoint\Workspaces\Response\WorkspaceCreated;
-use Neos\Api\Endpoint\Workspaces\Schema\ContentStreamId;
-use Neos\Api\Endpoint\Workspaces\Schema\ContentStreamPosition;
-use Neos\Api\Endpoint\Workspaces\Schema\EventListingMeta;
-use Neos\Api\Endpoint\Workspaces\Schema\DiscardingResult;
-use Neos\Api\Endpoint\Workspaces\Schema\DocumentAggregateIdList;
-use Neos\Api\Endpoint\Workspaces\Schema\PublishingResult;
-use Neos\Api\Endpoint\Workspaces\Schema\PaginatedChangeListing;
-use Neos\Api\Endpoint\Workspaces\Schema\PaginatedEventListing;
-use Neos\Api\Endpoint\Workspaces\Schema\SequenceNumber;
-use Neos\Api\Endpoint\Workspaces\Schema\Workspace;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceClassification;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceList;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceListing;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceName;
-use Neos\Api\Endpoint\Workspaces\RequestBody\WorkspaceRoleAssign;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceRoleAssignment;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceRoleAssignmentList;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceRoleAssignmentListing;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceRoleSubjectId;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceRoleSubjectType;
 use Neos\Api\Infrastructure\ContentRepository\ContentRepositoryFinder;
 use Neos\Api\Infrastructure\ContentRepository\ContentStreamEvents;
 use Neos\Api\Infrastructure\ContentRepository\ContentStreamEventsFactory;
@@ -65,23 +46,25 @@ use Neos\Api\Shared\Response\Conflict;
 use Neos\Api\Shared\Response\Forbidden;
 use Neos\Api\Shared\Response\NotFound;
 use Neos\Api\Shared\Response\UnprocessableContent;
+use Neos\ContentRepository\Core\ContentRepository;
 use Neos\ContentRepository\Core\Feature\Security\Exception\AccessDenied;
 use Neos\ContentRepository\Core\Feature\WorkspaceCommandSkipped;
-use Neos\ContentRepository\Core\Feature\WorkspacePublication\Command\DiscardIndividualNodesFromWorkspace;
-use Neos\ContentRepository\Core\Feature\WorkspacePublication\Command\PublishIndividualNodesFromWorkspace;
 use Neos\ContentRepository\Core\Feature\WorkspaceCreation\Exception\BaseWorkspaceDoesNotExist;
 use Neos\ContentRepository\Core\Feature\WorkspaceCreation\Exception\WorkspaceAlreadyExists;
-use Neos\ContentRepository\Core\ContentRepository;
 use Neos\ContentRepository\Core\Feature\WorkspaceModification\Exception\BaseWorkspaceEqualsWorkspaceException;
 use Neos\ContentRepository\Core\Feature\WorkspaceModification\Exception\CircularRelationBetweenWorkspacesException;
+use Neos\ContentRepository\Core\Feature\WorkspacePublication\Command\DiscardIndividualNodesFromWorkspace;
+use Neos\ContentRepository\Core\Feature\WorkspacePublication\Command\PublishIndividualNodesFromWorkspace;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\PartialWorkspaceRebaseFailed;
 use Neos\ContentRepository\Core\Feature\WorkspaceRebase\Exception\WorkspaceRebaseFailed;
 use Neos\ContentRepository\Core\NodeType\NodeTypeName;
-use Neos\ContentRepository\Core\SharedModel\Exception\NodeAggregateCurrentlyDoesNotExist;
 use Neos\ContentRepository\Core\SharedModel;
+use Neos\ContentRepository\Core\SharedModel\Exception\NodeAggregateCurrentlyDoesNotExist;
 use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceContainsPublishableChanges;
 use Neos\ContentRepository\Core\SharedModel\Exception\WorkspaceDoesNotExist;
 use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
+use Neos\Flow\Annotations as Flow;
+use Neos\Flow\Security\Account;
 use Neos\Neos\Domain\Model;
 use Neos\Neos\Domain\Service\NodeTypeNameFactory;
 use Neos\Neos\Domain\Service\WorkspacePublishingService;
@@ -90,9 +73,7 @@ use Neos\Neos\Domain\SubtreeTagging\SoftRemoval\SoftRemovalGarbageCollector;
 use Neos\Neos\Fusion\Cache\CacheFlushingStrategy;
 use Neos\Neos\Fusion\Cache\ContentCacheFlusher;
 use Neos\Neos\Fusion\Cache\FlushWorkspaceRequest;
-use Neos\Flow\Security\Account;
 use Neos\OpenApi\Attributes\AuthContext;
-use Neos\Flow\Annotations as Flow;
 use Neos\OpenApi\Attributes\Operation;
 use Neos\OpenApi\Attributes\Parameter;
 use Neos\OpenApi\Attributes\RequestBody;
@@ -155,9 +136,9 @@ final readonly class Workspaces
         ],
     )]
     public function list(
-        ContentRepositoryId $contentRepositoryId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
         #[AuthContext] ApiCaller $caller,
-    ): WorkspaceListing|NotFound {
+    ): Schema\WorkspaceListing|NotFound {
         $contentRepository = $this->contentRepositoryFinder->find($contentRepositoryId->toContentRepositoryId());
         if ($contentRepository === null) {
             return NotFound::contentRepository($contentRepositoryId->value);
@@ -168,14 +149,14 @@ final readonly class Workspaces
             if (!$permissions->read) {
                 continue;
             }
-            $workspaces[$workspace->workspaceName->value] = Workspace::from(
+            $workspaces[$workspace->workspaceName->value] = Schema\Workspace::from(
                 $workspace,
                 $this->workspaceService->getWorkspaceMetadata($contentRepository->id, $workspace->workspaceName),
                 $permissions,
             );
         }
         ksort($workspaces);
-        return WorkspaceListing::of(new WorkspaceList(...array_values($workspaces)));
+        return Schema\WorkspaceListing::of(new Schema\WorkspaceList(...array_values($workspaces)));
     }
 
     #[Operation(
@@ -189,10 +170,10 @@ final readonly class Workspaces
         ],
     )]
     public function get(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
-    ): Workspace|NotFound {
+    ): Schema\Workspace|NotFound {
         $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName, $caller->account);
         if ($workspace instanceof NotFound) {
             return $workspace;
@@ -211,7 +192,7 @@ final readonly class Workspaces
         ],
     )]
     public function create(
-        ContentRepositoryId $contentRepositoryId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
         #[RequestBody(description: 'The workspace')] WorkspaceCreate $newWorkspace,
         #[AuthContext] ApiCaller $caller,
     ): WorkspaceCreated|NotFound|Forbidden|Conflict|UnprocessableContent {
@@ -220,10 +201,10 @@ final readonly class Workspaces
             return NotFound::contentRepository($contentRepositoryId->value);
         }
         $classification = $newWorkspace->classification();
-        if ($classification !== WorkspaceClassification::SHARED && $classification !== WorkspaceClassification::PERSONAL) {
+        if ($classification !== Schema\WorkspaceClassification::SHARED && $classification !== Schema\WorkspaceClassification::PERSONAL) {
             return UnprocessableContent::because(sprintf('Only shared and personal workspaces can be created, not %s ones', $classification->value));
         }
-        if ($classification === WorkspaceClassification::PERSONAL && $newWorkspace->visibility !== null) {
+        if ($classification === Schema\WorkspaceClassification::PERSONAL && $newWorkspace->visibility !== null) {
             return UnprocessableContent::because('A personal workspace has no visibility, only its owner may work in it');
         }
         try {
@@ -236,7 +217,7 @@ final readonly class Workspaces
         } catch (\InvalidArgumentException) {
             return UnprocessableContent::because('The description must be at most 500 letters, digits, spaces and punctuation');
         }
-        if ($classification === WorkspaceClassification::SHARED && $title === null) {
+        if ($classification === Schema\WorkspaceClassification::SHARED && $title === null) {
             return UnprocessableContent::because('A shared workspace needs a title');
         }
         // the creator of a shared workspace manages it, a personal one is the owner's: both need a Neos user
@@ -249,7 +230,7 @@ final readonly class Workspaces
         if (!$this->isReadable($contentRepository, $baseWorkspaceName, $caller->account)) {
             return UnprocessableContent::because(sprintf('There is no workspace %s the account may read in the content repository %s', $baseWorkspaceName->value, $contentRepositoryId->value));
         }
-        if ($classification === WorkspaceClassification::PERSONAL) {
+        if ($classification === Schema\WorkspaceClassification::PERSONAL) {
             // Neos allows one per user and content repository, found by its metadata
             try {
                 $personalWorkspace = $this->workspaceService->getPersonalWorkspaceForUser($contentRepository->id, $user->getId());
@@ -276,7 +257,7 @@ final readonly class Workspaces
             }
         } else {
             try {
-                $workspaceName = $this->workspaceService->getUniqueWorkspaceName($contentRepository->id, $classification === WorkspaceClassification::PERSONAL ? $user->getLabel() : $title->value);
+                $workspaceName = $this->workspaceService->getUniqueWorkspaceName($contentRepository->id, $classification === Schema\WorkspaceClassification::PERSONAL ? $user->getLabel() : $title->value);
             } catch (\RuntimeException $exception) {
                 // only after 10 taken names
                 return Conflict::because($exception->getMessage() . ' Give a name.');
@@ -284,7 +265,7 @@ final readonly class Workspaces
         }
 
         try {
-            if ($classification === WorkspaceClassification::PERSONAL) {
+            if ($classification === Schema\WorkspaceClassification::PERSONAL) {
                 $this->workspaceService->createPersonalWorkspace($contentRepository->id, $workspaceName, $title, $description, $baseWorkspaceName->toWorkspaceName(), $user->getId());
             } else {
                 $this->workspaceService->createSharedWorkspace($contentRepository->id, $workspaceName, $title, $description, $baseWorkspaceName->toWorkspaceName(), $newWorkspace->visibility()->roleAssignmentsFor($user->getId()));
@@ -303,7 +284,7 @@ final readonly class Workspaces
             throw $exception;
         }
 
-        $created = $this->workspaceResolver->resolve($contentRepositoryId, WorkspaceName::fromString($workspaceName->value), $caller->account);
+        $created = $this->workspaceResolver->resolve($contentRepositoryId, Schema\WorkspaceName::fromString($workspaceName->value), $caller->account);
         if ($created instanceof NotFound) {
             // can't happen: its manager or owner may read it
             throw new \RuntimeException(sprintf('The workspace %s was created, but the account may not read it', $workspaceName->value), 1760280001);
@@ -322,11 +303,11 @@ final readonly class Workspaces
         ],
     )]
     public function update(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
         #[RequestBody(description: 'The metadata to change')] WorkspaceUpdate $patch,
-    ): Workspace|NotFound|Forbidden|UnprocessableContent {
+    ): Schema\Workspace|NotFound|Forbidden|UnprocessableContent {
         $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName, $caller->account);
         if ($workspace instanceof NotFound) {
             return $workspace;
@@ -377,8 +358,8 @@ final readonly class Workspaces
         ],
     )]
     public function delete(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
         #[Parameter(in: 'query', description: 'Whether to delete the workspace with its unpublished changes, which are lost then. false if omitted: a workspace with changes is a 409')]
         bool $force = false,
@@ -441,7 +422,7 @@ final readonly class Workspaces
     /**
      * Whether the workspace (one a request body names, so a 422 if not) exists and the token's account may read it
      */
-    private function isReadable(ContentRepository $contentRepository, WorkspaceName $workspaceName, Account $account): bool
+    private function isReadable(ContentRepository $contentRepository, Schema\WorkspaceName $workspaceName, Account $account): bool
     {
         return $contentRepository->findWorkspaceByName($workspaceName->toWorkspaceName()) !== null
             && $this->workspaceResolver->permissionsOf($contentRepository->id, $workspaceName->toWorkspaceName(), $account)->read;
@@ -458,11 +439,11 @@ final readonly class Workspaces
         ],
     )]
     public function changeBaseWorkspace(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[RequestBody(description: 'The new base workspace')] BaseWorkspaceChange $change,
         #[AuthContext] ApiCaller $caller,
-    ): Workspace|NotFound|Forbidden|Conflict|UnprocessableContent {
+    ): Schema\Workspace|NotFound|Forbidden|Conflict|UnprocessableContent {
         $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName, $caller->account);
         if ($workspace instanceof NotFound) {
             return $workspace;
@@ -515,11 +496,11 @@ final readonly class Workspaces
         ],
     )]
     public function publish(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
         #[RequestBody(description: 'Which changes to publish, all of them if left out')] WorkspacePublish $selection = new WorkspacePublish(),
-    ): PublishingResult|NotFound|Forbidden|WorkspaceConflict|UnprocessableContent {
+    ): Schema\PublishingResult|NotFound|Forbidden|WorkspaceConflict|UnprocessableContent {
         $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName, $caller->account);
         if ($workspace instanceof NotFound) {
             return $workspace;
@@ -541,7 +522,7 @@ final readonly class Workspaces
             return $scope;
         }
         $published = $this->publishOrDiscard($workspace, $scope, true);
-        return is_int($published) ? new PublishingResult($published, $this->workspaceOf($workspace)) : $published;
+        return is_int($published) ? new Schema\PublishingResult($published, $this->workspaceOf($workspace)) : $published;
     }
 
     #[Operation(
@@ -555,11 +536,11 @@ final readonly class Workspaces
         ],
     )]
     public function discard(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
         #[RequestBody(description: 'Which changes to discard, all of them if left out')] WorkspaceDiscard $selection = new WorkspaceDiscard(),
-    ): DiscardingResult|NotFound|Forbidden|WorkspaceConflict|UnprocessableContent {
+    ): Schema\DiscardingResult|NotFound|Forbidden|WorkspaceConflict|UnprocessableContent {
         $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName, $caller->account);
         if ($workspace instanceof NotFound) {
             return $workspace;
@@ -576,7 +557,7 @@ final readonly class Workspaces
             return $scope;
         }
         $discarded = $this->publishOrDiscard($workspace, $scope, false);
-        return is_int($discarded) ? new DiscardingResult($discarded, $this->workspaceOf($workspace)) : $discarded;
+        return is_int($discarded) ? new Schema\DiscardingResult($discarded, $this->workspaceOf($workspace)) : $discarded;
     }
 
     /**
@@ -667,7 +648,7 @@ final readonly class Workspaces
      *
      * @return SharedModel\Node\NodeAggregateId|list<SharedModel\Node\NodeAggregateId>|UnprocessableContent|null
      */
-    private function changeScopeOf(ReadableWorkspace $workspace, ?NodeAggregateId $siteAggregateId, ?DocumentAggregateIdList $documentAggregateIds): SharedModel\Node\NodeAggregateId|array|UnprocessableContent|null
+    private function changeScopeOf(ReadableWorkspace $workspace, ?Nodes\Schema\NodeAggregateId $siteAggregateId, ?Schema\DocumentAggregateIdList $documentAggregateIds): SharedModel\Node\NodeAggregateId|array|UnprocessableContent|null
     {
         if ($siteAggregateId !== null && $documentAggregateIds !== null) {
             return UnprocessableContent::because('Give siteAggregateId or documentAggregateIds, not both');
@@ -734,11 +715,11 @@ final readonly class Workspaces
         ],
     )]
     public function rebase(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
         #[RequestBody(description: 'How to rebase, optional: with strategy fail if left out')] WorkspaceRebase $rebase = new WorkspaceRebase(),
-    ): Workspace|NotFound|Forbidden|WorkspaceConflict|UnprocessableContent {
+    ): Schema\Workspace|NotFound|Forbidden|WorkspaceConflict|UnprocessableContent {
         $strategy = $rebase->strategy();
         $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName, $caller->account);
         if ($workspace instanceof NotFound) {
@@ -777,10 +758,10 @@ final readonly class Workspaces
         ],
     )]
     public function listRoles(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
-    ): WorkspaceRoleAssignmentListing|NotFound|Forbidden {
+    ): Schema\WorkspaceRoleAssignmentListing|NotFound|Forbidden {
         $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName, $caller->account);
         if ($workspace instanceof NotFound) {
             return $workspace;
@@ -789,12 +770,12 @@ final readonly class Workspaces
             return Forbidden::because(sprintf('You may not manage the workspace %s, only its managers see its roles', $workspaceName->value));
         }
         $assignments = array_map(
-            WorkspaceRoleAssignment::from(...),
+            Schema\WorkspaceRoleAssignment::from(...),
             iterator_to_array($this->workspaceService->getWorkspaceRoleAssignments($workspace->contentRepository->id, $workspace->workspace->workspaceName), false),
         );
         // the repository sorts by its own (uppercase) values, the order is the API's to keep
-        usort($assignments, static fn (WorkspaceRoleAssignment $a, WorkspaceRoleAssignment $b) => [$a->subject->type->value, $a->subject->id->value] <=> [$b->subject->type->value, $b->subject->id->value]);
-        return WorkspaceRoleAssignmentListing::of(new WorkspaceRoleAssignmentList(...$assignments));
+        usort($assignments, static fn (Schema\WorkspaceRoleAssignment $a, Schema\WorkspaceRoleAssignment $b) => [$a->subject->type->value, $a->subject->id->value] <=> [$b->subject->type->value, $b->subject->id->value]);
+        return Schema\WorkspaceRoleAssignmentListing::of(new Schema\WorkspaceRoleAssignmentList(...$assignments));
     }
 
     #[Operation(
@@ -808,13 +789,13 @@ final readonly class Workspaces
         ],
     )]
     public function assignRole(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
-        WorkspaceRoleSubjectType $subjectType,
-        WorkspaceRoleSubjectId $subjectId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
+        Schema\WorkspaceRoleSubjectType $subjectType,
+        Schema\WorkspaceRoleSubjectId $subjectId,
         #[RequestBody(description: 'The role')] WorkspaceRoleAssign $assignment,
         #[AuthContext] ApiCaller $caller,
-    ): WorkspaceRoleAssignment|NotFound|Forbidden|Conflict|UnprocessableContent {
+    ): Schema\WorkspaceRoleAssignment|NotFound|Forbidden|Conflict|UnprocessableContent {
         $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName, $caller->account);
         if ($workspace instanceof NotFound) {
             return $workspace;
@@ -830,14 +811,14 @@ final readonly class Workspaces
         }
         $roleSubject = $this->workspaceRoleSubjects->existingSubjectOf($subjectType, $subjectId);
         if ($roleSubject === null) {
-            return UnprocessableContent::because($subjectType === WorkspaceRoleSubjectType::USER
+            return UnprocessableContent::because($subjectType === Schema\WorkspaceRoleSubjectType::USER
                 ? sprintf('There is no Neos user with the ID %s', $subjectId->value)
                 : sprintf('There is no Flow role %s', $subjectId->value));
         }
         $role = $assignment->role->toWorkspaceRole();
         $existing = $this->roleAssignmentOf($crId, $name, $roleSubject);
         if ($existing?->role === $role) {
-            return WorkspaceRoleAssignment::from($existing);
+            return Schema\WorkspaceRoleAssignment::from($existing);
         }
         if ($existing !== null && !$role->isAtLeast($existing->role) && $this->isCallersUser($roleSubject, $caller)) {
             return UnprocessableContent::because('You can\'t lower your own role in the workspace, ask another manager');
@@ -875,7 +856,7 @@ final readonly class Workspaces
             }
             throw $exception;
         }
-        return WorkspaceRoleAssignment::from($newAssignment);
+        return Schema\WorkspaceRoleAssignment::from($newAssignment);
     }
 
     #[Operation(
@@ -889,10 +870,10 @@ final readonly class Workspaces
         ],
     )]
     public function unassignRole(
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
-        WorkspaceRoleSubjectType $subjectType,
-        WorkspaceRoleSubjectId $subjectId,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
+        Schema\WorkspaceRoleSubjectType $subjectType,
+        Schema\WorkspaceRoleSubjectId $subjectId,
         #[AuthContext] ApiCaller $caller,
     ): NotFound|Forbidden|UnprocessableContent|null {
         $workspace = $this->workspaceResolver->resolve($contentRepositoryId, $workspaceName, $caller->account);
@@ -967,13 +948,13 @@ final readonly class Workspaces
     )]
     public function listChanges(
         ServerRequestInterface $request,
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
         #[Parameter(in: 'query', description: 'Only the changes in the document with this aggregate id: of the document itself and its content, not of its child documents (the changes whose documentAggregateId it is)')]
-        NodeAggregateId|null $filterByDocument = null,
+        Nodes\Schema\NodeAggregateId|null $filterByDocument = null,
         #[Parameter(in: 'query', description: 'Only the changes in the site with this aggregate id (the changes whose siteAggregateId it is)')]
-        NodeAggregateId|null $filterBySite = null,
+        Nodes\Schema\NodeAggregateId|null $filterBySite = null,
         #[Parameter(in: 'query', description: 'Only the changes with one of these kinds of change, comma-separated: created, changed, moved, deleted. deleted is the workspace\'s trash: the nodes deleted in it and not published yet')]
         ChangeTypes|null $filterByChangeType = null,
         #[Parameter(in: 'query', description: 'Only the changes of nodes of these node types or ones inheriting from them, comma-separated, a ! in front excludes a type, as filterByNodeType of listNodes. Unknown node types are a 400')]
@@ -984,7 +965,7 @@ final readonly class Workspaces
         Offset|null $offset = null,
         #[Parameter(in: 'query', description: 'How many items at most, 25 if omitted, 100 at most')]
         Limit|null $limit = null,
-    ): PaginatedChangeListing|BadRequest|NotFound {
+    ): Schema\PaginatedChangeListing|BadRequest|NotFound {
         $query = ChangeQuery::create($filterByDocument, $filterBySite, $filterByChangeType, $filterByNodeType, $include ?? IncludePaths::none(), $offset ?? Offset::none(), $limit ?? Limit::default());
         if ($query instanceof BadRequest) {
             return $query;
@@ -1014,11 +995,11 @@ final readonly class Workspaces
     )]
     public function listEvents(
         ServerRequestInterface $request,
-        ContentRepositoryId $contentRepositoryId,
-        WorkspaceName $workspaceName,
+        ContentRepositories\Schema\ContentRepositoryId $contentRepositoryId,
+        Schema\WorkspaceName $workspaceName,
         #[AuthContext] ApiCaller $caller,
         #[Parameter(in: 'query', description: 'The sequenceNumber of the last event of the page before in the listing\'s order (newer events oldest first, older ones newest first), the first page if omitted')]
-        SequenceNumber|null $after = null,
+        Schema\SequenceNumber|null $after = null,
         #[Parameter(in: 'query', description: 'How many items at most, 25 if omitted, 100 at most')]
         Limit|null $limit = null,
         #[Parameter(in: 'query', description: 'sequenceNumber (oldest first, the default) or -sequenceNumber (newest first)')]
@@ -1030,10 +1011,10 @@ final readonly class Workspaces
         #[Parameter(in: 'query', description: 'Only the events about the nodes with these aggregate ids (the payload\'s nodeAggregateId), comma-separated, at most 100')]
         NodeAggregateIds|null $filterByNodeAggregateId = null,
         #[Parameter(in: 'query', description: 'Only the events in the document with this aggregate id: about the document itself and its content, not its child documents (the closest document of the payload\'s node now, as filterByDocument of listWorkspaceChanges)')]
-        NodeAggregateId|null $filterByDocument = null,
+        Nodes\Schema\NodeAggregateId|null $filterByDocument = null,
         #[Parameter(in: 'query', description: 'Only the SubtreeWasTagged and SubtreeWasUntagged events of these tags, comma-separated, e.g. removed for deletions and restorations, disabled for hiding and showing')]
         SubtreeTags|null $filterByTag = null,
-    ): PaginatedEventListing|BadRequest|NotFound|Conflict {
+    ): Schema\PaginatedEventListing|BadRequest|NotFound|Conflict {
         $query = EventQuery::create($after, $limit ?? Limit::default(), $sort, $include ?? IncludePaths::none(), $filterByEventType, $filterByNodeAggregateId, $filterByDocument, $filterByTag, $this->maxEventsRead);
         if ($query instanceof BadRequest) {
             return $query;
@@ -1049,7 +1030,7 @@ final readonly class Workspaces
             return Conflict::because(sprintf('The events after %d are from an earlier content stream of the workspace %s: it was published, discarded or rebased since, its events start at %d. Start over without after', $after?->value, $workspaceName->value, $firstEvent?->sequenceNumber->value));
         }
         $fork = $firstEvent !== null ? ContentStreamEvents::forkOf($firstEvent) : null;
-        $meta = new EventListingMeta(ContentStreamId::from($contentStreamId), $fork !== null ? ContentStreamPosition::from($fork) : null);
+        $meta = new Schema\EventListingMeta(Schema\ContentStreamId::from($contentStreamId), $fork !== null ? Schema\ContentStreamPosition::from($fork) : null);
         $eventTypes = $query->eventTypes();
         return $query->page(
             $request,
@@ -1066,11 +1047,11 @@ final readonly class Workspaces
      * The workspace as it is now (re-read, so it reflects a change made in this request), with its metadata and the
      * account's permissions
      */
-    private function workspaceOf(ReadableWorkspace $workspace): Workspace
+    private function workspaceOf(ReadableWorkspace $workspace): Schema\Workspace
     {
         $contentRepositoryId = $workspace->contentRepository->id;
         $workspaceName = $workspace->workspace->workspaceName;
-        return Workspace::from(
+        return Schema\Workspace::from(
             $workspace->contentRepository->findWorkspaceByName($workspaceName) ?? $workspace->workspace,
             $this->workspaceService->getWorkspaceMetadata($contentRepositoryId, $workspaceName),
             $workspace->permissions,

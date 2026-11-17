@@ -9,13 +9,6 @@ use Neos\Api\Endpoint\Sites\RequestBody\DomainCreate;
 use Neos\Api\Endpoint\Sites\RequestBody\DomainUpdate;
 use Neos\Api\Endpoint\Sites\RequestBody\SiteCreate;
 use Neos\Api\Endpoint\Sites\RequestBody\SiteUpdate;
-use Neos\Api\Endpoint\Sites\Schema\Domain;
-use Neos\Api\Endpoint\Sites\Schema\DomainId;
-use Neos\Api\Endpoint\Sites\Schema\Hostname;
-use Neos\Api\Endpoint\Sites\Schema\Site;
-use Neos\Api\Endpoint\Sites\Schema\SiteList;
-use Neos\Api\Endpoint\Sites\Schema\SiteListing;
-use Neos\Api\Endpoint\Sites\Schema\SiteNodeName;
 use Neos\Api\Endpoint\Sites\Response\DomainCreated;
 use Neos\Api\Endpoint\Sites\Response\SiteCreated;
 use Neos\Api\Infrastructure\ContentRepository\ContentSubgraphs;
@@ -72,9 +65,9 @@ final readonly class Sites
             ApiAuthContextProvider::SCOPES => [ApiScopes::SITES_READ],
         ],
     )]
-    public function list(): SiteListing
+    public function list(): Schema\SiteListing
     {
-        return SiteListing::of(new SiteList(...array_map(
+        return Schema\SiteListing::of(new Schema\SiteList(...array_map(
             $this->site(...),
             $this->siteRepository->findAll()->toArray(),
         )));
@@ -125,7 +118,7 @@ final readonly class Sites
             ApiAuthContextProvider::SCOPES => [ApiScopes::SITES_READ],
         ],
     )]
-    public function get(SiteNodeName $siteNodeName): Site|NotFound
+    public function get(Schema\SiteNodeName $siteNodeName): Schema\Site|NotFound
     {
         $site = $this->siteRepository->findOneByNodeName($siteNodeName->value);
         return $site !== null ? $this->site($site) : self::siteNotFound($siteNodeName);
@@ -142,9 +135,9 @@ final readonly class Sites
         ],
     )]
     public function update(
-        SiteNodeName $siteNodeName,
+        Schema\SiteNodeName $siteNodeName,
         #[RequestBody(description: 'The properties to change')] SiteUpdate $patch,
-    ): Site|NotFound|UnprocessableContent {
+    ): Schema\Site|NotFound|UnprocessableContent {
         $site = $this->siteRepository->findOneByNodeName($siteNodeName->value);
         if ($site === null) {
             return self::siteNotFound($siteNodeName);
@@ -174,7 +167,7 @@ final readonly class Sites
             ApiAuthContextProvider::SCOPES => [ApiScopes::SITES_DELETE],
         ],
     )]
-    public function delete(SiteNodeName $siteNodeName): NotFound|null
+    public function delete(Schema\SiteNodeName $siteNodeName): NotFound|null
     {
         $site = $this->siteRepository->findOneByNodeName($siteNodeName->value);
         if ($site === null) {
@@ -194,7 +187,7 @@ final readonly class Sites
         ],
     )]
     public function createDomain(
-        SiteNodeName $siteNodeName,
+        Schema\SiteNodeName $siteNodeName,
         #[RequestBody(description: 'The domain')] DomainCreate $newDomain,
     ): DomainCreated|NotFound|Conflict {
         $site = $this->siteRepository->findOneByNodeName($siteNodeName->value);
@@ -210,7 +203,7 @@ final readonly class Sites
         // the inverse side, which Site::getPrimaryDomain() falls back to
         $site->getDomains()->add($domain);
         $this->domainRepository->add($domain);
-        return new DomainCreated(Domain::from($domain, $this->persistenceManager));
+        return new DomainCreated(Schema\Domain::from($domain, $this->persistenceManager));
     }
 
     #[Operation(
@@ -222,14 +215,14 @@ final readonly class Sites
             ApiAuthContextProvider::SCOPES => [ApiScopes::SITES_READ],
         ],
     )]
-    public function getDomain(SiteNodeName $siteNodeName, DomainId $domainId): Domain|NotFound
+    public function getDomain(Schema\SiteNodeName $siteNodeName, Schema\DomainId $domainId): Schema\Domain|NotFound
     {
         $site = $this->siteRepository->findOneByNodeName($siteNodeName->value);
         if ($site === null) {
             return self::siteNotFound($siteNodeName);
         }
         $domain = $this->findDomain($site, $domainId);
-        return $domain !== null ? Domain::from($domain, $this->persistenceManager) : self::domainNotFound($domainId);
+        return $domain !== null ? Schema\Domain::from($domain, $this->persistenceManager) : self::domainNotFound($domainId);
     }
 
     #[Operation(
@@ -243,11 +236,11 @@ final readonly class Sites
         ],
     )]
     public function updateDomain(
-        SiteNodeName $siteNodeName,
-        DomainId $domainId,
+        Schema\SiteNodeName $siteNodeName,
+        Schema\DomainId $domainId,
         #[RequestBody(description: 'The properties to change')] DomainUpdate $patch,
         ServerRequestInterface $request,
-    ): Domain|NotFound|Conflict {
+    ): Schema\Domain|NotFound|Conflict {
         $site = $this->siteRepository->findOneByNodeName($siteNodeName->value);
         if ($site === null) {
             return self::siteNotFound($siteNodeName);
@@ -273,7 +266,7 @@ final readonly class Sites
             $site->setPrimaryDomain(null);
             $this->siteRepository->update($site);
         }
-        return Domain::from($domain, $this->persistenceManager);
+        return Schema\Domain::from($domain, $this->persistenceManager);
     }
 
     #[Operation(
@@ -286,7 +279,7 @@ final readonly class Sites
             ApiAuthContextProvider::SCOPES => [ApiScopes::SITES_UPDATE],
         ],
     )]
-    public function deleteDomain(SiteNodeName $siteNodeName, DomainId $domainId): NotFound|null
+    public function deleteDomain(Schema\SiteNodeName $siteNodeName, Schema\DomainId $domainId): NotFound|null
     {
         $site = $this->siteRepository->findOneByNodeName($siteNodeName->value);
         if ($site === null) {
@@ -305,9 +298,9 @@ final readonly class Sites
         return null;
     }
 
-    private function site(Model\Site $site): Site
+    private function site(Model\Site $site): Schema\Site
     {
-        return Site::from($site, $this->siteNode($site), $this->persistenceManager);
+        return Schema\Site::from($site, $this->siteNode($site), $this->persistenceManager);
     }
 
     /**
@@ -338,30 +331,30 @@ final readonly class Sites
     /**
      * The domain of the site with the ID, null if there is none, or it belongs to another site
      */
-    private function findDomain(Model\Site $site, DomainId $domainId): ?Model\Domain
+    private function findDomain(Model\Site $site, Schema\DomainId $domainId): ?Model\Domain
     {
         $domain = $this->domainRepository->findByIdentifier($domainId->value);
         return $domain instanceof Model\Domain && $domain->getSite() === $site ? $domain : null;
     }
 
-    private function hostnameIsTaken(Hostname $hostname): bool
+    private function hostnameIsTaken(Schema\Hostname $hostname): bool
     {
         // not findOneByHost(), which matches subdomains as well
         $query = $this->domainRepository->createQuery();
         return $query->matching($query->equals('hostname', $hostname->value))->count() > 0;
     }
 
-    private static function siteNotFound(SiteNodeName $siteNodeName): NotFound
+    private static function siteNotFound(Schema\SiteNodeName $siteNodeName): NotFound
     {
         return NotFound::because(sprintf('There is no site with the node name %s', $siteNodeName->value));
     }
 
-    private static function domainNotFound(DomainId $domainId): NotFound
+    private static function domainNotFound(Schema\DomainId $domainId): NotFound
     {
         return NotFound::because(sprintf('The site has no domain with the ID %s', $domainId->value));
     }
 
-    private static function hostnameTaken(Hostname $hostname): Conflict
+    private static function hostnameTaken(Schema\Hostname $hostname): Conflict
     {
         return Conflict::because(sprintf('There is a domain with the host name %s already', $hostname->value));
     }

@@ -4,17 +4,11 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Views;
 
-use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
-use Neos\Api\Endpoint\Nodes\Schema\DimensionSpacePoint;
-use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
+use Neos\Api\Endpoint\ContentRepositories;
+use Neos\Api\Endpoint\Nodes;
 use Neos\Api\Endpoint\Nodes\Domain\SubgraphResolver;
-use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceName;
 use Neos\Api\Endpoint\Views\Response\RenderedView;
-use Neos\Api\Endpoint\Views\Schema\RenderingModeName;
-use Neos\Api\Endpoint\Views\Schema\View;
-use Neos\Api\Endpoint\Views\Schema\ViewName;
-use Neos\Api\Endpoint\Views\Schema\ViewList;
-use Neos\Api\Endpoint\Views\Schema\ViewListing;
+use Neos\Api\Endpoint\Workspaces;
 use Neos\Api\Infrastructure\ContentRepository\ContentSubgraphs;
 use Neos\Api\Infrastructure\ContentRepository\SiteFinder;
 use Neos\Api\Infrastructure\Fusion\InvalidViewArgument;
@@ -33,8 +27,8 @@ use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepository\Core\SharedModel;
 use Neos\Flow\Annotations as Flow;
 use Neos\Neos\Domain\Model\RenderingMode;
-use Neos\Neos\Domain\Service\RenderingModeService;
 use Neos\Neos\Domain\Service\NodeTypeNameFactory;
+use Neos\Neos\Domain\Service\RenderingModeService;
 use Neos\OpenApi\Attributes\AuthContext;
 use Neos\OpenApi\Attributes\Operation;
 use Neos\OpenApi\Attributes\Parameter;
@@ -96,13 +90,13 @@ final readonly class Views
             ApiAuthContextProvider::SCOPES => [ApiScopes::VIEWS_READ],
         ],
     )]
-    public function list(): ViewListing
+    public function list(): Schema\ViewListing
     {
         $views = [];
         foreach ($this->views as $name => $view) {
-            $views[] = new View(ViewName::fromString((string)$name), $view['description'] ?? null);
+            $views[] = new Schema\View(Schema\ViewName::fromString((string)$name), $view['description'] ?? null);
         }
-        return ViewListing::of(new ViewList(...$views));
+        return Schema\ViewListing::of(new Schema\ViewList(...$views));
     }
 
     #[Operation(
@@ -116,19 +110,19 @@ final readonly class Views
         ],
     )]
     public function render(
-        ViewName $viewName,
+        Schema\ViewName $viewName,
         ServerRequestInterface $request,
         #[AuthContext] ApiCaller $caller,
         #[Parameter(in: 'query', description: 'The content repository of the node, the one of the default site if omitted')]
-        ContentRepositoryId|null $contentRepositoryId = null,
+        ContentRepositories\Schema\ContentRepositoryId|null $contentRepositoryId = null,
         #[Parameter(in: 'query', description: 'The aggregate id of the node to render the view for. The site node of the default site if omitted')]
-        NodeAggregateId|null $nodeAggregateId = null,
+        Nodes\Schema\NodeAggregateId|null $nodeAggregateId = null,
         #[Parameter(in: 'query', description: 'The workspace to read the node in, live if omitted')]
-        WorkspaceName|null $workspaceName = null,
+        Workspaces\Schema\WorkspaceName|null $workspaceName = null,
         #[Parameter(in: 'query', description: 'The dimension space point to read the node in, as JSON. If omitted, the default one of the content repository\'s default site, as for getNode')]
-        DimensionSpacePoint|null $dimensionSpacePoint = null,
+        Nodes\Schema\DimensionSpacePoint|null $dimensionSpacePoint = null,
         #[Parameter(in: 'query', description: 'The rendering mode, the Fusion global renderingMode. frontend if omitted, the Neos UI uses e.g. inPlace')]
-        RenderingModeName|null $renderingMode = null,
+        Schema\RenderingModeName|null $renderingMode = null,
         #[Parameter(in: 'query', description: 'The arguments of the view: arguments[name]=value, arrays as arguments[name][]=value, e.g. arguments[fusionPath] for fusionPathHtml')]
         Arguments|null $arguments = null,
     ): RenderedView|NotFound|BadRequest|Forbidden {
@@ -174,7 +168,7 @@ final readonly class Views
     /**
      * @return array{Node, Node}|NotFound the node and its site node
      */
-    private function node(ContentSubgraphInterface $subgraph, NodeAggregateId $nodeAggregateId): array|NotFound
+    private function node(ContentSubgraphInterface $subgraph, Nodes\Schema\NodeAggregateId $nodeAggregateId): array|NotFound
     {
         $node = $this->subgraphResolver->resolveNodeIn($subgraph, $nodeAggregateId->toNodeAggregateId());
         if (!$node instanceof Node) {
@@ -222,7 +216,7 @@ final readonly class Views
     /**
      * The rendering mode of the name, frontend without one, null if there is none of the name
      */
-    private function renderingMode(?RenderingModeName $name): ?RenderingMode
+    private function renderingMode(?Schema\RenderingModeName $name): ?RenderingMode
     {
         if ($name === null) {
             return RenderingMode::createFrontend();
