@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Neos\Api\Tests\Functional\Endpoint;
 
+use Doctrine\ORM\EntityManagerInterface;
 use Neos\ContentRepository\Core\SharedModel\Node\NodeName;
 use Neos\Neos\Domain\Model\Domain;
 use Neos\Neos\Domain\Model\Site;
@@ -78,6 +79,42 @@ class SitesTest extends ContentRepositoryTestCase
 
         self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
         self::assertSame(['Another Site', 'other.example.com'], [self::json($response)['name'], self::json($response)['primaryDomain']]);
+    }
+
+    #[Test]
+    public function readsTheSchemesNeosStores(): void
+    {
+        // Neos stores "no scheme" as null or as an empty string; the backend's
+        // Sites module writes the latter, which Neos' validation lets through.
+        // Other values only get in with the database itself (SQL, imports), so
+        // they are written that way.
+        $other = $this->objectManager->get(SiteRepository::class)->findOneByNodeName('other');
+        self::assertNotNull($other);
+        $this->addDomain($other, 'empty.example.com', '', null);
+        $this->addDomain($other, 'upper.example.com', 'https', null);
+        $this->addDomain($other, 'ftp.example.com', 'https', null);
+        $this->persistenceManager->persistAll();
+        $this->persistenceManager->clearState();
+        $connection = $this->objectManager->get(EntityManagerInterface::class)->getConnection();
+        foreach (['upper.example.com' => 'HTTPS', 'ftp.example.com' => 'ftp'] as $hostname => $scheme) {
+            $connection->update('neos_neos_domain_model_domain', ['scheme' => $scheme], ['hostname' => $hostname]);
+        }
+
+        $response = $this->get('/api/sites', $this->token('admin-machine', 'sites.read'));
+
+        self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+        $domains = array_column(self::json($response)['data'][0]['domains'], null, 'hostname');
+        self::assertSame(
+            [
+                'empty.example.com' => [null, 'empty.example.com'],
+                'upper.example.com' => ['https', 'HTTPS://upper.example.com'],
+                'ftp.example.com' => [null, 'ftp://ftp.example.com'],
+            ],
+            array_map(
+                fn (string $hostname) => [$domains[$hostname]['scheme'], $domains[$hostname]['url']],
+                ['empty.example.com' => 'empty.example.com', 'upper.example.com' => 'upper.example.com', 'ftp.example.com' => 'ftp.example.com'],
+            ),
+        );
     }
 
     #[Test]

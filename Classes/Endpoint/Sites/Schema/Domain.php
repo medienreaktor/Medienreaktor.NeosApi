@@ -16,7 +16,7 @@ use Neos\Schematic\Discovery\AutoDiscoveringSchema;
 final readonly class Domain implements ProvidesSchema
 {
     /**
-     * @param UriScheme|null $scheme null if the domain works with the scheme of the request
+     * @param UriScheme|null $scheme null if the domain works with the scheme of the request, or if Neos stores a scheme that is neither http nor https
      * @param Port|null $port null if the domain works with the port of the request
      * @param bool $isPrimary whether it is the site's explicit primary domain
      * @param string $url the domain as Neos writes it, [scheme://]hostname[:port], e.g. https://www.example.com, or example.com:8080 for a domain without a scheme (it works with the scheme of the request): a URL only if the domain has a scheme
@@ -38,7 +38,11 @@ final readonly class Domain implements ProvidesSchema
         return new self(
             DomainId::fromString($persistenceManager->getIdentifierByObject($domain)),
             Hostname::fromString($domain->getHostname()),
-            $domain->getScheme() !== null ? UriScheme::from($domain->getScheme()) : null,
+            // Neos stores a domain without a scheme as null or as an empty string, the
+            // backend's Sites module writes the latter. A scheme is case-insensitive
+            // (RFC 3986), and one this API doesn't know must not fail every listing of
+            // the site; the domain's url still shows it as stored.
+            UriScheme::tryFrom(strtolower((string)$domain->getScheme())),
             $domain->getPort() !== null ? Port::fromInteger($domain->getPort()) : null,
             (bool)$domain->getActive(),
             $site->getPrimaryDomain(false) === $domain,
