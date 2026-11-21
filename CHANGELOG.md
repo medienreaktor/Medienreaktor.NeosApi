@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Content repositories without dimensions work again.** The dimension space point of a
+  site, node or change was written as `[]` there, which isn't the JSON object the schema
+  asks for. `GET /api/sites` and every operation returning a node or a change answered with
+  a 500, so Neos Studio could not load its sites. Such a point is now `{}`.
+
 ## [2.0.5] - 2026-11-18
 
 ### Fixed

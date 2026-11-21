@@ -27,7 +27,8 @@ final readonly class DimensionSpacePoint implements ProvidesSchema
 
     public static function from(DimensionSpace\AbstractDimensionSpacePoint $dimensionSpacePoint): self
     {
-        return self::fromString($dimensionSpacePoint->toJson());
+        // the point without dimensions encodes as [], its JSON form is the empty object
+        return self::fromString($dimensionSpacePoint->coordinates === [] ? '{}' : $dimensionSpacePoint->toJson());
     }
 
     /**
