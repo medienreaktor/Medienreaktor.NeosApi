@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.6] - 2026-11-21
+
 ### Fixed
 
 - **Content repositories without dimensions work again.** The dimension space point of a
@@ -355,7 +357,8 @@ Same code as [1.0].
   users, the user's own profile and password, and data sources. Every endpoint has a
   privilege of its own. Licensed under GPL-3.0.
 
-[Unreleased]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.5...HEAD
+[Unreleased]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.6...HEAD
+[2.0.6]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.5...2.0.6
 [2.0.5]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.4...2.0.5
 [2.0.4]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.3...2.0.4
 [2.0.3]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.2...2.0.3
