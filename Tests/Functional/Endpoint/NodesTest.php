@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Neos\Api\Tests\Functional\Endpoint;
 
+use Doctrine\DBAL\Connection;
 use GuzzleHttp\Psr7\Uri;
 use GuzzleHttp\Psr7\UriResolver;
 use Neos\Api\Endpoint\ContentRepositories\Schema\ContentRepositoryId;
@@ -15,6 +16,10 @@ use Neos\Api\Endpoint\Nodes\Schema\NodeClassification;
 use Neos\Api\Endpoint\Nodes\Schema\NodeTimestamps;
 use Neos\Api\Endpoint\NodeTypes\Schema\NodeTypeName;
 use Neos\Api\Endpoint\Workspaces\Schema\WorkspaceName;
+use Neos\Api\Infrastructure\ContentRepository\FlatDescendantNodesFactory;
+use Neos\ContentRepository\Core;
+use Neos\ContentRepository\Core\Projection\ContentGraph;
+use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
 use Neos\Neos\Domain\Service\UserService;
 use PHPUnit\Framework\Attributes\Test;
 
@@ -927,6 +932,81 @@ class NodesTest extends ContentRepositoryTestCase
         $below = ['filterByHierarchy' => ['type' => 'childOf', 'nodeAggregateId' => $siteNodeId], 'filterByNodeType' => 'Neos.Demo:Document.Page,!Neos.Demo:Document.NotFoundPage'];
         self::assertSame([], self::json($this->get(self::path('', self::IN_LIVE + $below), $token))['data']);
         self::assertSame([$parent], array_column(self::json($this->get(self::path('', self::IN_LIVE + $below + ['includeRemoved' => 'true']), $token))['data'], 'nodeAggregateId'));
+    }
+
+    #[Test]
+    public function findsDescendantsByLevelAndPositionWithoutWalkingTheTree(): void
+    {
+        $this->requireLiveWorkspaceAndAdministrator();
+        $siteNodeId = $this->siteNodeId();
+        $token = $this->token('admin-machine', 'nodes.read nodes.create nodes.update nodes.delete');
+        $trackA = $this->createPage($token, $siteNodeId, 'Track A');
+        $other = $this->createPage($token, $trackA, 'Other');
+        $spot = $this->createPage($token, $trackA, 'Spot track');
+        $deep = $this->createPage($token, $spot, 'Deep Track');
+        $this->createPage($token, $other, 'Elsewhere');
+        $hidden = $this->createPage($token, $siteNodeId, 'Hidden track');
+        $child = $this->createPage($token, $hidden, 'Child track');
+        $deleted = $this->createPage($token, $siteNodeId, 'Deleted track');
+        $trackB = $this->createPage($token, $siteNodeId, 'Track B');
+        self::assertSame(200, $this->put(self::path($hidden . '/tags/disabled', self::IN_LIVE), $token, [])->getStatusCode());
+        self::assertSame(204, $this->delete(self::path($deleted, self::IN_LIVE), $token)->getStatusCode());
+
+        $list = function (array $query) use ($token, $siteNodeId): array {
+            $response = $this->get(self::path('', self::IN_LIVE + $query + ['filterByHierarchy' => ['type' => 'descendantOf', 'nodeAggregateId' => $query['below'] ?? $siteNodeId], 'filterByNodeType' => 'Neos.Demo:Document.Page']), $token);
+            self::assertSame(200, $response->getStatusCode(), (string)$response->getBody());
+            $listing = self::json($response);
+            return [array_column($listing['data'], 'nodeAggregateId'), $listing['meta']['total']];
+        };
+        $title = ['filterByProperty' => 'title *=~ \'track\''];
+
+        // by level, then position: the second child of one page after the first child of another; hidden ones for whom
+        // may see them, deleted ones only with includeRemoved
+        self::assertSame([[$trackA, $hidden, $trackB, $child, $spot, $deep], 6], $list($title));
+        self::assertSame([[$trackA, $hidden, $deleted, $trackB, $child, $spot, $deep], 7], $list($title + ['includeRemoved' => 'true']));
+        self::assertSame([[$spot, $deep], 6], $list($title + ['offset' => '4', 'limit' => '2']));
+        self::assertSame([[], 6], $list($title + ['offset' => '6']));
+        self::assertSame([[$trackA, $trackB, $deep], 3], $list(['filterByProperty' => 'title *= \'Track\'']));
+        self::assertSame([[$spot, $deep], 2], $list($title + ['below' => $trackA]));
+        self::assertSame([[], 0], $list($title + ['below' => $deep]));
+        // sorted, then by level and position
+        self::assertSame([[$trackB, $trackA, $spot, $hidden, $deep, $child], 6], $list($title + ['sort' => '-properties.title']));
+        self::assertSame([[$trackA, $hidden, $trackB, $child, $spot, $deep], 6], $list($title + ['sort' => 'properties.notThere']));
+
+        // the same nodes as the tree walk of findDescendantNodes(), on the same levels in the same order
+        $this->withoutAuthorizationChecks(function () use ($siteNodeId, $trackA) {
+            $contentRepository = $this->contentRepository();
+            $flatDescendantNodes = $this->objectManager->get(ContentRepositoryRegistry::class)->buildService($contentRepository->id, new FlatDescendantNodesFactory($this->objectManager->get(Connection::class)));
+            foreach ([ContentGraph\VisibilityConstraints::default(), ContentGraph\VisibilityConstraints::createEmpty()] as $visibilityConstraints) {
+                $subgraph = $contentRepository->getContentGraph(Core\SharedModel\Workspace\WorkspaceName::forLive())->getSubgraph(Core\DimensionSpace\DimensionSpacePoint::fromArray(['language' => 'en_US']), $visibilityConstraints);
+                $level = static fn (ContentGraph\Node $node) => $subgraph->countAncestorNodes($node->aggregateId, ContentGraph\Filter\CountAncestorNodesFilter::create());
+                foreach (
+                    [
+                    [$siteNodeId, []],
+                    [$siteNodeId, ['nodeTypes' => 'Neos.Neos:Document']],
+                    [$siteNodeId, ['nodeTypes' => 'Neos.Neos:Document', 'propertyValue' => 'title *=~ "track"']],
+                    [$siteNodeId, ['nodeTypes' => 'Neos.Neos:Document', 'propertyValue' => 'title *= "Track" OR title ^= "Other"']],
+                    [$siteNodeId, ['nodeTypes' => 'Neos.Neos:Document', 'propertyValue' => 'NOT (title *=~ "track")']],
+                    [$siteNodeId, ['nodeTypes' => '!Neos.Neos:ContentCollection', 'searchTerm' => 'track']],
+                    [$siteNodeId, ['nodeTypes' => 'Neos.Neos:Document', 'pagination' => ['limit' => 3, 'offset' => 2]]],
+                    [$siteNodeId, ['nodeTypes' => 'Neos.Neos:Document', 'ordering' => [['type' => 'propertyName', 'field' => 'title', 'direction' => 'DESCENDING']]]],
+                    [$siteNodeId, ['nodeTypes' => 'Neos.Neos:Document', 'ordering' => [['type' => 'timestampField', 'field' => 'CREATED', 'direction' => 'ASCENDING']], 'pagination' => ['limit' => 4, 'offset' => 1]]],
+                    [$trackA, []],
+                    ] as [$entryPoint, $filter]
+                ) {
+                    $filter = ContentGraph\Filter\FindDescendantNodesFilter::create(...$filter);
+                    $walked = iterator_to_array($subgraph->findDescendantNodes(Core\SharedModel\Node\NodeAggregateId::fromString($entryPoint), $filter), false);
+                    $found = $flatDescendantNodes->find($subgraph, Core\SharedModel\Node\NodeAggregateId::fromString($entryPoint), $filter);
+                    self::assertNotNull($found);
+                    $message = (string)json_encode([$entryPoint, $filter]);
+                    self::assertSame($subgraph->countDescendantNodes(Core\SharedModel\Node\NodeAggregateId::fromString($entryPoint), ContentGraph\Filter\CountDescendantNodesFilter::fromFindDescendantNodesFilter($filter)), $found[1], $message);
+                    // equal levels and positions are in no particular order in findDescendantNodes()
+                    self::assertSame(array_map($level, $walked), array_map($level, $found[0]), $message);
+                    $ids = static fn (array $nodes) => array_map(static fn (ContentGraph\Node $node) => $node->aggregateId->value, $nodes);
+                    self::assertEqualsCanonicalizing($ids($walked), $ids($found[0]), $message);
+                }
+            }
+        });
     }
 
     #[Test]

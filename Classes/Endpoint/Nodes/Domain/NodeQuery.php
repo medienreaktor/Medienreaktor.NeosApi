@@ -12,6 +12,7 @@ use Neos\Api\Endpoint\Nodes\Parameter\PropertyCriteria;
 use Neos\Api\Endpoint\Nodes\Parameter\ReferenceFilter;
 use Neos\Api\Endpoint\Nodes\Parameter\SearchTerm;
 use Neos\Api\Endpoint\Nodes\Schema\NodeAggregateId;
+use Neos\Api\Infrastructure\ContentRepository\FlatDescendantNodes;
 use Neos\Api\Shared\Parameter\Limit;
 use Neos\Api\Shared\Parameter\Offset;
 use Neos\Api\Shared\Parameter\Sort;
@@ -155,9 +156,10 @@ final readonly class NodeQuery
      *
      * @param ContentGraph\Node $entryPoint the node of entryPoint(), else the default site node
      * @param ContentSubgraphInterface $subgraph the one the entry point was found in
+     * @param FlatDescendantNodes|null $flatDescendantNodes finds the descendant nodes without walking the tree, where it can
      * @return array{list<ContentGraph\Node>, int}|BadRequest
      */
-    public function find(ContentGraph\Node $entryPoint, ContentSubgraphInterface $subgraph, NodeTypeManager $nodeTypeManager): array|BadRequest
+    public function find(ContentGraph\Node $entryPoint, ContentSubgraphInterface $subgraph, NodeTypeManager $nodeTypeManager, ?FlatDescendantNodes $flatDescendantNodes = null): array|BadRequest
     {
         $unknownNodeTypes = $this->nodeTypes !== null ? self::unknownNodeTypes($this->nodeTypes, $nodeTypeManager) : [];
         if ($unknownNodeTypes !== []) {
@@ -189,6 +191,10 @@ final readonly class NodeQuery
         }
         // filterByHierarchy with type descendantOf, or the default site node without an entry point
         $descendantNodesFilter = Filter\FindDescendantNodesFilter::create($this->nodeTypes, $this->searchTerm, $this->propertyValue, $this->ordering, $this->pagination);
+        $found = $flatDescendantNodes?->find($subgraph, $entryPoint->aggregateId, $descendantNodesFilter);
+        if ($found !== null) {
+            return $found;
+        }
         return [
             iterator_to_array($subgraph->findDescendantNodes($entryPoint->aggregateId, $descendantNodesFilter), false),
             $subgraph->countDescendantNodes($entryPoint->aggregateId, Filter\CountDescendantNodesFilter::fromFindDescendantNodesFilter($descendantNodesFilter)),

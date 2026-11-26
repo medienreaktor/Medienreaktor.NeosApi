@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Listing the descendants of a node no longer takes seconds on large sites.** `GET
+  /api/cr/{id}/nodes` with `filterByHierarchy` of type `descendantOf`, or without
+  `filterByHierarchy`, found its nodes with the content repository's tree walk, which
+  carries the properties of every node below the entry point along and filters only at
+  the end. Below a site with 25,000 nodes and large properties that took 4–5 seconds a
+  request, however few nodes matched, e.g. for Neos Studio's document search. The API now
+  finds the matching nodes of the subgraph first and keeps the ones below the entry
+  point: about 0.1 seconds for the same request. On MariaDB a string comparison in
+  `filterByProperty` is checked against the property alone first. Nodes, total and order
+  are the same as before: by `sort`, then by level and position below the entry point,
+  ties now in the order of the node aggregate ids. A content repository that doesn't use
+  the Doctrine DBAL adapter still gets the tree walk.
+
 ## [2.0.6] - 2026-11-21
 
 ### Fixed

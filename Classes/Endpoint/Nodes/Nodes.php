@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Neos\Api\Endpoint\Nodes;
 
+use Doctrine\DBAL\Connection;
 use Neos\Api\Endpoint\ContentRepositories;
 use Neos\Api\Endpoint\Nodes\Domain\NodeMoveCommand;
 use Neos\Api\Endpoint\Nodes\Domain\NodeQuery;
@@ -29,6 +30,7 @@ use Neos\Api\Endpoint\Workspaces;
 use Neos\Api\Endpoint\Workspaces\Domain\ReadableWorkspace;
 use Neos\Api\Endpoint\Workspaces\Domain\WorkspaceResolver;
 use Neos\Api\Infrastructure\ContentRepository\ContentSubgraphs;
+use Neos\Api\Infrastructure\ContentRepository\FlatDescendantNodesFactory;
 use Neos\Api\Infrastructure\ContentRepository\InvalidPropertyValue;
 use Neos\Api\Infrastructure\ContentRepository\NodeSerializer;
 use Neos\Api\Infrastructure\ContentRepository\PropertyValues;
@@ -126,6 +128,7 @@ final readonly class Nodes
         private NodeRestoration $nodeRestoration,
         private NodeMoveCommand $nodeMoveCommand,
         private NodeDuplicationService $nodeDuplicationService,
+        private Connection $dbal,
     ) {
     }
 
@@ -200,7 +203,7 @@ final readonly class Nodes
             if (!$entryPoint instanceof ContentGraph\Node) {
                 return $entryPoint;
             }
-            $found = $query->find($entryPoint, $subgraph, $nodeTypeManager);
+            $found = $query->find($entryPoint, $subgraph, $nodeTypeManager, $this->contentRepositoryRegistry->buildService($subgraph->getContentRepositoryId(), new FlatDescendantNodesFactory($this->dbal)));
         }
         if ($found instanceof BadRequest) {
             return $found;
