@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.7] - 2026-11-26
+
 ### Fixed
 
 - **Listing the descendants of a node no longer takes seconds on large sites.** `GET
@@ -372,7 +374,8 @@ Same code as [1.0].
   users, the user's own profile and password, and data sources. Every endpoint has a
   privilege of its own. Licensed under GPL-3.0.
 
-[Unreleased]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.6...HEAD
+[Unreleased]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.7...HEAD
+[2.0.7]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.6...2.0.7
 [2.0.6]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.5...2.0.6
 [2.0.5]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.4...2.0.5
 [2.0.4]: https://github.com/medienreaktor/Medienreaktor.NeosApi/compare/2.0.3...2.0.4
